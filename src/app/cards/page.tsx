@@ -1,6 +1,8 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import type { Dispatch, SetStateAction } from "react";
+import { Trash2 } from "lucide-react";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,16 +18,202 @@ import { exportRevisionItems, importRevisionItems } from "@/lib/storage";
 import { importances, revisionItemTypes, type RevisionItem } from "@/lib/types";
 import { useStudyStore } from "@/hooks/use-study-store";
 
+type UndoState = { message: string; itemIds: string[]; action: "delete" | "restore" } | null;
+
 export default function CardsPage() {
   const store = useStudyStore();
   const [editing, setEditing] = useState<RevisionItem | undefined>();
   const [adding, setAdding] = useState(false);
   const [importText, setImportText] = useState("");
   const [filters, setFilters] = useState({ type: "all", importance: "all", section: "", tag: "", source: "" });
-  const filtered = useMemo(() => store.revisionItems.filter((item) => !needsRepair(item) && (filters.type === "all" || item.type === filters.type) && (filters.importance === "all" || item.importance === filters.importance) && (!filters.section || item.section?.toLowerCase().includes(filters.section.toLowerCase())) && (!filters.tag || item.tags.some((tag) => tag.toLowerCase().includes(filters.tag.toLowerCase()))) && (!filters.source || item.sourceFile.toLowerCase().includes(filters.source.toLowerCase()))), [filters, store.revisionItems]);
-  function downloadJson() { const blob = new Blob([exportRevisionItems(store.revisionItems)], { type: "application/json" }); const url = URL.createObjectURL(blob); const a = document.createElement("a"); a.href = url; a.download = "rivision-cards.json"; a.click(); URL.revokeObjectURL(url); }
-  function importJson() { store.setRevisionItems(importRevisionItems(importText)); setImportText(""); }
-  return <div><PageHeader title="Review and edit cards" description="Filter extracted items, correct prompts and answers, delete false positives, or add manual cards." /><Card className="mb-6"><CardContent className="grid gap-3 pt-6 md:grid-cols-5"><Select value={filters.type} onChange={(e) => setFilters({ ...filters, type: e.target.value })}><option value="all">All types</option>{revisionItemTypes.map((type) => <option key={type}>{type}</option>)}</Select><Select value={filters.importance} onChange={(e) => setFilters({ ...filters, importance: e.target.value })}><option value="all">All importance</option>{importances.map((importance) => <option key={importance}>{importance}</option>)}</Select><Input placeholder="Section" value={filters.section} onChange={(e) => setFilters({ ...filters, section: e.target.value })} /><Input placeholder="Tag" value={filters.tag} onChange={(e) => setFilters({ ...filters, tag: e.target.value })} /><Input placeholder="Source file" value={filters.source} onChange={(e) => setFilters({ ...filters, source: e.target.value })} /></CardContent></Card><div className="mb-4 flex flex-wrap gap-2"><Button onClick={() => setAdding(true)}>Add manual card</Button><Button variant="outline" onClick={downloadJson}>Export JSON</Button><Button variant="secondary" onClick={store.seedMockData}>Load mock data</Button></div><Card className="mb-6"><CardHeader><CardTitle>Import cards from JSON</CardTitle></CardHeader><CardContent className="space-y-3"><Textarea value={importText} onChange={(e) => setImportText(e.target.value)} placeholder="Paste exported RevisionItem[] JSON" /><Button variant="outline" onClick={importJson} disabled={!importText.trim()}>Import JSON</Button></CardContent></Card><Card><CardContent className="overflow-x-auto pt-6"><Table><TableHeader><TableRow><TableHead>Card</TableHead><TableHead>Importance</TableHead><TableHead>Source</TableHead><TableHead>Warnings</TableHead><TableHead /></TableRow></TableHeader><TableBody>{filtered.map((item) => <TableRow key={item.id}><TableCell><div className="space-y-2"><div className="font-medium">{item.title}</div><div className="text-xs text-slate-500">{item.type} · {item.tags.join(", ")}</div><MathMarkdown content={item.statementLatex || item.statement} className="bg-transparent p-0 text-sm text-slate-600" /></div></TableCell><TableCell><Badge variant={item.importance}>{item.importance}</Badge></TableCell><TableCell className="text-sm text-slate-600">{item.sourceLocation || "source unknown"}</TableCell><TableCell>{item.warnings?.map((warning) => <Badge key={warning} className="mb-1 mr-1" variant="unknown">{warning}</Badge>)}</TableCell><TableCell><div className="flex gap-2"><Button size="sm" variant="outline" onClick={() => setEditing(item)}>Edit</Button><Button size="sm" variant="destructive" onClick={() => store.deleteRevisionItem(item.id)}>Delete</Button></div></TableCell></TableRow>)}</TableBody></Table></CardContent></Card>{editing ? <Card className="mt-6"><CardHeader><CardTitle>{editing.title}</CardTitle></CardHeader><CardContent className="space-y-3"><MathMarkdown content={editing.questionPrompt} /><MathMarkdown content={editing.statementLatex || editing.statement} />{editing.answer ? <MathMarkdown content={editing.answerLatex || editing.answer} /> : null}{editing.proof ? <MathMarkdown content={editing.proofLatex || editing.proof} /> : null}</CardContent></Card> : null}{editing || adding ? <Dialog open onOpenChange={(open) => { if (!open) { setEditing(undefined); setAdding(false); } }}><DialogContent><h2 className="mb-4 text-xl font-semibold">{editing ? "Edit card" : "Add card"}</h2><CardForm item={editing} onCancel={() => { setEditing(undefined); setAdding(false); }} onSave={(item) => { store.upsertRevisionItem(item); setEditing(undefined); setAdding(false); }} /></DialogContent></Dialog> : null}</div>;
+  const [selectedIds, setSelectedIds] = useState<string[]>([]);
+  const [selectedDeletedIds, setSelectedDeletedIds] = useState<string[]>([]);
+  const [undo, setUndo] = useState<UndoState>(null);
+
+  const activeCards = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && !needsRepair(item)), [store.revisionItems]);
+  const deletedCards = useMemo(() => store.revisionItems.filter((item) => item.isDeleted), [store.revisionItems]);
+  const filtered = useMemo(() => activeCards.filter((item) => matchesFilters(item, filters)), [activeCards, filters]);
+
+  function downloadJson() {
+    const blob = new Blob([exportRevisionItems(store.revisionItems)], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "rivision-cards.json";
+    a.click();
+    URL.revokeObjectURL(url);
+  }
+
+  function importJson() {
+    store.setRevisionItems(importRevisionItems(importText));
+    setImportText("");
+  }
+
+  function deleteCards(ids: string[]) {
+    if (ids.length === 0) return;
+    store.deleteRevisionItems(ids);
+    setSelectedIds((current) => current.filter((id) => !ids.includes(id)));
+    setUndo({ message: ids.length === 1 ? "Card deleted" : `${ids.length} cards deleted`, itemIds: ids, action: "delete" });
+  }
+
+  function restoreCards(ids: string[]) {
+    if (ids.length === 0) return;
+    store.restoreRevisionItems(ids);
+    setSelectedDeletedIds((current) => current.filter((id) => !ids.includes(id)));
+    setUndo({ message: ids.length === 1 ? "Card restored" : `${ids.length} cards restored`, itemIds: ids, action: "restore" });
+  }
+
+  function handleUndo() {
+    if (!undo) return;
+    if (undo.action === "delete") store.restoreRevisionItems(undo.itemIds);
+    if (undo.action === "restore") store.deleteRevisionItems(undo.itemIds);
+    setUndo(null);
+  }
+
+  const allVisibleSelected = filtered.length > 0 && filtered.every((item) => selectedIds.includes(item.id));
+  const allDeletedSelected = deletedCards.length > 0 && deletedCards.every((item) => selectedDeletedIds.includes(item.id));
+
+  return (
+    <div>
+      <PageHeader title="Review and edit cards" description="Filter extracted items, correct prompts and answers, delete false positives, or add manual cards." />
+
+      {undo ? <UndoBanner message={undo.message} onUndo={handleUndo} onDismiss={() => setUndo(null)} /> : null}
+
+      <Card className="mb-6">
+        <CardContent className="grid gap-3 pt-6 md:grid-cols-5">
+          <Select value={filters.type} onChange={(event) => setFilters({ ...filters, type: event.target.value })}>
+            <option value="all">All types</option>
+            {revisionItemTypes.map((type) => <option key={type}>{type}</option>)}
+          </Select>
+          <Select value={filters.importance} onChange={(event) => setFilters({ ...filters, importance: event.target.value })}>
+            <option value="all">All importance</option>
+            {importances.map((importance) => <option key={importance}>{importance}</option>)}
+          </Select>
+          <Input placeholder="Section" value={filters.section} onChange={(event) => setFilters({ ...filters, section: event.target.value })} />
+          <Input placeholder="Tag" value={filters.tag} onChange={(event) => setFilters({ ...filters, tag: event.target.value })} />
+          <Input placeholder="Source file" value={filters.source} onChange={(event) => setFilters({ ...filters, source: event.target.value })} />
+        </CardContent>
+      </Card>
+
+      <div className="mb-4 flex flex-wrap gap-2">
+        <Button onClick={() => setAdding(true)}>Add manual card</Button>
+        <Button variant="outline" onClick={downloadJson}>Export JSON</Button>
+        <Button variant="secondary" onClick={store.seedMockData}>Load mock data</Button>
+        <Button variant="destructive" onClick={() => deleteCards(selectedIds)} disabled={selectedIds.length === 0}>Bulk delete selected</Button>
+      </div>
+
+      <Card className="mb-6">
+        <CardHeader><CardTitle>Import cards from JSON</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <Textarea value={importText} onChange={(event) => setImportText(event.target.value)} placeholder="Paste exported RevisionItem[] JSON" />
+          <Button variant="outline" onClick={importJson} disabled={!importText.trim()}>Import JSON</Button>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <CardTitle>Active cards</CardTitle>
+        </CardHeader>
+        <CardContent className="overflow-x-auto pt-2">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>
+                  <input type="checkbox" checked={allVisibleSelected} onChange={(event) => setSelectedIds(event.target.checked ? filtered.map((item) => item.id) : [])} aria-label="Select all visible cards" />
+                </TableHead>
+                <TableHead>Card</TableHead>
+                <TableHead>Importance</TableHead>
+                <TableHead>Source</TableHead>
+                <TableHead>Warnings</TableHead>
+                <TableHead />
+              </TableRow>
+            </TableHeader>
+            <TableBody>
+              {filtered.map((item) => (
+                <TableRow key={item.id}>
+                  <TableCell>
+                    <input type="checkbox" checked={selectedIds.includes(item.id)} onChange={(event) => toggleSelection(item.id, event.target.checked, setSelectedIds)} aria-label={`Select ${item.title}`} />
+                  </TableCell>
+                  <TableCell>
+                    <div className="space-y-2">
+                      <div className="font-medium">{item.title}</div>
+                      <div className="text-xs text-slate-500">{item.type} · {item.tags.join(", ")} · standalone {item.standaloneValue ?? "unknown"}</div>
+                      <MathMarkdown content={item.statementLatex || item.statement} className="bg-transparent p-0 text-sm text-slate-600" />
+                    </div>
+                  </TableCell>
+                  <TableCell><Badge variant={item.importance}>{item.importance}</Badge></TableCell>
+                  <TableCell className="text-sm text-slate-600">{item.sourceLocation || "source unknown"}</TableCell>
+                  <TableCell>{item.warnings?.map((warning) => <Badge key={warning} className="mb-1 mr-1" variant="unknown">{warning}</Badge>)}</TableCell>
+                  <TableCell>
+                    <div className="flex gap-2">
+                      <Button size="sm" variant="outline" onClick={() => setEditing(item)}>Edit</Button>
+                      <Button size="sm" variant="destructive" onClick={() => deleteCards([item.id])}><Trash2 className="h-4 w-4" />Delete</Button>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </CardContent>
+      </Card>
+
+      <Card className="mt-6">
+        <CardHeader><CardTitle>Deleted cards ({deletedCards.length})</CardTitle></CardHeader>
+        <CardContent className="space-y-3">
+          <div className="flex flex-wrap gap-2">
+            <label className="flex items-center gap-2 text-sm">
+              <input type="checkbox" checked={allDeletedSelected} onChange={(event) => setSelectedDeletedIds(event.target.checked ? deletedCards.map((item) => item.id) : [])} />
+              Select all deleted
+            </label>
+            <Button size="sm" variant="outline" onClick={() => restoreCards(selectedDeletedIds)} disabled={selectedDeletedIds.length === 0}>Bulk restore selected</Button>
+          </div>
+          {deletedCards.length === 0 ? <p className="text-sm text-slate-500">No deleted cards.</p> : null}
+          {deletedCards.map((item) => (
+            <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3 text-sm">
+              <label className="flex items-center gap-3">
+                <input type="checkbox" checked={selectedDeletedIds.includes(item.id)} onChange={(event) => toggleSelection(item.id, event.target.checked, setSelectedDeletedIds)} />
+                <span>
+                  <span className="font-medium">{item.title}</span>
+                  <span className="block text-xs text-slate-500">{item.deletedAt ? `Deleted ${new Date(item.deletedAt).toLocaleString()}` : "Deleted"}</span>
+                </span>
+              </label>
+              <div className="flex gap-2">
+                <Button size="sm" variant="outline" onClick={() => restoreCards([item.id])}>Restore</Button>
+                <Button size="sm" variant="destructive" onClick={() => store.permanentlyDeleteRevisionItem(item.id)}>Permanently delete</Button>
+              </div>
+            </div>
+          ))}
+        </CardContent>
+      </Card>
+
+      {editing ? (
+        <Card className="mt-6">
+          <CardHeader><CardTitle>{editing.title}</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            <MathMarkdown content={editing.questionPrompt} />
+            <MathMarkdown content={editing.statementLatex || editing.statement} />
+            {editing.answer ? <MathMarkdown content={editing.answerLatex || editing.answer} /> : null}
+            {editing.proof ? <MathMarkdown content={editing.proofLatex || editing.proof} /> : null}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {editing || adding ? (
+        <Dialog open onOpenChange={(open) => { if (!open) { setEditing(undefined); setAdding(false); } }}>
+          <DialogContent>
+            <h2 className="mb-4 text-xl font-semibold">{editing ? "Edit card" : "Add card"}</h2>
+            <CardForm
+              item={editing}
+              onCancel={() => { setEditing(undefined); setAdding(false); }}
+              onSave={(item) => { store.upsertRevisionItem(item); setEditing(undefined); setAdding(false); }}
+              onDelete={editing && !editing.isDeleted ? () => { deleteCards([editing.id]); setEditing(undefined); } : undefined}
+              onRestore={editing?.isDeleted ? () => { restoreCards([editing.id]); setEditing(undefined); } : undefined}
+            />
+          </DialogContent>
+        </Dialog>
+      ) : null}
+    </div>
+  );
 }
 
 function needsRepair(item: RevisionItem) {
@@ -39,5 +227,27 @@ function needsRepair(item: RevisionItem) {
         warning.includes("unrelated section") ||
         warning.includes("multiple major label"),
       ),
+  );
+}
+
+function matchesFilters(item: RevisionItem, filters: { type: string; importance: string; section: string; tag: string; source: string }) {
+  return (filters.type === "all" || item.type === filters.type) &&
+    (filters.importance === "all" || item.importance === filters.importance) &&
+    (!filters.section || item.section?.toLowerCase().includes(filters.section.toLowerCase())) &&
+    (!filters.tag || item.tags.some((tag) => tag.toLowerCase().includes(filters.tag.toLowerCase()))) &&
+    (!filters.source || item.sourceFile.toLowerCase().includes(filters.source.toLowerCase()));
+}
+
+function toggleSelection(id: string, selected: boolean, setSelected: Dispatch<SetStateAction<string[]>>) {
+  setSelected((current) => selected ? Array.from(new Set([...current, id])) : current.filter((candidate) => candidate !== id));
+}
+
+function UndoBanner({ message, onUndo, onDismiss }: { message: string; onUndo: () => void; onDismiss: () => void }) {
+  return (
+    <div className="fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-lg bg-slate-950 px-4 py-3 text-sm text-white shadow-lg">
+      <span>{message}</span>
+      <Button size="sm" variant="secondary" onClick={onUndo}>Undo</Button>
+      <Button size="sm" variant="ghost" className="text-white hover:bg-slate-800" onClick={onDismiss}>Dismiss</Button>
+    </div>
   );
 }

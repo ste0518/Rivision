@@ -251,7 +251,6 @@ function collectMarkers(text: string) {
   }
 
   markers.push(...collectSectionMarkers(text));
-  markers.push(...collectFormulaMarkers(text, markers));
   return markers.sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
@@ -359,34 +358,6 @@ function segmentUnlabelledDocument(document: ParsedDocument, text: string): Cand
       endOffset: chunk.endOffset,
       extractionWarning: chunk.rawText.length > 1200 ? "Unlabelled candidate is longer than 1200 characters." : undefined,
     }));
-}
-
-function collectFormulaMarkers(text: string, existingMarkers: Marker[]) {
-  const markers: Marker[] = [];
-  let offset = 0;
-  for (const line of text.split("\n")) {
-    const trimmed = line.trim();
-    const start = offset + line.length - line.trimStart().length;
-    const overlapsExplicitLabel = existingMarkers.some((marker) => marker.kind === "label" && marker.start <= start && marker.end >= start);
-    if (!overlapsExplicitLabel && isFormulaLikeLine(trimmed)) {
-      markers.push({
-        kind: "label",
-        start,
-        end: offset + line.length,
-        label: "Formula" satisfies RevisionCandidateLabel,
-        type: "formula",
-      });
-    }
-    offset += line.length + 1;
-  }
-  return markers;
-}
-
-function isFormulaLikeLine(text: string) {
-  const hasEquals = text.includes("=") || text.includes("\\approx") || text.includes("\\sum");
-  const hasMathChars = /[+\-*/^_()[\]{}]/.test(text);
-  const hasMathTerms = /\b(var|cov|gamma|sigma|mu|blup|kriging|likelihood)\b/i.test(text);
-  return text.length >= 10 && text.length <= 500 && hasEquals && (hasMathChars || hasMathTerms);
 }
 
 function collectLooseLabelMatches(text: string) {

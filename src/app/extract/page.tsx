@@ -35,8 +35,8 @@ export default function ExtractPage() {
   const candidates = useMemo(() => segmentRevisionCandidates(notesDocuments), [notesDocuments]);
   const segmentationDebug = useMemo(() => buildSegmentationDebug(notesDocuments), [notesDocuments]);
   const candidateSegmentationWarning = segmentationDebug.some((document) => document.warnings.length > 0);
-  const repairItems = useMemo(() => store.revisionItems.filter(needsRepair), [store.revisionItems]);
-  const normalItems = useMemo(() => store.revisionItems.filter((item) => !needsRepair(item)), [store.revisionItems]);
+  const repairItems = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && needsRepair(item)), [store.revisionItems]);
+  const normalItems = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && !needsRepair(item)), [store.revisionItems]);
   const failedDocuments = useMemo(
     () => allDocuments.filter((doc) => !doc.diagnostics.success || doc.diagnostics.extractionQuality === "failed" || !doc.fullText.trim()),
     [allDocuments],
@@ -65,18 +65,18 @@ export default function ExtractPage() {
     }
 
     const result = await extractRevisionItems({ notesDocuments, guidanceDocuments, sourceFile });
-    store.setRevisionItems(result.items);
+    store.setRevisionItems(result.items, result.rejectedItems);
     setVerification(result.verification);
     if (result.error) setApiError(result.error);
 
     if (settings.mode === "openai_api" || settings.mode === "cheap_scan_then_verify") {
       if (result.items.length === 0) {
-        setStatus("OpenAI extraction returned no items. Check parsing diagnostics and API key.");
+        setStatus("OpenAI extraction returned no kept items. Check parsing diagnostics and rejected low-relevance items.");
       } else {
-        setStatus("Extraction complete via OpenAI pipeline with verification.");
+        setStatus(`Extraction complete via OpenAI pipeline with ${result.items.length} kept and ${result.rejectedItems.length} rejected item(s).`);
       }
     } else {
-      setStatus("Extraction complete via local deterministic rules.");
+      setStatus(`Extraction complete via local deterministic rules with ${result.items.length} kept and ${result.rejectedItems.length} rejected item(s).`);
     }
 
     setExtracting(false);
@@ -88,7 +88,7 @@ export default function ExtractPage() {
       const result = validateRevisionItemsPayload(parsed);
       setManualErrors(result.errors);
       if (result.errors.length > 0) return;
-      store.setRevisionItems(result.items.map(withValidation));
+      store.setRevisionItems(result.items.map(withValidation), []);
       setStatus(`Imported ${result.items.length} card(s) from manual JSON.`);
     } catch {
       setManualErrors(["JSON parse error. Please provide valid JSON array."]);
@@ -275,38 +275,73 @@ export default function ExtractPage() {
         </Card>
       ) : null}
 
-      <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {normalItems.map((item) => (
-          <Card key={item.id}>
-            <CardHeader>
-              <div className="flex items-center justify-between gap-3">
-                <CardTitle className="text-base">{item.title}</CardTitle>
-                <div className="flex flex-wrap gap-2">
-                  <Badge variant={item.importance}>{item.importance}</Badge>
-                  {item.extractionWarning || item.warnings?.length ? <Badge variant="unknown">check extraction</Badge> : null}
+      {store.rejectedItems.length > 0 ? (
+        <Card className="mt-6 border-slate-300 bg-slate-50">
+          <CardHeader>
+            <CardTitle>Rejected / low relevance</CardTitle>
+            <CardDescription>These items were extracted but are not included in normal review unless restored.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            {store.rejectedItems.map((rejected) => (
+              <div key={rejected.id} className="rounded-lg border bg-white p-3 text-sm">
+                <div className="flex flex-wrap items-center justify-between gap-3">
+                  <div>
+                    <p className="font-medium">{rejected.originalItem.title}</p>
+                    <p className="text-xs text-slate-500">
+                      {rejected.originalItem.type} · {rejected.rejectionCategory} · confidence {rejected.confidence} · {rejected.originalItem.sourceLocation || "source unknown"}
+                    </p>
+                  </div>
+                  <Button size="sm" variant="outline" onClick={() => store.restoreRejectedItem(rejected.id)}>Restore as card</Button>
                 </div>
+                <p className="mt-2 text-slate-700">{rejected.rejectionReason}</p>
+                <p className="mt-2 text-slate-500">{previewText(rejected.originalItem.statement)}</p>
               </div>
-              <CardDescription>{item.type} · {item.section || "section unknown"} · {item.sourceLocation || "source unknown"}</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <p className="text-sm text-slate-600">{previewText(item.statement)}</p>
-              <p className="mt-2 text-xs text-slate-500">confidence: {item.classificationConfidence || "unknown"}</p>
-              {item.guidanceReason ? <p className="mt-2 text-xs text-slate-500">{item.guidanceReason}</p> : null}
-              {item.uncertaintyNote ? <p className="mt-1 text-xs text-amber-700">{item.uncertaintyNote}</p> : null}
-              {item.extractionWarning ? <p className="mt-1 text-xs text-amber-700">{item.extractionWarning}</p> : null}
-              <div className="mt-2">
-                <Select value={item.importance} onChange={(event) => store.upsertRevisionItem({ ...item, importance: event.target.value as RevisionItem["importance"], updatedAt: new Date().toISOString() })}>
-                  <option value="must_know">must_know</option>
-                  <option value="partial">partial</option>
-                  <option value="not_required">not_required</option>
-                  <option value="unknown">unknown</option>
-                </Select>
-              </div>
-              {item.warnings?.length ? <Badge className="mt-3" variant="unknown">{item.warnings.length} warning(s)</Badge> : null}
-            </CardContent>
-          </Card>
-        ))}
-      </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {normalItems.length > 0 ? (
+        <Card className="mt-6">
+          <CardHeader>
+            <CardTitle>Kept cards</CardTitle>
+            <CardDescription>These cards are included in normal review.</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {normalItems.map((item) => (
+              <Card key={item.id}>
+                <CardHeader>
+                  <div className="flex items-center justify-between gap-3">
+                    <CardTitle className="text-base">{item.title}</CardTitle>
+                    <div className="flex flex-wrap gap-2">
+                      <Badge variant={item.importance}>{item.importance}</Badge>
+                      {item.extractionWarning || item.warnings?.length ? <Badge variant="unknown">check extraction</Badge> : null}
+                    </div>
+                  </div>
+                  <CardDescription>{item.type} · {item.section || "section unknown"} · {item.sourceLocation || "source unknown"}</CardDescription>
+                </CardHeader>
+                <CardContent>
+                  <p className="text-sm text-slate-600">{previewText(item.statement)}</p>
+                  <p className="mt-2 text-xs text-slate-500">confidence: {item.classificationConfidence || "unknown"} · standalone {item.standaloneValue ?? "unknown"}</p>
+                  {item.relevanceReason ? <p className="mt-2 text-xs text-slate-500">{item.relevanceReason}</p> : null}
+                  {item.guidanceReason ? <p className="mt-2 text-xs text-slate-500">{item.guidanceReason}</p> : null}
+                  {item.uncertaintyNote ? <p className="mt-1 text-xs text-amber-700">{item.uncertaintyNote}</p> : null}
+                  {item.extractionWarning ? <p className="mt-1 text-xs text-amber-700">{item.extractionWarning}</p> : null}
+                  <div className="mt-2">
+                    <Select value={item.importance} onChange={(event) => store.upsertRevisionItem({ ...item, importance: event.target.value as RevisionItem["importance"], updatedAt: new Date().toISOString() })}>
+                      <option value="must_know">must_know</option>
+                      <option value="partial">partial</option>
+                      <option value="not_required">not_required</option>
+                      <option value="unknown">unknown</option>
+                    </Select>
+                  </div>
+                  {item.warnings?.length ? <Badge className="mt-3" variant="unknown">{item.warnings.length} warning(s)</Badge> : null}
+                </CardContent>
+              </Card>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
 
       {verification ? (
         <Card className="mt-6">

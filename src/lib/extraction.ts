@@ -2,7 +2,8 @@ import { createMockRevisionItems } from "@/lib/mock-data";
 import { defaultLlmPipelineSettings, type LlmPipelineSettings } from "@/lib/llm/provider";
 import { attachProofsToPreviousTheorem, segmentRevisionCandidates, stripLeadingLabel } from "@/lib/segmentation";
 import { buildQuestionPrompt, convertCommonMathToLatex, extractNumber, splitProofFromStatement, theoremLike } from "@/lib/revision-item-utils";
-import type { ExtractionPipelineMode, ExtractionVerificationReport, ParsedDocument, RevisionItem, RevisionItemType } from "@/lib/types";
+import { filterRevisionItemsByRelevance, loadRelevanceSettings } from "@/lib/relevance";
+import type { ExtractionPipelineMode, ExtractionVerificationReport, ParsedDocument, RejectedRevisionItem, RevisionItem, RevisionItemType } from "@/lib/types";
 import { createId } from "@/lib/utils";
 import { buildSuspiciousItems, validateAndRepairRevisionItems, withValidation } from "@/lib/validation";
 
@@ -12,7 +13,17 @@ export type ExtractRevisionItemsInput = {
   sourceFile?: string;
 };
 
-const llmExtractionPrompt = `Extraction is deterministic-first. Uploaded notes are segmented into atomic candidates before any LLM cleanup runs. The LLM receives RevisionCandidate[] plus guidance, cleans notation, classifies importance, and generates prompts, but must not merge candidates or extract from whole pages/sections as the primary source.`;
+const llmExtractionPrompt = `Extraction is deterministic-first. Uploaded notes are segmented into atomic candidates before any LLM cleanup runs. The LLM receives RevisionCandidate[] plus guidance, cleans notation, classifies importance, and generates prompts, but must not merge candidates or extract from whole pages/sections as the primary source.
+
+You are not just extracting text. You are building exam revision cards. Each card must be useful as a standalone flashcard.
+
+Do not create normal cards from bibliography entries, reading lists, author references, generic textbook references, ordinary explanatory paragraphs, equations that are merely intermediate proof lines, equations already contained inside theorem statements, formulas without a clear named concept, or duplicated content.
+
+For formulas, only create a formula card if the formula is central, named, examinable, and useful as a standalone recall item. Otherwise keep the formula inside the definition/theorem/proof where it belongs.
+
+For remarks, only keep them if they are conceptually important or explicitly examinable. Otherwise mark them low relevance.
+
+Return kept items and rejected/low relevance items with reasons where the schema supports it.`;
 
 export function getLlmExtractionPrompt() {
   return llmExtractionPrompt;
@@ -22,7 +33,7 @@ export async function extractRevisionItems({
   notesDocuments,
   guidanceDocuments,
   sourceFile = "Uploaded notes",
-}: ExtractRevisionItemsInput): Promise<{ items: RevisionItem[]; verification: ExtractionVerificationReport; error?: string }> {
+}: ExtractRevisionItemsInput): Promise<{ items: RevisionItem[]; rejectedItems: RejectedRevisionItem[]; verification: ExtractionVerificationReport; error?: string }> {
   const notesText = notesDocuments.map((doc) => doc.fullText).join("\n\n");
   const guidanceText = guidanceDocuments.map((doc) => doc.fullText).join("\n\n");
   const hasRealInput = Boolean(notesText.trim() || guidanceText.trim());
@@ -32,10 +43,10 @@ export async function extractRevisionItems({
   if (settings.mode === "openai_api" || settings.mode === "cheap_scan_then_verify") {
     const llmResult = await extractViaApi({ notesDocuments, guidanceDocuments, sourceFile, settings });
     if (llmResult.items.length > 0 || llmResult.verification) {
-      const validation = validateAndRepairRevisionItems(llmResult.items);
-      const items = [...validation.validItems, ...validation.invalidItems].map(withValidation);
+      const { items, rejectedItems } = postProcessRevisionItems(llmResult.items, guidanceDocuments);
       return {
         items,
+        rejectedItems,
         verification: mergeSuspiciousItems(llmResult.verification ?? emptyVerificationReport("Verification unavailable."), items),
         error: llmResult.error,
       };
@@ -44,10 +55,10 @@ export async function extractRevisionItems({
 
   const extracted = deterministicExtract(notesDocuments, notesText, guidanceText, sourceFile, safeMode);
   if (extracted.length > 0) {
-    const validation = validateAndRepairRevisionItems(extracted);
-    const items = [...validation.validItems, ...validation.invalidItems].map(withValidation);
+    const { items, rejectedItems } = postProcessRevisionItems(extracted, guidanceDocuments);
     return {
       items,
+      rejectedItems,
       verification: mergeSuspiciousItems(emptyVerificationReport("Local deterministic extraction mode does not run LLM verification."), items),
     };
   }
@@ -56,6 +67,7 @@ export async function extractRevisionItems({
   if (hasRealInput) {
     return {
       items: [],
+      rejectedItems: [],
       verification: emptyVerificationReport("No extractable items detected from parsed content."),
     };
   }
@@ -63,6 +75,7 @@ export async function extractRevisionItems({
   // Keep a mock fallback only for empty input demo mode.
   return {
     items: createMockRevisionItems().map(withValidation),
+    rejectedItems: [],
     verification: emptyVerificationReport("Demo mode: mock data"),
   };
 }
@@ -220,6 +233,8 @@ function deterministicExtract(
       questionPrompt: buildQuestionPrompt({ type: candidate.type, title, theoremNumber, statement, proofRequired }),
       answer,
       answerLatex: convertCommonMathToLatex(answer),
+      standaloneValue: candidate.type === "formula" ? "low" : candidate.type === "remark" ? "medium" : "high",
+      relevanceReason: candidate.type === "formula" ? "Formula requires relevance filtering before review." : "Labelled candidate extracted as a standalone card.",
       createdAt: timestamp,
       updatedAt: timestamp,
       reviewCount: 0,
@@ -227,6 +242,15 @@ function deterministicExtract(
   }
 
   return dedupeItems(items);
+}
+
+function postProcessRevisionItems(items: RevisionItem[], guidanceDocuments: ParsedDocument[]) {
+  const validation = validateAndRepairRevisionItems(items);
+  const relevance = filterRevisionItemsByRelevance(validation.validItems.map(withValidation), guidanceDocuments, loadRelevanceSettings());
+  return {
+    items: [...relevance.keptItems, ...validation.invalidItems].map(withValidation),
+    rejectedItems: relevance.rejectedItems,
+  };
 }
 
 function splitTitleFromStatement(statement: string) {

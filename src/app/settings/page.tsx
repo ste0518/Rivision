@@ -9,6 +9,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { PageHeader } from "@/components/page-header";
 import { getLlmExtractionPrompt, loadLlmPipelineSettings, saveLlmPipelineSettings } from "@/lib/extraction";
 import { defaultLlmPipelineSettings, type LlmPipelineSettings } from "@/lib/llm/provider";
+import { defaultRelevanceSettings, loadRelevanceSettings, saveRelevanceSettings, type RelevanceSettings } from "@/lib/relevance";
 import { exportRevisionItems, importRevisionItems } from "@/lib/storage";
 import { useStudyStore } from "@/hooks/use-study-store";
 
@@ -16,6 +17,7 @@ export default function SettingsPage() {
   const store = useStudyStore();
   const [json, setJson] = useState("");
   const [llm, setLlm] = useState<LlmPipelineSettings>(() => loadLlmPipelineSettings() ?? defaultLlmPipelineSettings);
+  const [relevance, setRelevance] = useState<RelevanceSettings>(() => loadRelevanceSettings() ?? defaultRelevanceSettings);
 
   return (
     <div>
@@ -51,6 +53,25 @@ export default function SettingsPage() {
             ) : null}
             <Button onClick={() => saveLlmPipelineSettings(llm)}>Save LLM settings</Button>
             <p className="text-xs text-slate-500">Only OpenAI modes require OPENAI_API_KEY. Local rules and manual JSON import work without paid API usage.</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Review filtering</CardTitle>
+            <CardDescription>Control how conservative extraction is about weak unknown cards.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <label className="flex items-center gap-2 text-sm font-medium">
+              <input
+                type="checkbox"
+                checked={relevance.showUnknownLowRelevanceInReview}
+                onChange={(event) => setRelevance((current) => ({ ...current, showUnknownLowRelevanceInReview: event.target.checked }))}
+              />
+              Show unknown low-relevance cards in review
+            </label>
+            <p className="text-xs text-slate-500">Default is off. Low-value unknown items are sent to Rejected / low relevance instead.</p>
+            <Button onClick={() => saveRelevanceSettings(relevance)}>Save review filtering</Button>
           </CardContent>
         </Card>
 

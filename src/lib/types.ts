@@ -15,6 +15,16 @@ export type RevisionItemType =
 export type RevisionImportance = "must_know" | "partial" | "not_required" | "unknown";
 export type ClassificationConfidence = "high" | "medium" | "low";
 export type ExtractionPipelineMode = "local_rules_only" | "manual_json_import" | "openai_api" | "cheap_scan_then_verify";
+export type StandaloneValue = "high" | "medium" | "low";
+export type RejectionCategory =
+  | "bibliography_or_reference"
+  | "ordinary_explanatory_text"
+  | "formula_not_standalone"
+  | "duplicate"
+  | "too_broad"
+  | "not_examinable"
+  | "low_value"
+  | "parse_noise";
 export type Importance = RevisionImportance;
 export type ReviewRating = "again" | "hard" | "good" | "easy";
 
@@ -121,6 +131,10 @@ export type RevisionItem = {
   questionPrompt: string;
   answer: string;
   answerLatex?: string;
+  standaloneValue?: StandaloneValue;
+  relevanceReason?: string;
+  deletedAt?: string;
+  isDeleted?: boolean;
   createdAt: string;
   updatedAt: string;
   warnings?: string[];
@@ -129,6 +143,14 @@ export type RevisionItem = {
   dueAt?: string;
   lastReviewedAt?: string;
 };
+
+export interface RejectedRevisionItem {
+  id: string;
+  originalItem: RevisionItem;
+  rejectionReason: string;
+  rejectionCategory: RejectionCategory;
+  confidence: ClassificationConfidence;
+}
 
 export type ReviewSession = { id: string; itemId: string; rating: ReviewRating; reviewedAt: string; };
 export type ExtractionVerificationReport = {

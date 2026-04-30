@@ -8,7 +8,19 @@ import { Textarea } from "@/components/ui/textarea";
 import { importances, revisionItemTypes, type RevisionItem } from "@/lib/types";
 import { createId } from "@/lib/utils";
 
-export function CardForm({ item, onSave, onCancel }: { item?: RevisionItem; onSave: (item: RevisionItem) => void; onCancel: () => void }) {
+export function CardForm({
+  item,
+  onSave,
+  onCancel,
+  onDelete,
+  onRestore,
+}: {
+  item?: RevisionItem;
+  onSave: (item: RevisionItem) => void;
+  onCancel: () => void;
+  onDelete?: () => void;
+  onRestore?: () => void;
+}) {
   const now = new Date().toISOString();
   const [draft, setDraft] = useState<RevisionItem>(item ?? { id: createId("card"), type: "definition", title: "", statement: "", sourceFile: "Manual entry", sourceLocation: "source unknown", tags: [], importance: "unknown", questionPrompt: "", answer: "", createdAt: now, updatedAt: now, reviewCount: 0 });
   const update = <K extends keyof RevisionItem>(key: K, value: RevisionItem[K]) => setDraft((current) => ({ ...current, [key]: value }));
@@ -25,6 +37,12 @@ export function CardForm({ item, onSave, onCancel }: { item?: RevisionItem; onSa
     <label className="space-y-1 text-sm font-medium">Answer LaTeX<Textarea value={draft.answerLatex ?? ""} onChange={(e) => update("answerLatex", e.target.value)} /></label>
     <label className="space-y-1 text-sm font-medium">Extraction warning<Input value={draft.extractionWarning ?? ""} onChange={(e) => update("extractionWarning", e.target.value)} /></label>
     <label className="space-y-1 text-sm font-medium">Guidance reason<Textarea value={draft.guidanceReason ?? ""} onChange={(e) => update("guidanceReason", e.target.value)} /></label>
-    <div className="flex justify-end gap-2"><Button type="button" variant="outline" onClick={onCancel}>Cancel</Button><Button type="submit">Save card</Button></div>
+    <div className="flex flex-wrap justify-between gap-2">
+      <div className="flex gap-2">
+        {onDelete ? <Button type="button" variant="destructive" onClick={onDelete}>Delete</Button> : null}
+        {onRestore ? <Button type="button" variant="outline" onClick={onRestore}>Restore</Button> : null}
+      </div>
+      <div className="flex gap-2"><Button type="button" variant="outline" onClick={onCancel}>Cancel</Button><Button type="submit">Save card</Button></div>
+    </div>
   </form>;
 }

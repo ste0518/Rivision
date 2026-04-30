@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { segmentRevisionCandidates } from "../src/lib/segmentation";
 import { extractRevisionItems } from "../src/lib/extraction";
+import { filterRevisionItemsByRelevance } from "../src/lib/relevance";
 import { convertCommonMathToLatex } from "../src/lib/revision-item-utils";
 import { validateAndRepairRevisionItems } from "../src/lib/validation";
 import type { ParsedDocument, RevisionItem } from "../src/lib/types";
@@ -90,6 +91,42 @@ async function run() {
   assert.equal(validation.validItems.length, 0);
   assert.equal(validation.invalidItems.length, 1);
   assert.match(validation.invalidItems[0].extractionWarning ?? "", /Over-merged/);
+
+  const now = new Date().toISOString();
+  const bibliographyItem: RevisionItem = {
+    id: "bib",
+    type: "theorem",
+    title: "Theorem. [GG] Gaetan and Guyon",
+    statement: "[GG] Gaetan, Carlo, and Guyon, Xavier. Theory of spatial statistics. Springer, 2010.",
+    sourceFile: "references.txt",
+    sourceLocation: "References",
+    tags: ["theorem"],
+    importance: "unknown",
+    questionPrompt: "State Theorem.",
+    answer: "[GG] Gaetan, Carlo, and Guyon, Xavier. Theory of spatial statistics. Springer, 2010.",
+    createdAt: now,
+    updatedAt: now,
+  };
+  const weakFormulaItem: RevisionItem = {
+    id: "weak-formula",
+    type: "formula",
+    title: "Formula",
+    statement: "F_{t1,...,tn}(x1,...,xn) = P(Xt1 <= x1, ..., Xtn <= xn)",
+    sourceFile: "regression.txt",
+    sourceLocation: "Theorem 2.2",
+    tags: ["formula"],
+    importance: "unknown",
+    questionPrompt: "Write down the formula.",
+    answer: "F_{t1,...,tn}(x1,...,xn) = P(Xt1 <= x1, ..., Xtn <= xn)",
+    createdAt: now,
+    updatedAt: now,
+  };
+  const relevance = filterRevisionItemsByRelevance([bibliographyItem, weakFormulaItem], []);
+  assert.equal(relevance.keptItems.length, 0);
+  assert.deepEqual(
+    relevance.rejectedItems.map((item) => item.rejectionCategory),
+    ["bibliography_or_reference", "formula_not_standalone"],
+  );
 
   console.log("Extraction regression passed.");
 }

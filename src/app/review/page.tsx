@@ -15,8 +15,9 @@ export default function ReviewPage() {
   const store = useStudyStore();
   const [revealed, setRevealed] = useState(false);
   const [proofVisible, setProofVisible] = useState(false);
+  const [deletedCardId, setDeletedCardId] = useState<string | null>(null);
   const dueCards = useMemo(
-    () => store.revisionItems.filter((item) => item.importance !== "not_required" && !needsRepair(item) && isDue(item)),
+    () => store.revisionItems.filter((item) => !item.isDeleted && item.importance !== "not_required" && !needsRepair(item) && isDue(item)),
     [store.revisionItems],
   );
   const card = dueCards[0];
@@ -26,10 +27,29 @@ export default function ReviewPage() {
     setRevealed(false);
     setProofVisible(false);
   }
+  function deleteCurrentCard() {
+    if (!card) return;
+    store.deleteRevisionItem(card.id);
+    setDeletedCardId(card.id);
+    setRevealed(false);
+    setProofVisible(false);
+  }
+  function undoDelete() {
+    if (!deletedCardId) return;
+    store.restoreRevisionItem(deletedCardId);
+    setDeletedCardId(null);
+  }
 
   return (
     <div>
       <PageHeader title="Flashcard revision" description="Answer from memory, reveal the extracted definition or theorem, then self-grade to schedule the next review." />
+      {deletedCardId ? (
+        <div className="fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-lg bg-slate-950 px-4 py-3 text-sm text-white shadow-lg">
+          <span>Card deleted</span>
+          <Button size="sm" variant="secondary" onClick={undoDelete}>Undo</Button>
+          <Button size="sm" variant="ghost" className="text-white hover:bg-slate-800" onClick={() => setDeletedCardId(null)}>Dismiss</Button>
+        </div>
+      ) : null}
       {!card ? (
         <Card>
           <CardContent className="pt-6">
@@ -80,6 +100,9 @@ export default function ReviewPage() {
                       {label}
                     </Button>
                   ))}
+                </div>
+                <div className="flex justify-end">
+                  <Button variant="outline" onClick={deleteCurrentCard}>Delete card</Button>
                 </div>
               </>
             )}

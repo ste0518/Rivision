@@ -1,7 +1,7 @@
-import type { GuidanceFile, RevisionItem, ReviewSession, StudyFile } from "@/lib/types";
+import type { GuidanceFile, RejectedRevisionItem, RevisionItem, ReviewSession, StudyFile } from "@/lib/types";
 
-export type StudyState = { notesFiles: StudyFile[]; guidanceFiles: GuidanceFile[]; revisionItems: RevisionItem[]; reviewSessions: ReviewSession[]; };
-export const emptyStudyState: StudyState = { notesFiles: [], guidanceFiles: [], revisionItems: [], reviewSessions: [] };
+export type StudyState = { notesFiles: StudyFile[]; guidanceFiles: GuidanceFile[]; revisionItems: RevisionItem[]; rejectedItems: RejectedRevisionItem[]; reviewSessions: ReviewSession[]; };
+export const emptyStudyState: StudyState = { notesFiles: [], guidanceFiles: [], revisionItems: [], rejectedItems: [], reviewSessions: [] };
 const storageKey = "rivision.studyState.v1";
 export function loadStudyState(): StudyState {
   if (typeof window === "undefined") return emptyStudyState;
