@@ -13,7 +13,8 @@ export function useStudyStore() {
 
   useEffect(() => {
     const timeout = window.setTimeout(() => {
-      setState(loadStudyState());
+      const loaded = loadStudyState();
+      setState({ ...loaded, revisionItems: loaded.revisionItems.map(withValidation) });
       setReady(true);
     }, 0);
 

@@ -9,6 +9,7 @@ import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { PageHeader } from "@/components/page-header";
+import { MathMarkdown } from "@/components/MathMarkdown";
 import { extractRevisionItems, generateManualExtractionPrompt, loadLlmPipelineSettings } from "@/lib/extraction";
 import { buildSegmentationDebug, segmentRevisionCandidates } from "@/lib/segmentation";
 import { validateRevisionItemsPayload, withValidation } from "@/lib/validation";
@@ -112,6 +113,10 @@ export default function ExtractPage() {
       id: createId("card"),
       type: candidate.type,
       title: candidate.title,
+      conceptName: candidate.title,
+      displayTitle: candidate.title,
+      cardFront: candidate.title,
+      taskPrompt: candidate.type === "definition" ? "Recall the exact definition." : "Recall the key statement.",
       statement: candidate.reason,
       sourceFile: sourceFile || "Uploaded notes",
       sourceLocation: candidate.sourceLocation,
@@ -294,7 +299,7 @@ export default function ExtractPage() {
                   <Button size="sm" variant="outline" onClick={() => store.restoreRejectedItem(rejected.id)}>Restore as card</Button>
                 </div>
                 <p className="mt-2 text-slate-700">{rejected.rejectionReason}</p>
-                <p className="mt-2 text-slate-500">{previewText(rejected.originalItem.statement)}</p>
+                <MathMarkdown content={previewText(rejected.originalItem.statementLatex || rejected.originalItem.statement)} className="mt-2 bg-transparent p-0 text-sm text-slate-500" />
               </div>
             ))}
           </CardContent>
@@ -321,7 +326,7 @@ export default function ExtractPage() {
                   <CardDescription>{item.type} · {item.section || "section unknown"} · {item.sourceLocation || "source unknown"}</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <p className="text-sm text-slate-600">{previewText(item.statement)}</p>
+                  <MathMarkdown content={previewText(item.statementLatex || item.statement)} className="bg-transparent p-0 text-sm text-slate-600" />
                   <p className="mt-2 text-xs text-slate-500">confidence: {item.classificationConfidence || "unknown"} · standalone {item.standaloneValue ?? "unknown"}</p>
                   {item.relevanceReason ? <p className="mt-2 text-xs text-slate-500">{item.relevanceReason}</p> : null}
                   {item.guidanceReason ? <p className="mt-2 text-xs text-slate-500">{item.guidanceReason}</p> : null}
@@ -405,7 +410,7 @@ function ExtractedCard({ item, onImportanceChange }: { item: RevisionItem; onImp
         <CardDescription>{item.type} · {item.sourceLocation || "source unknown"}</CardDescription>
       </CardHeader>
       <CardContent>
-        <p className="text-sm text-slate-600">{previewText(item.statement)}</p>
+        <MathMarkdown content={previewText(item.statementLatex || item.statement)} className="bg-transparent p-0 text-sm text-slate-600" />
         {item.extractionWarning ? <p className="mt-2 text-xs text-amber-700">{item.extractionWarning}</p> : null}
         <div className="mt-2">
           <Select value={item.importance} onChange={(event) => onImportanceChange(event.target.value as RevisionItem["importance"])}>

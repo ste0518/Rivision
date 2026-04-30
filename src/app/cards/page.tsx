@@ -136,8 +136,8 @@ export default function CardsPage() {
                   </TableCell>
                   <TableCell>
                     <div className="space-y-2">
-                      <div className="font-medium">{item.title}</div>
-                      <div className="text-xs text-slate-500">{item.type} · {item.tags.join(", ")} · standalone {item.standaloneValue ?? "unknown"}</div>
+                      <MathMarkdown content={item.cardFront} className="bg-transparent p-0 font-medium text-slate-950" />
+                      <div className="text-xs text-slate-500">{item.displayTitle || item.title} · {item.type} · {item.tags.join(", ")} · standalone {item.standaloneValue ?? "unknown"}</div>
                       <MathMarkdown content={item.statementLatex || item.statement} className="bg-transparent p-0 text-sm text-slate-600" />
                     </div>
                   </TableCell>
@@ -173,7 +173,7 @@ export default function CardsPage() {
               <label className="flex items-center gap-3">
                 <input type="checkbox" checked={selectedDeletedIds.includes(item.id)} onChange={(event) => toggleSelection(item.id, event.target.checked, setSelectedDeletedIds)} />
                 <span>
-                  <span className="font-medium">{item.title}</span>
+                  <span className="font-medium">{item.cardFront}</span>
                   <span className="block text-xs text-slate-500">{item.deletedAt ? `Deleted ${new Date(item.deletedAt).toLocaleString()}` : "Deleted"}</span>
                 </span>
               </label>
@@ -188,9 +188,10 @@ export default function CardsPage() {
 
       {editing ? (
         <Card className="mt-6">
-          <CardHeader><CardTitle>{editing.title}</CardTitle></CardHeader>
+          <CardHeader><CardTitle>{editing.displayTitle || editing.title}</CardTitle></CardHeader>
           <CardContent className="space-y-3">
-            <MathMarkdown content={editing.questionPrompt} />
+            <MathMarkdown content={editing.cardFront} />
+            {editing.taskPrompt ? <MathMarkdown content={editing.taskPrompt} className="bg-transparent p-0 text-sm text-slate-500" /> : null}
             <MathMarkdown content={editing.statementLatex || editing.statement} />
             {editing.answer ? <MathMarkdown content={editing.answerLatex || editing.answer} /> : null}
             {editing.proof ? <MathMarkdown content={editing.proofLatex || editing.proof} /> : null}

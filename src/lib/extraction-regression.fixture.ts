@@ -6,11 +6,12 @@ export const definitionBoundaryRegressionFixture = {
     definition: {
       type: "definition",
       title: "Definition 2.1. Random field",
+      cardFront: "Random field",
       statement:
         "A random field is a family X=(X_t)_{t in T} of random variables X_t that are defined on the same probability space and indexed by t in a subset T of R^d.",
       excludedText: "Remark. A random field is therefore a generalisation",
       questionPrompt: "State Definition 2.1: random field.",
-      statementLatexIncludes: ["\\(X=(X_t)_{t\\in T}\\)", "\\(\\mathbb{R}^d\\)"],
+      statementLatexIncludes: ["\\(X=(X_t)_{t\\in T}\\)", "\\(T\\subset\\mathbb{R}^d\\)"],
     },
   },
 };

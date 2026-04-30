@@ -1,6 +1,6 @@
 import { createId } from "@/lib/utils";
 import { inferTopic, splitShortLeadingTitle, stripLeadingLabel } from "@/lib/segmentation";
-import type { RevisionItem, RevisionItemType } from "@/lib/types";
+import type { RevisionCandidate, RevisionItem, RevisionItemType } from "@/lib/types";
 
 const labelledItemRegex = /\b(Definition|Theorem|Lemma|Proposition|Corollary|Proof|Remark|Example|Assumption|Property|Algorithm|Formula)\s*(?:[A-Za-z]?\d+(?:\.\d+)*)?\b/g;
 const proofMarkerRegex = /\bProof(?:\s+of\s+(?:Theorem|Lemma|Proposition|Corollary)\s*[A-Za-z]?\d*(?:\.\d+)*)?\s*[:.]/i;
@@ -9,24 +9,34 @@ export function normaliseRevisionItem(item: RevisionItem): RevisionItem {
   const now = new Date().toISOString();
   const originalRawText = item.originalRawText ?? item.statement;
   const correctedType = typeFromLabel(item.title) ?? typeFromLabel(item.originalRawText ?? "") ?? typeFromLabel(item.statement) ?? item.type;
-  const split = splitProofFromStatement(item.statement);
+  const repairedStatement = repairSuspiciousStatementFromRaw(correctedType, item.statement, originalRawText);
+  const split = splitProofFromStatement(repairedStatement);
   const statementParts = splitShortLeadingTitle(split.statement);
   const statement = clean(statementParts.statement);
-  const proof = clean(item.proof ?? split.proof ?? "");
+  const proof = cleanPlainText(item.proof ?? split.proof ?? "");
   const theoremNumber = item.theoremNumber ?? extractNumber(item.title) ?? extractNumber(item.originalRawText ?? "") ?? extractNumber(item.sourceLocation ?? "");
-  const title = normaliseTitle({ ...item, type: correctedType, theoremNumber, statement, titleTopic: statementParts.title });
+  const extractedConceptName = extractConceptName(undefined, { ...item, type: correctedType, theoremNumber, statement, titleTopic: statementParts.title });
+  const conceptName = (isUsableConceptName(item.conceptName) ? item.conceptName : extractedConceptName) || correctedType;
+  const displayTitle = buildDisplayTitle(correctedType, theoremNumber, conceptName, item.displayTitle ?? item.title);
+  const cardFront = buildCardFront({ ...item, type: correctedType, theoremNumber, conceptName, displayTitle });
+  const taskPrompt = item.taskPrompt ?? buildTaskPrompt(correctedType, Boolean(item.proofRequired));
+  const title = normaliseTitle({ ...item, type: correctedType, theoremNumber, statement, titleTopic: statementParts.title, conceptName, displayTitle });
   const extractionWarning = item.extractionWarning ?? buildExtractionWarning({ ...item, type: correctedType, title, statement, proof });
   const proofRequired = theoremLike(correctedType) ? item.proofRequired : undefined;
   const answer = cleanAnswer(correctedType, statement, item.answer);
-  const statementLatex = item.statementLatex ?? convertCommonMathToLatex(statement);
-  const proofLatex = proof ? item.proofLatex ?? convertCommonMathToLatex(proof) : undefined;
-  const answerLatex = item.answerLatex ?? convertCommonMathToLatex(answer);
+  const statementLatex = repairMathTextToLatex(item.statementLatex || statement);
+  const proofLatex = proof ? repairMathTextToLatex(item.proofLatex || proof) : undefined;
+  const answerLatex = repairMathTextToLatex(item.answerLatex || answer);
 
   return {
     ...item,
     id: item.id || createId("card"),
     type: correctedType,
     title,
+    conceptName,
+    displayTitle,
+    cardFront,
+    taskPrompt,
     statement,
     statementLatex,
     originalRawText,
@@ -80,24 +90,97 @@ export function buildQuestionPrompt(item: Pick<RevisionItem, "type" | "title" | 
 }
 
 export function convertCommonMathToLatex(value: string) {
-  let text = value;
+  return repairMathTextToLatex(value);
+}
+
+export function repairMathTextToLatex(value: string) {
+  let text = cleanPlainText(value);
+
+  text = text
+    .replace(/\bnormal\s+distribution\b/gi, "normal distribution")
+    .replace(/\bprobability\s+density\b/gi, "probability density")
+    .replace(/\bGaus\s*sian\b/gi, "Gaussian");
 
   text = replaceOutsideInlineMath(
     text,
-    /\bX\s*=\s*\(\s*X\s*_?\s*t\s*\)\s*(?:_\{\s*t\s*(?:in|∈)\s*T\s*\}|\s*t\s*∈\s*T)/gi,
+    /\bA random vector\s+(?:X\s*=\s*)?\(\s*X_?1\s*,\s*(?:\.\s*){2,}\s*,?\s*X_?n\s*\)\s*['’]/gi,
+    () => "A random vector \\(X=(X_1,\\ldots,X_n)'\\)",
+    false,
+  );
+
+  text = replaceOutsideInlineMath(
+    text,
+    /\bm\s*=\s*\(\s*E\s*X_?1\s*,\s*(?:\.\s*){2,}\s*,?\s*E\s*X_?n\s*\)\s*['’]?\s+in\s+R\s*\^?\s*n\b/gi,
+    () => "\\(m=(\\mathbb{E}X_1,\\ldots,\\mathbb{E}X_n)'\\in\\mathbb{R}^n\\)",
+    false,
+  );
+
+  text = replaceOutsideInlineMath(
+    text,
+    /\b(?:Sigma|Σ)\s*[’']\s*n\s*(?:Sigma|Σ)\s+with entries\s+(?:Sigma|Σ)_?\s*ij\s*=\s*Cov\s*\(\s*X_?i\s*,\s*X_?j\s*\)/gi,
+    () => "\\(\\Sigma\\in\\mathbb{R}^{n\\times n}\\) with entries \\(\\Sigma_{ij}=\\operatorname{Cov}(X_i,X_j)\\)",
+    false,
+  );
+
+  text = replaceOutsideInlineMath(text, /\bn\s*x\s*n\b/gi, () => "n\\times n");
+  text = replaceOutsideInlineMath(text, /\bSigma_?\s*ij\s*=\s*Cov\s*\(\s*X_?i\s*,\s*X_?j\s*\)/gi, () => "\\Sigma_{ij}=\\operatorname{Cov}(X_i,X_j)");
+  text = replaceOutsideInlineMath(text, /\bΣ_?\s*ij\s*=\s*Cov\s*\(\s*Xi\s*,\s*Xj\s*\)/g, () => "\\Sigma_{ij}=\\operatorname{Cov}(X_i,X_j)");
+  text = replaceOutsideInlineMath(text, /\bSigma\b/g, () => "\\Sigma");
+  text = replaceOutsideInlineMath(text, /\bΣ\b/g, () => "\\Sigma");
+  text = replaceOutsideInlineMath(text, /\bCov\b/g, () => "\\operatorname{Cov}");
+
+  text = replaceOutsideInlineMath(
+    text,
+    /\ba\s*['’]\s*X\s*=\s*sum_?i\s*=\s*1\s*\^?\s*n\s*a_?i\s*X_?i\b/gi,
+    () => "\\(a'X=\\sum_{i=1}^n a_iX_i\\)",
+    false,
+  );
+  text = replaceOutsideInlineMath(
+    text,
+    /\ba\s+X\s*=\s*i\s*=\s*1\s*a\s*\.?\s*i\s*X\s*\.?\s*i\b/gi,
+    () => "\\(a'X=\\sum_{i=1}^n a_iX_i\\)",
+    false,
+  );
+  text = replaceOutsideInlineMath(text, /\ba\s+in\s+R\s*\^?\s*n\b/gi, () => "\\(a\\in\\mathbb{R}^n\\)", false);
+
+  text = replaceOutsideInlineMath(
+    text,
+    /\bX\s*=\s*\(\s*X\s*_?\s*t\s*\)\s*(?:_\{\s*t\s*(?:in|∈|\\in)\s*T\s*\}|\s*t\s*(?:in|∈)\s*T)/gi,
     () => "\\(X=(X_t)_{t\\in T}\\)",
     false,
   );
+  text = replaceOutsideInlineMath(
+    text,
+    /\bindexed by t in a subset T of R\s*\^?\s*d\b/gi,
+    () => "indexed by \\(t\\) in a subset \\(T\\subset\\mathbb{R}^d\\)",
+    false,
+  );
+  text = replaceOutsideInlineMath(
+    text,
+    /\bsubset T of R\s*\^?\s*d\b/gi,
+    () => "subset \\(T\\subset\\mathbb{R}^d\\)",
+    false,
+  );
+  text = replaceOutsideInlineMath(
+    text,
+    /\bX_?1\s*,\s*(?:\.\s*){2,}\s*,?\s*X_?n\b/gi,
+    () => "\\(X_1,\\ldots,X_n\\)",
+    false,
+  );
   text = replaceOutsideInlineMath(text, /\bX_t\b/g, () => "\\(X_t\\)", false);
+  text = replaceOutsideInlineMath(text, /\bX\s+t\b/g, () => "\\(X_t\\)", false);
+  text = replaceOutsideInlineMath(text, /\bX\s+i\b/g, () => "\\(X_i\\)", false);
+  text = replaceOutsideInlineMath(text, /\bX\s+j\b/g, () => "\\(X_j\\)", false);
+  text = replaceOutsideInlineMath(text, /\bXi\b/g, () => "\\(X_i\\)", false);
+  text = replaceOutsideInlineMath(text, /\bXj\b/g, () => "\\(X_j\\)", false);
   text = replaceOutsideInlineMath(text, /\bt\s+in\s+T\b/g, () => "\\(t\\in T\\)", false);
   text = replaceOutsideInlineMath(text, /\bt\s*∈\s*T\b/g, () => "\\(t\\in T\\)", false);
   text = replaceOutsideInlineMath(text, /\bR\^([A-Za-z0-9]+)\b/g, (_match, power) => `\\mathbb{R}^${power}`);
   text = replaceOutsideInlineMath(text, /\bR\s+d\b/g, () => "\\mathbb{R}^d");
+  text = replaceOutsideInlineMath(text, /\bR\s+n\b/g, () => "\\mathbb{R}^n");
   text = replaceOutsideInlineMath(text, /\bsigma\^2\b/gi, () => "\\sigma^2");
   text = replaceOutsideInlineMath(text, /\bsigma\b/gi, () => "\\sigma");
   text = replaceOutsideInlineMath(text, /\bmu\b/gi, () => "\\mu");
-  text = replaceOutsideInlineMath(text, /\bSigma\b/g, () => "\\Sigma");
-  text = replaceOutsideInlineMath(text, /\bCov\b/g, () => "\\operatorname{Cov}");
   text = replaceOutsideInlineMath(text, /\bgamma\b/gi, () => "\\gamma");
 
   return text;
@@ -114,16 +197,16 @@ export const toLatexText = convertCommonMathToLatex;
 function replaceOutsideInlineMath(
   source: string,
   regex: RegExp,
-  replacement: (match: string, firstGroup: string) => string,
+  replacement: (match: string, ...captures: string[]) => string,
   wrap = true,
 ) {
   return source.replace(regex, (...args: unknown[]) => {
     const match = String(args[0]);
-    const firstGroup = typeof args[1] === "string" ? args[1] : "";
+    const captures = args.slice(1, -2).map((capture) => String(capture));
     const offset = Number(args[args.length - 2]);
     const fullSource = String(args[args.length - 1]);
     if (isInsideInlineMath(fullSource, offset)) return match;
-    const latex = replacement(match, firstGroup);
+    const latex = replacement(match, ...captures);
     return wrap ? `\\(${latex}\\)` : latex;
   });
 }
@@ -160,8 +243,86 @@ export function theoremLike(type: RevisionItemType) {
   return ["theorem", "lemma", "proposition", "corollary"].includes(type);
 }
 
+type ConceptItem = Pick<RevisionItem, "type" | "title" | "statement"> & {
+  theoremNumber?: string;
+  conceptName?: string;
+  displayTitle?: string;
+  titleTopic?: string;
+  proofRequired?: boolean;
+};
+
+export function extractConceptName(candidate: RevisionCandidate | undefined, item: ConceptItem) {
+  const type = candidate?.label ? candidate.label.toLowerCase() : item.type;
+  const number = candidate?.number ?? item.theoremNumber ?? extractNumber(item.title);
+  const statement = cleanPlainText(item.statement);
+  const explicitTitle = item.titleTopic ?? cleanLabelFromTitle(item.title);
+  const explicitTitleConcept = normaliseConceptPhrase(explicitTitle);
+
+  if (type === "definition") {
+    const stationarity = statement.match(/^(?:A|An|The)\s+[^.!?]{1,80}?\s+is\s+(weakly|strictly|intrinsically|second-order)\s+stationary\s+if\b/i);
+    if (stationarity) return capitaliseConcept(`${stationarity[1].replace(/ly$/i, "")} stationarity`);
+
+    const articleMatch = statement.match(/^(?:A|An|The)\s+([A-Za-z][A-Za-z\s-]{1,60}?)(?:\s*\([^)]{0,120}\)\s*['’]?)?\s+(?:is|are|has|means|denotes|consists|refers)\b/i);
+    if (articleMatch) return capitaliseConcept(normaliseConceptPhrase(articleMatch[1]) || explicitTitleConcept || "Definition");
+
+    const processMatch = statement.match(/^(?:A|An|The)\s+process\s+is\s+([A-Za-z\s-]{2,60}?)\s+if\b/i);
+    if (processMatch) return capitaliseConcept(normaliseConceptPhrase(processMatch[1]) || explicitTitleConcept || "Process");
+
+    const sayMatch = statement.match(/\bWe say that\b[^.!?]{0,120}?\bis\s+(.+?)(?:\s+if\b|[.;,:]|$)/i);
+    if (sayMatch) return capitaliseConcept(normaliseConceptPhrase(sayMatch[1]) || explicitTitleConcept || "Definition");
+
+    const calledMatch = statement.match(/\bis called\s+(.+?)(?:\s+if\b|[.;,:]|$)/i);
+    if (calledMatch) return capitaliseConcept(normaliseConceptPhrase(calledMatch[1]) || explicitTitleConcept || "Definition");
+
+    return capitaliseConcept(explicitTitleConcept || inferTopic("definition", statement) || "Definition");
+  }
+
+  if (theoremLike(item.type)) {
+    if (explicitTitleConcept && !/^(theorem|lemma|proposition|corollary)(\s+\d|\b)/i.test(explicitTitleConcept)) {
+      return capitaliseConcept(explicitTitleConcept);
+    }
+    return `${capitalise(item.type)}${number ? ` ${number}` : ""}`.trim();
+  }
+
+  if (item.type === "formula") {
+    const formulaTitle = explicitTitleConcept && explicitTitleConcept.toLowerCase() !== "formula" ? explicitTitleConcept : undefined;
+    const namedFormula = statement.match(/\b(?:formula|equation)\s+for\s+([^.:;,]+)/i)?.[1] ??
+      statement.match(/\b(?:The\s+)?(semivariogram|covariance function|BLUP|kriging predictor)\b/i)?.[1];
+    return capitaliseConcept(normaliseConceptPhrase(formulaTitle || namedFormula || "Formula"));
+  }
+
+  if (item.type === "proof") {
+    return number ? `Proof of Theorem ${number}` : capitaliseConcept(explicitTitleConcept || "Proof");
+  }
+
+  return capitaliseConcept(explicitTitleConcept || inferTopic(item.type, statement) || cleanTitle(item.title) || capitalise(item.type));
+}
+
+function buildDisplayTitle(type: RevisionItemType, number: string | undefined, conceptName: string, fallbackTitle: string) {
+  const label = `${capitalise(type)}${number ? ` ${number}` : ""}`;
+  if (type === "definition" && conceptName && conceptName.toLowerCase() !== "definition") return `${label}. ${conceptName}`;
+  if (type === "formula" && conceptName && conceptName.toLowerCase() !== "formula") return `${label}. ${conceptName}`;
+  if (theoremLike(type) || type === "proof") return label.trim() || fallbackTitle;
+  if (conceptName) return number ? `${label}. ${conceptName}` : conceptName;
+  return fallbackTitle || label;
+}
+
+function buildCardFront(item: ConceptItem) {
+  if (item.type === "proof") return item.theoremNumber ? `Proof of Theorem ${item.theoremNumber}` : item.conceptName || item.displayTitle || item.title;
+  return item.conceptName || item.displayTitle || item.title;
+}
+
+function buildTaskPrompt(type: RevisionItemType, proofRequired: boolean) {
+  if (type === "definition") return "Recall the exact definition.";
+  if (type === "formula") return "Write down the formula and explain each term.";
+  if (type === "proof" || proofRequired) return "Reproduce the proof.";
+  if (theoremLike(type)) return "State the theorem and its conditions.";
+  return "Recall the key statement.";
+}
+
 function normaliseTitle(item: RevisionItem & { titleTopic?: string }) {
   const number = item.theoremNumber ?? extractNumber(item.title);
+  if (item.displayTitle) return item.displayTitle;
   const topic = item.titleTopic ?? topicFromItem(item);
   const prefix = `${capitalise(item.type)}${number ? ` ${number}` : ""}`;
 
@@ -219,8 +380,76 @@ function cleanTitle(title: string) {
     .toLowerCase();
 }
 
+function cleanLabelFromTitle(title: string) {
+  return title
+    .replace(/^(Definition|Theorem|Lemma|Proposition|Corollary|Formula|Remark|Example|Proof|Assumption|Property)\s*[A-Za-z]?\d*(?:\.\d+)*[.:]?\s*/i, "")
+    .replace(/[.:]\s*$/, "")
+    .trim();
+}
+
 function clean(value = "") {
-  return stripLeadingLabel(value).replace(/\s+/g, " ").trim();
+  return stripLeadingLabel(cleanPlainText(value)).replace(/\s+/g, " ").trim();
+}
+
+function cleanPlainText(value = "") {
+  return value
+    .replace(/\r\n/g, "\n")
+    .replace(/[“”]/g, "\"")
+    .replace(/[‘’]/g, "'")
+    .replace(/\b([A-Za-z]{2,})-\s*(?:'\s*n\s*)?([a-z]{2,})\b/g, (_match, left: string, right: string) => `${left}${right}`)
+    .replace(/\s+([,.;:!?])/g, "$1")
+    .replace(/([([{])\s+/g, "$1")
+    .replace(/\s+([)\]}])/g, "$1")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function repairSuspiciousStatementFromRaw(type: RevisionItemType, statement: string, originalRawText: string) {
+  const cleaned = cleanPlainText(statement);
+  if (type !== "definition" || !isSuspiciousStatementStart(cleaned)) return cleaned;
+  const rawStatement = clean(stripLeadingLabel(originalRawText));
+  if (rawStatement && !isSuspiciousStatementStart(rawStatement) && rawStatement.length > cleaned.length) return rawStatement;
+  return cleaned;
+}
+
+function isSuspiciousStatementStart(statement: string) {
+  return /^(?:[,.;:)]|\]|\.\.\.|…|Xn\)|X_n\)|,\s*Xn\)|,\s*X_n\))/i.test(statement.trim());
+}
+
+function normaliseConceptPhrase(value = "") {
+  const withoutMath = value
+    .replace(/\\\([\s\S]*?\\\)/g, " ")
+    .replace(/\([^)]*\)/g, " ")
+    .replace(/\[[^\]]*\]/g, " ")
+    .replace(/\b(?:a|an|the)\b\s*/i, "")
+    .replace(/\b(?:is|are|has|if|then|where|with|such that)\b[\s\S]*$/i, "")
+    .replace(/[^A-Za-z0-9\s-]/g, " ")
+    .replace(/\s+/g, " ")
+    .trim();
+  const words = withoutMath.split(" ").filter((word) => word.length > 0).slice(0, 6);
+  return words.join(" ");
+}
+
+function capitaliseConcept(value: string) {
+  const cleaned = normaliseConceptPhrase(value);
+  if (!cleaned) return "";
+  return cleaned
+    .split(/\s+/)
+    .map((word, index) => {
+      if (/^[A-Z0-9]{2,}$/.test(word)) return word;
+      const lower = word.toLowerCase();
+      return index === 0 ? lower.charAt(0).toUpperCase() + lower.slice(1) : lower;
+    })
+    .join(" ");
+}
+
+function isUsableConceptName(value: string | undefined) {
+  if (!value) return false;
+  const trimmed = value.trim();
+  if (trimmed.length > 80 || trimmed.split(/\s+/).length > 8) return false;
+  if (/^(state|prove|explain|write down)\b/i.test(trimmed)) return false;
+  if (/[,;:]|\\\(|\)|\.\.\.|…/.test(trimmed)) return false;
+  return true;
 }
 
 function capitalise(value: string) {

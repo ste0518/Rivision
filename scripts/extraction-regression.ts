@@ -41,7 +41,7 @@ const definitionStatement =
 const latex = convertCommonMathToLatex(definitionStatement);
 
 assert.match(latex, /\\\(X=\(X_t\)_\{t\\in T\}\\\)/);
-assert.match(latex, /\\\(\\mathbb\{R\}\^d\\\)/);
+assert.match(latex, /\\\(T\\subset\\mathbb\{R\}\^d\\\)/);
 
 run().catch((error: unknown) => {
   console.error(error);
@@ -64,7 +64,8 @@ async function run() {
   assert.doesNotMatch(definition.statement, /\bTheorem\b/);
   assert.doesNotMatch(definition.statement, /\bProof\b/);
   assert.match(definition.statementLatex ?? "", /\\\(X=\(X_t\)_\{t\\in T\}\\\)/);
-  assert.match(definition.statementLatex ?? "", /\\\(\\mathbb\{R\}\^d\\\)/);
+  assert.match(definition.statementLatex ?? "", /\\\(T\\subset\\mathbb\{R\}\^d\\\)/);
+  assert.equal(definition.cardFront, "Random field");
   assert.equal(definition.questionPrompt, "State Definition 2.1: random field.");
 
   const theorem = extraction.items.find((item) => item.type === "theorem" && item.theoremNumber === "2.2");
@@ -73,10 +74,36 @@ async function run() {
   assert.equal(theorem.proof, "This comes immediately from the Kolmogorov extension theorem.");
   assert.doesNotMatch(theorem.statement, /\bProof\b/);
 
+  const vectorInput =
+    "Definition 2.3. [VL] A random vector (X1,...,Xn)' has a multivariate normal distribution with mean vector m=(EX1,...,EXn)' in R^n, and n x n covariance matrix Sigma with entries Sigma_ij=Cov(Xi,Xj), if any linear combination a'X=sum_i=1^n aiXi, a in R^n, is normally distributed.";
+  const vectorExtraction = await extractRevisionItems({
+    notesDocuments: [{
+      sourceFile: "vector.txt",
+      fileType: "txt",
+      fullText: vectorInput,
+      diagnostics: { success: true, charCount: vectorInput.length, warnings: [], errors: [], extractionQuality: "high" },
+    }],
+    guidanceDocuments: [],
+    sourceFile: "vector.txt",
+  });
+  const vectorDefinition = vectorExtraction.items.find((item) => item.theoremNumber === "2.3");
+  assert.ok(vectorDefinition, "Definition 2.3 item should be extracted.");
+  assert.equal(vectorDefinition.cardFront, "Random vector");
+  assert.equal(vectorDefinition.displayTitle, "Definition 2.3. Random vector");
+  assert.match(vectorDefinition.statement, /^A random vector/);
+  assert.doesNotMatch(vectorDefinition.statement, /^(\.\.\.|[,.)\]]|Xn\))/);
+  assert.match(vectorDefinition.statementLatex ?? "", /\\\(X=\(X_1,\\ldots,X_n\)'\\\)/);
+  assert.match(vectorDefinition.statementLatex ?? "", /\\\(\\Sigma_\{ij\}=\\operatorname\{Cov\}\(X_i,X_j\)\\\)/);
+  assert.match(vectorDefinition.statementLatex ?? "", /\\\(a'X=\\sum_\{i=1\}\^n a_iX_i\\\)/);
+
   const invalidMergedDefinition: RevisionItem = {
     id: "bad-definition",
     type: "definition",
     title: "Definition 2.1. Random field",
+    conceptName: "Random field",
+    displayTitle: "Definition 2.1. Random field",
+    cardFront: "Random field",
+    taskPrompt: "Recall the exact definition.",
     statement: "A random field is defined here. Remark. This is surrounding text. Theorem 2.2. More surrounding text.",
     sourceFile: "regression.txt",
     sourceLocation: "Definition 2.1",
@@ -97,6 +124,10 @@ async function run() {
     id: "bib",
     type: "theorem",
     title: "Theorem. [GG] Gaetan and Guyon",
+    conceptName: "Theorem",
+    displayTitle: "Theorem",
+    cardFront: "Theorem",
+    taskPrompt: "State the theorem and its conditions.",
     statement: "[GG] Gaetan, Carlo, and Guyon, Xavier. Theory of spatial statistics. Springer, 2010.",
     sourceFile: "references.txt",
     sourceLocation: "References",
@@ -111,6 +142,10 @@ async function run() {
     id: "weak-formula",
     type: "formula",
     title: "Formula",
+    conceptName: "Formula",
+    displayTitle: "Formula",
+    cardFront: "Formula",
+    taskPrompt: "Write down the formula and explain each term.",
     statement: "F_{t1,...,tn}(x1,...,xn) = P(Xt1 <= x1, ..., Xtn <= xn)",
     sourceFile: "regression.txt",
     sourceLocation: "Theorem 2.2",

@@ -61,12 +61,14 @@ export default function ReviewPage() {
         <Card className="mx-auto max-w-3xl">
           <CardHeader>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant={card.importance}>{card.importance}</Badge>
+              <Badge variant="outline">{displayLabel(card)}</Badge>
               <Badge variant="outline">{card.type}</Badge>
+              <Badge variant={card.importance}>{card.importance}</Badge>
               {card.extractionWarning || card.warnings?.length ? <Badge variant="unknown">check extraction</Badge> : null}
             </div>
-            <div className="pt-3 text-xl font-semibold leading-none tracking-tight">
-              <MathText className="bg-transparent p-0 text-base text-slate-950">{card.questionPrompt}</MathText>
+            <div className="pt-3">
+              <MathText className="bg-transparent p-0 text-3xl font-semibold leading-tight tracking-tight text-slate-950">{card.cardFront}</MathText>
+              {card.taskPrompt ? <MathText className="mt-2 bg-transparent p-0 text-sm text-slate-500">{card.taskPrompt}</MathText> : null}
             </div>
             <CardDescription>{dueCards.length} due card(s) · reviewed {card.reviewCount ?? 0} time(s)</CardDescription>
           </CardHeader>
@@ -125,4 +127,9 @@ function needsRepair(item: { extractionWarning?: string; warnings?: string[] }) 
         warning.includes("multiple major label"),
       ),
   );
+}
+
+function displayLabel(card: { type: string; theoremNumber?: string; sourceLocation?: string; displayTitle?: string }) {
+  if (card.theoremNumber) return `${card.type.charAt(0).toUpperCase()}${card.type.slice(1)} ${card.theoremNumber}`;
+  return card.sourceLocation || card.displayTitle || "source unknown";
 }

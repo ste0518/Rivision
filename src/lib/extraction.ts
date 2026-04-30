@@ -1,7 +1,7 @@
 import { createMockRevisionItems } from "@/lib/mock-data";
 import { defaultLlmPipelineSettings, type LlmPipelineSettings } from "@/lib/llm/provider";
 import { attachProofsToPreviousTheorem, segmentRevisionCandidates, stripLeadingLabel } from "@/lib/segmentation";
-import { buildQuestionPrompt, convertCommonMathToLatex, extractNumber, splitProofFromStatement, theoremLike } from "@/lib/revision-item-utils";
+import { buildQuestionPrompt, convertCommonMathToLatex, extractConceptName, extractNumber, splitProofFromStatement, theoremLike } from "@/lib/revision-item-utils";
 import { filterRevisionItemsByRelevance, loadRelevanceSettings } from "@/lib/relevance";
 import type { ExtractionPipelineMode, ExtractionVerificationReport, ParsedDocument, RejectedRevisionItem, RevisionItem, RevisionItemType } from "@/lib/types";
 import { createId } from "@/lib/utils";
@@ -89,6 +89,10 @@ Return STRICT JSON ONLY as an array of RevisionItem objects matching this schema
 - id: string
 - type: "definition" | "theorem" | "lemma" | "proposition" | "corollary" | "formula" | "proof" | "algorithm" | "example" | "remark" | "other"
 - title: string
+- conceptName?: string
+- displayTitle?: string
+- cardFront: string
+- taskPrompt?: string
 - statement: string
 - statementLatex?: string
 - originalRawText?: string
@@ -128,6 +132,13 @@ Extraction requirements:
 10) If unsure or text is incomplete, keep the item but set importance = "unknown" and add uncertaintyNote.
 11) Generate clean exam-style prompts from title/type/number/topic only, never from long extracted text.
 12) Output valid JSON only; no markdown fence, no commentary.
+
+Flashcard front fields:
+- conceptName?: short clean concept name, e.g. "Random field", "Random vector", "Weak stationarity", "Semivariogram"
+- displayTitle?: full labelled title, e.g. "Definition 2.3. Random vector"
+- cardFront: main flashcard front text, usually just conceptName, never "State Definition..."
+- taskPrompt?: small helper instruction, e.g. "Recall the exact definition."
+- questionPrompt remains only for compatibility.
 
 Source file: ${input.sourceFile}
 
@@ -202,9 +213,18 @@ function deterministicExtract(
     proof = proof ? clean(proof) : undefined;
     if (!statement || statement.length < 15) continue;
 
-    const title = candidate.title ?? titleFromLabel(candidate.type, candidate.number, titleSplit.title, statement);
+    const theoremNumber = candidate.number ?? extractNumber(candidate.title ?? "");
+    const conceptName = extractConceptName(candidate, {
+      type: candidate.type,
+      title: candidate.title ?? "",
+      theoremNumber,
+      statement,
+      titleTopic: titleSplit.title,
+    });
+    const title = titleFromLabel(candidate.type, theoremNumber, titleSplit.title ?? conceptName, statement);
+    const displayTitle = title;
+    const cardFront = conceptName || title;
     const { importance, reason } = classifyImportance(candidate.type, title, statement, guidanceText);
-    const theoremNumber = candidate.number ?? extractNumber(title);
     const uncertaintyNote = statement.length < 40 ? "Statement may be incomplete after text parsing." : undefined;
     const proofRequired = theoremLike(candidate.type) ? classifyProofRequired(guidanceText, title, statement) : undefined;
     const answer = buildAnswer(candidate.type, statement);
@@ -213,6 +233,10 @@ function deterministicExtract(
       id: createId("card"),
       type: candidate.type,
       title,
+      conceptName,
+      displayTitle,
+      cardFront,
+      taskPrompt: defaultTaskPrompt(candidate.type, proofRequired),
       statement,
       statementLatex: convertCommonMathToLatex(statement),
       originalRawText: candidate.rawText,
@@ -257,8 +281,10 @@ function splitTitleFromStatement(statement: string) {
   const firstSentence = statement.match(/^([^.!?]{2,80})[.!?]\s+([\s\S]+)$/);
   if (!firstSentence) return { title: undefined, statement };
   const title = firstSentence[1].trim();
-  const looksLikeStatement = /\b(is|are|if|then|defined|called|given|equals|denotes|consists)\b/i.test(title);
-  if (title.split(/\s+/).length <= 8 && !looksLikeStatement) {
+  const looksLikeStatement = /\b(is|are|has|if|then|defined|called|given|equals|denotes|consists)\b/i.test(title);
+  const looksLikeBrokenMath = /[,(]$|[,()]|(?:^|\s)[A-Z][a-z]?\d\b|(?:^|\s)X_?\d\b/.test(title);
+  const startsLikeStatement = /^(?:A|An|The|Let|Suppose|Assume)\b/i.test(title);
+  if (title.split(/\s+/).length <= 8 && !looksLikeStatement && !looksLikeBrokenMath && !startsLikeStatement) {
     return { title, statement: firstSentence[2].trim() };
   }
   return { title: undefined, statement };
@@ -283,6 +309,14 @@ function titleFromLabel(type: RevisionItemType, number: string | undefined, expl
   if (number) return `${capitalise(type)} ${number}`;
   const firstWords = statement.split(" ").slice(0, 6).join(" ");
   return `${capitalise(type)}: ${firstWords}${statement.split(" ").length > 6 ? "..." : ""}`;
+}
+
+function defaultTaskPrompt(type: RevisionItemType, proofRequired: boolean | undefined) {
+  if (type === "definition") return "Recall the exact definition.";
+  if (type === "formula") return "Write down the formula and explain each term.";
+  if (type === "proof" || proofRequired) return "Reproduce the proof.";
+  if (theoremLike(type)) return "State the theorem and its conditions.";
+  return "Recall the key statement.";
 }
 
 function capitalise(value: string) {

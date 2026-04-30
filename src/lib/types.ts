@@ -110,6 +110,10 @@ export type RevisionItem = {
   id: string;
   type: RevisionItemType;
   title: string;
+  conceptName?: string;
+  displayTitle?: string;
+  cardFront: string;
+  taskPrompt?: string;
   statement: string;
   statementLatex?: string;
   originalRawText?: string;

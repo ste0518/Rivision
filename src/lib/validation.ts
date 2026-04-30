@@ -16,6 +16,7 @@ export function validateRevisionItem(item: RevisionItem): string[] {
   if (item.importance === "unknown") warnings.push("Importance is unknown.");
   if (!item.sourceLocation?.trim()) warnings.push("Source location is missing.");
   if (item.statement.trim().length > 0 && item.statement.trim().length < 30) warnings.push("Statement is very short and may be incomplete.");
+  if (item.type === "definition" && startsSuspiciously(item.statement)) warnings.push("Definition statement starts suspiciously and may be missing its beginning.");
   if (item.type === "definition" && item.statement.length > 800) warnings.push("Definition is unusually long and may include unrelated text.");
   if (item.title.length > 120) warnings.push("Title is unusually long.");
   if (item.questionPrompt.length > 180) warnings.push("Question prompt is unusually long.");
@@ -72,6 +73,7 @@ export function buildSuspiciousItems(items: RevisionItem[]) {
       warning.includes("Source location is missing") ||
       warning.includes("Type conflicts") ||
       warning.includes("Question prompt") ||
+      warning.includes("missing its beginning") ||
       warning.includes("unrelated section") ||
       warning.includes("entire section"),
     ) ?? [];
@@ -91,6 +93,7 @@ function collectHardValidationWarnings(item: RevisionItem): string[] {
     warnings.push("Over-merged card: theorem statement contains a preceding definition.");
   }
   if (item.type === "definition" && statement.length > 800) warnings.push("Definition is unusually long and may include unrelated text.");
+  if (item.type === "definition" && startsSuspiciously(statement)) warnings.push("Definition statement starts suspiciously and may be missing its beginning.");
   if (item.questionPrompt.length > 180) warnings.push("Question prompt is unusually long.");
   if (item.title.length > 120) warnings.push("Title is unusually long.");
   if (!item.sourceLocation?.trim()) warnings.push("Source location is missing.");
@@ -105,6 +108,10 @@ function collectHardValidationWarnings(item: RevisionItem): string[] {
 function containsSubsectionHeadingAfterItem(statement: string) {
   return /(?:^|\s)(?:Chapter|Section)\s+\d+(?:\.\d+)*\b/i.test(statement) ||
     /(?:^|\s)\d+(?:\.\d+)*\s+[A-Z][A-Za-z][A-Za-z\s,&-]{5,90}(?:\n|$)/.test(statement);
+}
+
+function startsSuspiciously(statement: string) {
+  return /^(?:[,.;:)]|\]|\.\.\.|…|Xn\)|X_n\)|,\s*Xn\)|,\s*X_n\))/i.test(statement.trim());
 }
 
 export function validateRevisionItemsPayload(payload: unknown): { items: RevisionItem[]; errors: string[] } {

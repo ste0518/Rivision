@@ -51,6 +51,15 @@ Extraction rules:
    Do not invent mathematical notation that is not supported by the notes.
    If PDF text extraction damaged a formula, keep the closest faithful version and add uncertaintyNote.
 
+5a. Populate flashcard-front fields separately from the legacy question prompt:
+   - conceptName: short clean concept name, usually 2-6 words, such as "Random field", "Random vector", "Weak stationarity", "Semivariogram".
+   - displayTitle: labelled title, such as "Definition 2.3. Random vector".
+   - cardFront: the main front side of the card, usually just conceptName. Do not put "State Definition..." here.
+   - taskPrompt: optional small instruction such as "Recall the exact definition.", "State the theorem and its conditions.", or "Reproduce the proof."
+   Keep questionPrompt only for compatibility.
+   For definitions, do not remove text before the first comma and do not split at commas inside math expressions such as X_1, ..., X_n.
+   If a definition statement begins with punctuation, ellipsis, a closing bracket, or "Xn)", repair it from originalRawText or add uncertaintyNote.
+
 6. Separate theorem statements from proofs.
    If a proof is present, store it in proof.
    Set proofRequired = true only if the guidance indicates the proof is required.

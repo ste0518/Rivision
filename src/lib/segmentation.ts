@@ -186,7 +186,10 @@ export function inferTopic(type: RevisionItemType, statement: string) {
   if (titled.title) return titled.title;
 
   if (type === "definition") {
-    const match = cleaned.match(/^(?:A|An|The)\s+(.+?)\s+(?:is|are|means|denotes|consists|refers)\b/i);
+    const stationarity = cleaned.match(/^(?:A|An|The)\s+[^.!?]{1,80}?\s+is\s+(weakly|strictly|intrinsically|second-order)\s+stationary\s+if\b/i);
+    if (stationarity) return `${stationarity[1].replace(/ly$/i, "")} stationarity`;
+
+    const match = cleaned.match(/^(?:A|An|The)\s+([A-Za-z][A-Za-z\s-]{1,60}?)(?:\s*\([^)]{0,120}\)\s*['’]?)?\s+(?:is|are|has|means|denotes|consists|refers)\b/i);
     if (match) return match[1].replace(/\s+/g, " ").trim();
   }
 
@@ -208,8 +211,10 @@ export function splitShortLeadingTitle(statement: string) {
   if (!firstSentence) return { title: undefined, statement };
   const candidate = firstSentence[1].trim();
   const words = candidate.split(/\s+/);
-  const looksLikeStatement = /\b(is|are|if|then|defined|called|given|equals|denotes)\b/i.test(candidate);
-  if (words.length <= 8 && !looksLikeStatement) {
+  const looksLikeStatement = /\b(is|are|has|if|then|defined|called|given|equals|denotes|consists)\b/i.test(candidate);
+  const looksLikeBrokenMath = /[,(]$|[,()]|(?:^|\s)[A-Z][a-z]?\d\b|(?:^|\s)X_?\d\b/.test(candidate);
+  const startsLikeStatement = /^(?:A|An|The|Let|Suppose|Assume)\b/i.test(candidate);
+  if (words.length <= 8 && !looksLikeStatement && !looksLikeBrokenMath && !startsLikeStatement) {
     return { title: candidate, statement: firstSentence[2].trim() };
   }
   return { title: undefined, statement };
