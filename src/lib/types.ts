@@ -51,6 +51,20 @@ export type ParsedDocument = {
   diagnostics: ParseDiagnostics;
 };
 
+export type CandidateRevisionBlock = {
+  label: string;
+  type: RevisionItemType;
+  number?: string;
+  title?: string;
+  startOffset: number;
+  endOffset: number;
+  sourceFile: string;
+  sourceLocation?: string;
+  pageNumber?: number;
+  section?: string;
+  rawText: string;
+};
+
 export type StudyFile = {
   id: string;
   name: string;
@@ -67,7 +81,10 @@ export type RevisionItem = {
   type: RevisionItemType;
   title: string;
   statement: string;
+  statementLatex?: string;
+  originalRawText?: string;
   proof?: string;
+  proofLatex?: string;
   proofRequired?: boolean;
   sourceFile: string;
   sourceLocation?: string;
@@ -80,8 +97,10 @@ export type RevisionItem = {
   guidanceReason?: string;
   guidanceEvidence?: string[];
   uncertaintyNote?: string;
+  extractionWarning?: string;
   questionPrompt: string;
   answer: string;
+  answerLatex?: string;
   createdAt: string;
   updatedAt: string;
   warnings?: string[];

@@ -12,6 +12,7 @@
     "@tailwindcss/postcss": "latest",
     "class-variance-authority": "latest",
     "clsx": "latest",
+    "katex": "^0.16.45",
     "lucide-react": "latest",
     "mammoth": "^1.12.0",
     "next": "latest",
@@ -19,6 +20,9 @@
     "pdfjs-dist": "^5.7.284",
     "react": "latest",
     "react-dom": "latest",
+    "react-markdown": "^10.1.0",
+    "rehype-katex": "^7.0.1",
+    "remark-math": "^6.0.0",
     "tailwind-merge": "latest"
   },
   "devDependencies": {

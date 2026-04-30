@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
+import { MathText } from "@/components/math-text";
 import { PageHeader } from "@/components/page-header";
 import { extractRevisionItems, generateManualExtractionPrompt, loadLlmPipelineSettings } from "@/lib/extraction";
 import { validateRevisionItemsPayload, withValidation } from "@/lib/validation";
@@ -213,15 +214,19 @@ export default function ExtractPage() {
             <CardHeader>
               <div className="flex items-center justify-between gap-3">
                 <CardTitle className="text-base">{item.title}</CardTitle>
-                <Badge variant={item.importance}>{item.importance}</Badge>
+                <div className="flex flex-wrap gap-2">
+                  <Badge variant={item.importance}>{item.importance}</Badge>
+                  {item.extractionWarning || item.warnings?.length ? <Badge variant="unknown">check extraction</Badge> : null}
+                </div>
               </div>
               <CardDescription>{item.type} · {item.section || "section unknown"} · {item.sourceLocation || "source unknown"}</CardDescription>
             </CardHeader>
             <CardContent>
-              <p className="line-clamp-3 text-sm text-slate-600">{item.questionPrompt}</p>
+              <MathText className="line-clamp-3 bg-transparent p-0 text-sm text-slate-600">{item.questionPrompt}</MathText>
               <p className="mt-2 text-xs text-slate-500">confidence: {item.classificationConfidence || "unknown"}</p>
               {item.guidanceReason ? <p className="mt-2 text-xs text-slate-500">{item.guidanceReason}</p> : null}
               {item.uncertaintyNote ? <p className="mt-1 text-xs text-amber-700">{item.uncertaintyNote}</p> : null}
+              {item.extractionWarning ? <p className="mt-1 text-xs text-amber-700">{item.extractionWarning}</p> : null}
               <div className="mt-2">
                 <Select value={item.importance} onChange={(event) => store.upsertRevisionItem({ ...item, importance: event.target.value as RevisionItem["importance"], updatedAt: new Date().toISOString() })}>
                   <option value="must_know">must_know</option>

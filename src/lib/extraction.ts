@@ -1,8 +1,10 @@
 import { createMockRevisionItems } from "@/lib/mock-data";
 import { defaultLlmPipelineSettings, type LlmPipelineSettings } from "@/lib/llm/provider";
+import { segmentRevisionCandidates, stripLeadingLabel } from "@/lib/segmentation";
+import { buildQuestionPrompt, extractNumber, splitProofFromStatement, theoremLike, toLatexText } from "@/lib/revision-item-utils";
 import type { ExtractionPipelineMode, ExtractionVerificationReport, ParsedDocument, RevisionItem, RevisionItemType } from "@/lib/types";
 import { createId } from "@/lib/utils";
-import { withValidation } from "@/lib/validation";
+import { buildSuspiciousItems, withValidation } from "@/lib/validation";
 
 export type ExtractRevisionItemsInput = {
   notesDocuments: ParsedDocument[];
@@ -30,19 +32,21 @@ export async function extractRevisionItems({
   if (settings.mode === "openai_api" || settings.mode === "cheap_scan_then_verify") {
     const llmResult = await extractViaApi({ notesDocuments, guidanceDocuments, sourceFile, settings });
     if (llmResult.items.length > 0 || llmResult.verification) {
+      const items = llmResult.items.map(withValidation);
       return {
-        items: llmResult.items.map(withValidation),
-        verification: llmResult.verification ?? emptyVerificationReport("Verification unavailable."),
+        items,
+        verification: mergeSuspiciousItems(llmResult.verification ?? emptyVerificationReport("Verification unavailable."), items),
         error: llmResult.error,
       };
     }
   }
 
-  const extracted = deterministicExtract(notesText, guidanceText, sourceFile, safeMode);
+  const extracted = deterministicExtract(notesDocuments, notesText, guidanceText, sourceFile, safeMode);
   if (extracted.length > 0) {
+    const items = extracted.map(withValidation);
     return {
-      items: extracted.map(withValidation),
-      verification: emptyVerificationReport("Local deterministic extraction mode does not run LLM verification."),
+      items,
+      verification: mergeSuspiciousItems(emptyVerificationReport("Local deterministic extraction mode does not run LLM verification."), items),
     };
   }
 
@@ -71,7 +75,10 @@ Return STRICT JSON ONLY as an array of RevisionItem objects matching this schema
 - type: "definition" | "theorem" | "lemma" | "proposition" | "corollary" | "formula" | "proof" | "algorithm" | "example" | "remark" | "other"
 - title: string
 - statement: string
+- statementLatex?: string
+- originalRawText?: string
 - proof?: string
+- proofLatex?: string
 - proofRequired?: boolean
 - sourceFile: string
 - sourceLocation?: string
@@ -84,20 +91,28 @@ Return STRICT JSON ONLY as an array of RevisionItem objects matching this schema
 - guidanceReason?: string
 - guidanceEvidence?: string[]
 - uncertaintyNote?: string
+- extractionWarning?: string
 - questionPrompt: string
 - answer: string
+- answerLatex?: string
 - createdAt: ISO string
 - updatedAt: ISO string
 
 Extraction requirements:
-1) Extract explicitly labelled items: Definition, Theorem, Lemma, Proposition, Corollary, Formula, Proof, Remark, Example, Algorithm.
-2) Also extract implicit theorem-like statements such as:
+1) Extract precise, atomic items. One card must correspond to one definition, theorem, lemma, proposition, corollary, formula, proof, remark, example, assumption, or property.
+2) Do not merge multiple labelled items. If the notes contain "Definition ... Remark ... Theorem ... Proof ... Definition ...", create separate items, with theorem proof stored in proof.
+3) For labelled definitions, preserve only the definition statement. Exclude following remarks, proofs, examples, later definitions, and section text. Type must be "definition".
+4) For labelled theorems, preserve the theorem statement in statement and preserve any immediately following proof separately in proof. Type must be "theorem".
+5) Use type "formula" only for mainly formula/equation items that are not explicitly labelled as a definition/theorem/lemma/proposition/corollary.
+6) Convert mathematical notation into LaTeX in statementLatex, proofLatex, and answerLatex where possible, without inventing content.
+7) Also extract implicit theorem-like statements such as:
    "We say that...", "X is called...", "It follows that...", "A process is stationary if...", "The BLUP is given by..."
-3) Preserve section info, source location, theorem numbering, and mathematical notation.
-4) Classify importance from guidance:
+8) Preserve section info, source location, theorem numbering, and mathematical notation.
+9) Classify importance from guidance:
    - must_know / partial / not_required / unknown
-5) If unsure or text is incomplete, keep the item but set importance = "unknown" and add uncertaintyNote.
-6) Output valid JSON only; no markdown fence, no commentary.
+10) If unsure or text is incomplete, keep the item but set importance = "unknown" and add uncertaintyNote.
+11) Generate clean exam-style prompts from title/type/number/topic only, never from long extracted text.
+12) Output valid JSON only; no markdown fence, no commentary.
 
 Source file: ${input.sourceFile}
 
@@ -146,48 +161,70 @@ export function saveLlmPipelineSettings(settings: LlmPipelineSettings) {
   window.localStorage.setItem(llmSettingsStorageKey, JSON.stringify(settings));
 }
 
-function deterministicExtract(notesText: string, guidanceText: string, sourceFile: string, mode: ExtractionPipelineMode): RevisionItem[] {
+function deterministicExtract(
+  notesDocuments: ParsedDocument[],
+  notesText: string,
+  guidanceText: string,
+  sourceFile: string,
+  mode: ExtractionPipelineMode,
+): RevisionItem[] {
   if (mode !== "local_rules_only") return [];
   if (!notesText.trim() || notesText.includes("[PDF placeholder]") || notesText.includes("[DOCX placeholder]")) {
     return [];
   }
 
-  const lines = notesText.replace(/\r\n/g, "\n").split("\n");
-  const markers = collectMarkers(lines);
+  const candidates = notesDocuments.flatMap(segmentRevisionCandidates);
   const items: RevisionItem[] = [];
   const timestamp = new Date().toISOString();
+  const consumedProofs = new Set<number>();
 
-  for (let index = 0; index < markers.length; index += 1) {
-    const marker = markers[index];
-    const next = markers[index + 1];
-    const endLine = next ? next.line : lines.length;
-    const chunkLines = lines.slice(marker.line + 1, endLine);
-    const section = nearestSection(lines, marker.line);
-    const statement = clean([marker.tail, ...chunkLines].join(" ").trim());
+  for (let index = 0; index < candidates.length; index += 1) {
+    if (consumedProofs.has(index)) continue;
+    const candidate = candidates[index];
+    const statementWithPossibleTitle = clean(stripLeadingLabel(candidate.rawText));
+    const titleSplit = splitTitleFromStatement(statementWithPossibleTitle);
+    const proofSplit = splitProofFromStatement(titleSplit.statement);
+    const statement = clean(proofSplit.statement);
+    let proof = proofSplit.proof;
+
+    const next = candidates[index + 1];
+    if (theoremLike(candidate.type) && next?.type === "proof" && next.sourceFile === candidate.sourceFile) {
+      proof = clean(stripLeadingLabel(next.rawText));
+      consumedProofs.add(index + 1);
+    }
+    proof = proof ? clean(proof) : undefined;
     if (!statement || statement.length < 15) continue;
 
-    const label = marker.label || marker.rawType;
-    const title = titleFromLabel(marker.type, label, statement);
-    const { importance, reason } = classifyImportance(marker.type, title, statement, guidanceText);
-    const theoremNumber = extractNumber(label);
+    const title = candidate.title ?? titleFromLabel(candidate.type, candidate.number, titleSplit.title, statement);
+    const { importance, reason } = classifyImportance(candidate.type, title, statement, guidanceText);
+    const theoremNumber = candidate.number ?? extractNumber(title);
     const uncertaintyNote = statement.length < 40 ? "Statement may be incomplete after text parsing." : undefined;
+    const proofRequired = theoremLike(candidate.type) ? classifyProofRequired(guidanceText, title, statement) : undefined;
+    const answer = buildAnswer(candidate.type, statement);
 
     items.push({
       id: createId("card"),
-      type: marker.type,
+      type: candidate.type,
       title,
       statement,
-      sourceFile,
-      sourceLocation: label !== marker.rawType ? label : undefined,
-      section,
+      statementLatex: toLatexText(statement),
+      originalRawText: candidate.rawText,
+      proof,
+      proofLatex: proof ? toLatexText(proof) : undefined,
+      proofRequired,
+      sourceFile: candidate.sourceFile || sourceFile,
+      sourceLocation: candidate.sourceLocation,
+      pageNumber: candidate.pageNumber,
+      section: candidate.section,
       theoremNumber,
-      tags: inferTags(marker.type, `${title} ${statement}`),
+      tags: inferTags(candidate.type, `${title} ${statement}`),
       importance: uncertaintyNote ? "unknown" : importance,
       classificationConfidence: uncertaintyNote ? "low" : "medium",
       guidanceReason: reason,
       uncertaintyNote,
-      questionPrompt: buildQuestion(marker.type, title),
-      answer: buildAnswer(marker.type, statement),
+      questionPrompt: buildQuestionPrompt({ type: candidate.type, title, theoremNumber, statement, proofRequired }),
+      answer,
+      answerLatex: toLatexText(answer),
       createdAt: timestamp,
       updatedAt: timestamp,
       reviewCount: 0,
@@ -201,23 +238,30 @@ function deterministicExtract(notesText: string, guidanceText: string, sourceFil
     const title = `${capitalise(type)} of ${clean(match[2])}`;
     const { importance, reason } = classifyImportance(type, title, statement, guidanceText);
     const uncertaintyNote = statement.length < 40 ? "Statement may be incomplete after text parsing." : undefined;
+    const theoremNumber = extractNumber(title);
+    const proofRequired = theoremLike(type) ? classifyProofRequired(guidanceText, title, statement) : undefined;
+    const answer = buildAnswer(type, statement);
 
     items.push({
       id: createId("card"),
       type,
       title,
       statement,
+      statementLatex: toLatexText(statement),
+      originalRawText: match[0],
       sourceFile,
       sourceLocation: "inline pattern",
       section: undefined,
-      theoremNumber: extractNumber(title),
+      theoremNumber,
       tags: inferTags(type, `${title} ${statement}`),
       importance: uncertaintyNote ? "unknown" : importance,
       classificationConfidence: uncertaintyNote ? "low" : "medium",
       guidanceReason: reason,
       uncertaintyNote,
-      questionPrompt: buildQuestion(type, title),
-      answer: buildAnswer(type, statement),
+      proofRequired,
+      questionPrompt: buildQuestionPrompt({ type, title, theoremNumber, statement, proofRequired }),
+      answer,
+      answerLatex: toLatexText(answer),
       createdAt: timestamp,
       updatedAt: timestamp,
       reviewCount: 0,
@@ -227,35 +271,15 @@ function deterministicExtract(notesText: string, guidanceText: string, sourceFil
   return dedupeItems(items);
 }
 
-function collectMarkers(lines: string[]) {
-  const markers: Array<{ line: number; type: RevisionItemType; rawType: string; label?: string; tail: string }> = [];
-  const headRegex = /^\s*(?:[-*]\s*)?(definition|def\.?|theorem|thm\.?|lemma|proposition|prop\.?|corollary|proof|remark|formula|equation|example|algorithm)\s*([A-Za-z]?\d+(?:\.\d+)*)?\s*[:.)-]?\s*(.*)$/i;
-
-  for (let line = 0; line < lines.length; line += 1) {
-    const text = lines[line].trim();
-    if (!text) continue;
-
-    const heading = text.match(headRegex);
-    if (heading) {
-      const type = normaliseType(heading[1]);
-      if (!type) continue;
-      const id = clean(heading[2] ?? "");
-      markers.push({
-        line,
-        type,
-        rawType: clean(heading[1]),
-        label: id || undefined,
-        tail: clean(heading[3] ?? ""),
-      });
-      continue;
-    }
-
-    if (isFormulaLikeLine(text)) {
-      markers.push({ line, type: "formula", rawType: "formula", label: undefined, tail: text });
-    }
+function splitTitleFromStatement(statement: string) {
+  const firstSentence = statement.match(/^([^.!?]{2,80})[.!?]\s+([\s\S]+)$/);
+  if (!firstSentence) return { title: undefined, statement };
+  const title = firstSentence[1].trim();
+  const looksLikeStatement = /\b(is|are|if|then|defined|called|given|equals|denotes|consists)\b/i.test(title);
+  if (title.split(/\s+/).length <= 8 && !looksLikeStatement) {
+    return { title, statement: firstSentence[2].trim() };
   }
-
-  return markers.sort((a, b) => a.line - b.line);
+  return { title: undefined, statement };
 }
 
 function normaliseType(value: string): RevisionItemType | null {
@@ -273,25 +297,6 @@ function normaliseType(value: string): RevisionItemType | null {
   return null;
 }
 
-function nearestSection(lines: string[], fromLine: number) {
-  for (let index = fromLine; index >= 0; index -= 1) {
-    const text = lines[index].trim();
-    const sectionMatch = text.match(/^(?:section|chapter)\s+(\d+(?:\.\d+)*)/i);
-    if (sectionMatch) return `Section ${sectionMatch[1]}`;
-
-    const markdownMatch = text.match(/^#{1,4}\s+(.+)/);
-    if (markdownMatch) return clean(markdownMatch[1]);
-  }
-  return undefined;
-}
-
-function isFormulaLikeLine(text: string) {
-  const hasEquals = text.includes("=") || text.includes("\\approx") || text.includes("\\sum");
-  const hasMathChars = /[+\-*/^_()[\]{}]/.test(text);
-  const hasMathTerms = /\b(var|cov|gamma|sigma|mu|blup|kriging|likelihood)\b/i.test(text);
-  return text.length >= 10 && hasEquals && (hasMathChars || hasMathTerms);
-}
-
 function dedupeItems(items: RevisionItem[]) {
   const seen = new Set<string>();
   return items.filter((item) => {
@@ -306,8 +311,9 @@ function clean(value = "") {
   return value.replace(/\s+/g, " ").trim();
 }
 
-function titleFromLabel(type: RevisionItemType, label: string, statement: string) {
-  if (label && label !== type) return `${capitalise(type)} ${label}`;
+function titleFromLabel(type: RevisionItemType, number: string | undefined, explicitTitle: string | undefined, statement: string) {
+  if (number && explicitTitle) return `${capitalise(type)} ${number}. ${capitalise(explicitTitle)}`;
+  if (number) return `${capitalise(type)} ${number}`;
   const firstWords = statement.split(" ").slice(0, 6).join(" ");
   return `${capitalise(type)}: ${firstWords}${statement.split(" ").length > 6 ? "..." : ""}`;
 }
@@ -357,6 +363,30 @@ function classifyImportance(type: RevisionItemType, title: string, statement: st
   return { importance: "unknown", reason: "Could not confidently match this item to the guidance." };
 }
 
+function classifyProofRequired(guidanceText: string, title: string, statement: string) {
+  const guidance = guidanceText.toLowerCase();
+  const haystack = `${title} ${statement}`.toLowerCase();
+  if (!guidance.trim()) return undefined;
+  if (/proofs?\s+(?:are\s+)?not required|proof\s+not required|without proof|only (?:know )?the statement/.test(guidance)) return false;
+  if (/\b(prove|proof required|derive|show that)\b/.test(guidance)) {
+    const number = extractNumber(title);
+    if (!number || guidance.includes(number) || haystack.split(/\W+/).some((word) => word.length > 4 && guidance.includes(word))) return true;
+  }
+  return undefined;
+}
+
+function mergeSuspiciousItems(report: ExtractionVerificationReport, items: RevisionItem[]): ExtractionVerificationReport {
+  const existing = new Set(report.suspiciousItems.map((item) => `${item.itemId}|${item.issue}`));
+  const suspiciousItems = [...report.suspiciousItems];
+  for (const item of buildSuspiciousItems(items)) {
+    const key = `${item.itemId}|${item.issue}`;
+    if (existing.has(key)) continue;
+    existing.add(key);
+    suspiciousItems.push(item);
+  }
+  return { ...report, suspiciousItems };
+}
+
 function emptyVerificationReport(notes: string): ExtractionVerificationReport {
   return {
     missingCandidates: [],
@@ -375,19 +405,7 @@ function inferTags(type: RevisionItemType, text: string) {
   return Array.from(tags);
 }
 
-function buildQuestion(type: RevisionItemType, title: string) {
-  if (type === "definition") return `State the definition of ${title.replace(/^Definition\s*/i, "")}.`;
-  if (type === "formula") return `Write down ${title} and explain each term.`;
-  if (type === "proof") return `Outline the proof of ${title}.`;
-  return `State ${title} and explain when it applies.`;
-}
-
 function buildAnswer(type: RevisionItemType, statement: string) {
   if (type === "formula") return `${statement}\n\nExplain the notation and conditions under which the formula applies.`;
   return statement;
-}
-
-function extractNumber(value: string) {
-  const match = value.match(/(\d+(?:\.\d+)+)/);
-  return match ? match[1] : undefined;
 }

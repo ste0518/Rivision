@@ -2,6 +2,7 @@ import OpenAI from "openai";
 import { extractionSystemPrompt, verificationSystemPrompt } from "@/lib/llm/prompts";
 import type { LLMProvider } from "@/lib/llm/provider";
 import { revisionItemsResponseSchema, verificationReportSchema } from "@/lib/llm/schemas";
+import { segmentRevisionCandidates } from "@/lib/segmentation";
 import type { ExtractionPipelineMode, ExtractionVerificationReport, ParsedDocument, RevisionItem } from "@/lib/types";
 
 type OpenAiProviderOptions = {
@@ -22,7 +23,7 @@ export class OpenAiResponsesProvider implements LLMProvider {
     guidanceDocuments: ParsedDocument[];
     pipelineMode: ExtractionPipelineMode;
   }): Promise<RevisionItem[]> {
-    const notesText = renderDocumentSet("NOTES", input.notesDocuments);
+    const notesText = renderCandidateDocumentSet(input.notesDocuments);
     const guidanceText = renderDocumentSet("GUIDANCE", input.guidanceDocuments);
 
     const response = await this.client.responses.create({
@@ -31,7 +32,7 @@ export class OpenAiResponsesProvider implements LLMProvider {
         { role: "system", content: extractionSystemPrompt },
         {
           role: "user",
-          content: `Pipeline mode: ${input.pipelineMode}\n\nGuidance:\n${guidanceText || "(none)"}\n\nNotes:\n${notesText}`,
+          content: `Pipeline mode: ${input.pipelineMode}\n\nGuidance:\n${guidanceText || "(none)"}\n\nSegmented candidate blocks:\n${notesText}`,
         },
       ],
       text: {
@@ -86,6 +87,31 @@ export class OpenAiResponsesProvider implements LLMProvider {
       }
     );
   }
+}
+
+function renderCandidateDocumentSet(docs: ParsedDocument[]) {
+  return docs
+    .map((doc) => {
+      const candidates = segmentRevisionCandidates(doc);
+      if (candidates.length === 0) {
+        return `[NOTES SOURCE: ${doc.sourceFile}]\n[No labelled candidates detected; use the parsed text cautiously for implicit items only.]\n${doc.fullText}`;
+      }
+
+      const rendered = candidates.slice(0, 300).map((candidate, index) => ({
+        index: index + 1,
+        label: candidate.label,
+        type: candidate.type,
+        number: candidate.number,
+        title: candidate.title,
+        sourceFile: candidate.sourceFile,
+        sourceLocation: candidate.sourceLocation,
+        pageNumber: candidate.pageNumber,
+        section: candidate.section,
+        rawText: candidate.rawText,
+      }));
+      return `[NOTES SOURCE: ${doc.sourceFile}]\n${JSON.stringify(rendered, null, 2)}`;
+    })
+    .join("\n\n");
 }
 
 function safeParseJson<T>(value: string): T | null {
