@@ -1,0 +1,84 @@
+"use client";
+
+import { useState } from "react";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Select } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
+import { PageHeader } from "@/components/page-header";
+import { getLlmExtractionPrompt, loadLlmPipelineSettings, saveLlmPipelineSettings } from "@/lib/extraction";
+import { defaultLlmPipelineSettings, type LlmPipelineSettings } from "@/lib/llm/provider";
+import { exportRevisionItems, importRevisionItems } from "@/lib/storage";
+import { useStudyStore } from "@/hooks/use-study-store";
+
+export default function SettingsPage() {
+  const store = useStudyStore();
+  const [json, setJson] = useState("");
+  const [llm, setLlm] = useState<LlmPipelineSettings>(() => loadLlmPipelineSettings() ?? defaultLlmPipelineSettings);
+
+  return (
+    <div>
+      <PageHeader title="Settings and portability" description="Keep the app local-first: export corrected cards, import JSON later, or reset local browser data." />
+      <div className="grid gap-6 lg:grid-cols-2">
+        <Card>
+          <CardHeader>
+            <CardTitle>Extraction mode</CardTitle>
+            <CardDescription>Choose local rules, manual JSON import, or OpenAI API extraction.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <label className="space-y-1 text-sm font-medium">
+              Pipeline mode
+              <Select value={llm.mode} onChange={(event) => setLlm((current) => ({ ...current, mode: event.target.value as LlmPipelineSettings["mode"] }))}>
+                <option value="local_rules_only">Local rules only</option>
+                <option value="manual_json_import">Manual JSON import</option>
+                <option value="openai_api">OpenAI API extraction</option>
+                <option value="cheap_scan_then_verify">OpenAI cheap scan then verify</option>
+              </Select>
+            </label>
+
+            {(llm.mode === "openai_api" || llm.mode === "cheap_scan_then_verify") ? (
+              <>
+                <label className="space-y-1 text-sm font-medium">
+                  Primary model
+                  <Input value={llm.primaryModel} onChange={(event) => setLlm((current) => ({ ...current, primaryModel: event.target.value }))} />
+                </label>
+                <label className="space-y-1 text-sm font-medium">
+                  Cheaper scan model
+                  <Input value={llm.cheapModel} onChange={(event) => setLlm((current) => ({ ...current, cheapModel: event.target.value }))} />
+                </label>
+              </>
+            ) : null}
+            <Button onClick={() => saveLlmPipelineSettings(llm)}>Save LLM settings</Button>
+            <p className="text-xs text-slate-500">Only OpenAI modes require OPENAI_API_KEY. Local rules and manual JSON import work without paid API usage.</p>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>JSON import/export</CardTitle>
+            <CardDescription>Use this to reuse manually corrected cards.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Textarea className="min-h-48" value={json} onChange={(e) => setJson(e.target.value)} placeholder="Paste or generate RevisionItem[] JSON" />
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => setJson(exportRevisionItems(store.revisionItems))}>Generate export JSON</Button>
+              <Button onClick={() => { store.setRevisionItems(importRevisionItems(json)); setJson(""); }} disabled={!json.trim()}>Import JSON</Button>
+              <Button variant="destructive" onClick={store.resetAll}>Reset local data</Button>
+            </div>
+          </CardContent>
+        </Card>
+
+        <Card className="lg:col-span-2">
+          <CardHeader>
+            <CardTitle>Internal extraction prompt</CardTitle>
+            <CardDescription>Used by the OpenAI Responses API extraction pass.</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <pre className="whitespace-pre-wrap rounded-lg bg-slate-950 p-4 text-sm text-white">{getLlmExtractionPrompt()}</pre>
+          </CardContent>
+        </Card>
+      </div>
+    </div>
+  );
+}
