@@ -25,6 +25,8 @@ export function useStudyStore() {
   const actions = useMemo(() => ({
     addNotesFiles(files: StudyFile[]) { setState((current) => ({ ...current, notesFiles: [...current.notesFiles, ...files] })); },
     addGuidanceFiles(files: GuidanceFile[]) { setState((current) => ({ ...current, guidanceFiles: [...current.guidanceFiles, ...files] })); },
+    removeNotesFile(id: string) { setState((current) => ({ ...current, notesFiles: current.notesFiles.filter((file) => file.id !== id) })); },
+    removeGuidanceFile(id: string) { setState((current) => ({ ...current, guidanceFiles: current.guidanceFiles.filter((file) => file.id !== id) })); },
     setRevisionItems(items: RevisionItem[]) { setState((current) => ({ ...current, revisionItems: items.map(withValidation) })); },
     upsertRevisionItem(item: RevisionItem) {
       setState((current) => {

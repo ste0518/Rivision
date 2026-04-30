@@ -25,10 +25,15 @@ export async function parsePdfFile(file: File): Promise<ParsedDocument> {
   const errors: string[] = [];
 
   try {
-    const [{ getDocument }, arrayBuffer] = await Promise.all([
+    const [{ getDocument, GlobalWorkerOptions }, arrayBuffer] = await Promise.all([
       import("pdfjs-dist/legacy/build/pdf.mjs"),
       file.arrayBuffer(),
     ]);
+    // Configure worker in browser builds; without this, pdf.js throws:
+    // "No 'GlobalWorkerOptions.workerSrc' specified."
+    if (!GlobalWorkerOptions.workerSrc) {
+      GlobalWorkerOptions.workerSrc = new URL("pdfjs-dist/legacy/build/pdf.worker.mjs", import.meta.url).toString();
+    }
 
     const pdf = await getDocument({ data: arrayBuffer }).promise;
     const pages: ParsedPage[] = [];
