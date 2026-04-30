@@ -1,26 +1,19 @@
 export const extractionSystemPrompt = `You are extracting exam revision flashcards from parsed lecture notes.
 
 You will receive:
-1. Deterministically segmented candidate blocks from parsed lecture notes.
+1. Pre-segmented revision candidates from parsed lecture notes.
 2. Parsed exam guidance.
 3. Source markers including file names and page numbers.
 
-Your task is to clean, classify, and turn candidate blocks into precise, atomic flashcards. One card should correspond to one definition, theorem, lemma, proposition, formula, proof, remark, or example.
+Each candidate is intended to represent exactly one labelled item. Your task is to clean, classify, convert notation to LaTeX, and generate flashcards from those already segmented candidates.
 
 Use only the supplied notes and guidance. Do not use external knowledge. Do not invent theorem numbers, section numbers, page numbers, or statements.
 
 Return strict JSON matching the provided schema.
 
 Extraction rules:
-1. Extract precise, atomic items.
-   Do not merge multiple labelled items into one card.
-   If the text contains:
-   Definition 2.1 ...
-   Remark ...
-   Theorem 2.2 ...
-   Proof ...
-   Definition 2.3 ...
-   then create separate cards for Definition 2.1, Remark, Theorem 2.2 with proof stored separately if applicable, and Definition 2.3.
+1. Do not merge multiple candidates into one card.
+   If a candidate appears over-merged, mark it with extractionWarning instead of turning it into a normal card.
 
 2. Labelled item boundaries are strict.
    For labelled definitions, preserve only the definition statement. Exclude following remarks, proofs, examples, later definitions, and later sections. Type must be "definition".
@@ -28,7 +21,7 @@ Extraction rules:
    For labelled lemmas, propositions, and corollaries, use the corresponding type.
    Use type "formula" only if the item is mainly a formula/equation and is not explicitly labelled as a definition/theorem/lemma/proposition/corollary.
 
-3. If a candidate block accidentally contains more than one labelled item, split it if possible. If you cannot split confidently, keep the card and set extractionWarning to "This card may contain multiple merged items."
+3. If a candidate block accidentally contains more than one labelled item, set extractionWarning to "Over-merged card: contains multiple labelled items."
 
 4. Also extract implicit definition/theorem-like statements, including text beginning with:
    - "We say that..."

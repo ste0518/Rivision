@@ -29,10 +29,31 @@ export function withValidation(item: RevisionItem): RevisionItem {
   return { ...normalised, warnings: validateRevisionItem(normalised) };
 }
 
+export function validateAndRepairRevisionItems(items: RevisionItem[]): RevisionItem[] {
+  return items.map((item) => {
+    const normalised = normaliseRevisionItem(item);
+    const statement = normalised.statement;
+    const warnings: string[] = [];
+
+    if (countLabelledItems(statement) > 1) warnings.push("Over-merged card: contains multiple labelled items.");
+    if (normalised.type === "definition" && statement.length > 800) warnings.push("Definition is unusually long and may include unrelated text.");
+    if (normalised.type === "definition" && /\b(Theorem|Proof|Remark|Definition|Lemma|Proposition|Corollary)\b/.test(statement)) {
+      warnings.push("Over-merged card: contains multiple labelled items.");
+    }
+    if (["theorem", "lemma", "proposition", "corollary"].includes(normalised.type) && /\bDefinition\b[\s\S]*\bTheorem\b/.test(statement)) {
+      warnings.push("Over-merged card: theorem statement contains earlier definition text.");
+    }
+
+    const extractionWarning = normalised.extractionWarning ?? warnings[0];
+    return extractionWarning ? { ...normalised, extractionWarning, classificationConfidence: "low" } : normalised;
+  });
+}
+
 export function buildSuspiciousItems(items: RevisionItem[]) {
   return items.flatMap((item) => {
     const issues = item.warnings?.filter((warning) =>
       warning.includes("multiple merged") ||
+      warning.includes("Over-merged") ||
       warning.includes("unusually long") ||
       warning.includes("Source location is missing") ||
       warning.includes("Type conflicts") ||

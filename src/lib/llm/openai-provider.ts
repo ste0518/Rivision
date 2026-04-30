@@ -90,28 +90,8 @@ export class OpenAiResponsesProvider implements LLMProvider {
 }
 
 function renderCandidateDocumentSet(docs: ParsedDocument[]) {
-  return docs
-    .map((doc) => {
-      const candidates = segmentRevisionCandidates(doc);
-      if (candidates.length === 0) {
-        return `[NOTES SOURCE: ${doc.sourceFile}]\n[No labelled candidates detected; use the parsed text cautiously for implicit items only.]\n${doc.fullText}`;
-      }
-
-      const rendered = candidates.slice(0, 300).map((candidate, index) => ({
-        index: index + 1,
-        label: candidate.label,
-        type: candidate.type,
-        number: candidate.number,
-        title: candidate.title,
-        sourceFile: candidate.sourceFile,
-        sourceLocation: candidate.sourceLocation,
-        pageNumber: candidate.pageNumber,
-        section: candidate.section,
-        rawText: candidate.rawText,
-      }));
-      return `[NOTES SOURCE: ${doc.sourceFile}]\n${JSON.stringify(rendered, null, 2)}`;
-    })
-    .join("\n\n");
+  const candidates = segmentRevisionCandidates(docs);
+  return JSON.stringify({ candidates }, null, 2);
 }
 
 function safeParseJson<T>(value: string): T | null {

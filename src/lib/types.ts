@@ -51,19 +51,36 @@ export type ParsedDocument = {
   diagnostics: ParseDiagnostics;
 };
 
-export type CandidateRevisionBlock = {
-  label: string;
-  type: RevisionItemType;
+export type RevisionCandidateLabel =
+  | "Definition"
+  | "Theorem"
+  | "Lemma"
+  | "Proposition"
+  | "Corollary"
+  | "Remark"
+  | "Example"
+  | "Proof"
+  | "Formula"
+  | "Assumption"
+  | "Property"
+  | "Algorithm"
+  | "Other";
+
+export type RevisionCandidate = {
+  id: string;
+  label: RevisionCandidateLabel;
   number?: string;
   title?: string;
+  rawText: string;
+  sourceFile: string;
+  pageNumber?: number;
+  sourceLocation?: string;
   startOffset: number;
   endOffset: number;
-  sourceFile: string;
-  sourceLocation?: string;
-  pageNumber?: number;
   section?: string;
-  rawText: string;
 };
+
+export type CandidateRevisionBlock = RevisionCandidate & { type: RevisionItemType };
 
 export type StudyFile = {
   id: string;

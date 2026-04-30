@@ -8,9 +8,9 @@ import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/com
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { MathText } from "@/components/math-text";
 import { PageHeader } from "@/components/page-header";
 import { extractRevisionItems, generateManualExtractionPrompt, loadLlmPipelineSettings } from "@/lib/extraction";
+import { segmentRevisionCandidates } from "@/lib/segmentation";
 import { validateRevisionItemsPayload, withValidation } from "@/lib/validation";
 import type { ExtractionVerificationReport, ParsedDocument, RevisionItem } from "@/lib/types";
 import { useStudyStore } from "@/hooks/use-study-store";
@@ -32,6 +32,10 @@ export default function ExtractPage() {
   const guidanceText = useMemo(() => guidanceDocuments.map((file) => file.fullText).join("\n\n"), [guidanceDocuments]);
   const sourceFile = useMemo(() => store.notesFiles.map((file) => file.name).join(", ") || "Mock notes", [store.notesFiles]);
   const allDocuments = useMemo(() => [...notesDocuments, ...guidanceDocuments], [guidanceDocuments, notesDocuments]);
+  const candidates = useMemo(() => segmentRevisionCandidates(notesDocuments), [notesDocuments]);
+  const candidateSegmentationWarning = candidates.length === 0 || candidates.some((candidate) => candidate.rawText.length > 2000);
+  const repairItems = useMemo(() => store.revisionItems.filter(needsRepair), [store.revisionItems]);
+  const normalItems = useMemo(() => store.revisionItems.filter((item) => !needsRepair(item)), [store.revisionItems]);
   const failedDocuments = useMemo(
     () => allDocuments.filter((doc) => !doc.diagnostics.success || doc.diagnostics.extractionQuality === "failed" || !doc.fullText.trim()),
     [allDocuments],
@@ -160,6 +164,36 @@ export default function ExtractPage() {
         </CardContent>
       </Card>
 
+      <Card className="mt-6">
+        <CardHeader>
+          <CardTitle>Candidate segmentation preview</CardTitle>
+          <CardDescription>{candidates.length} candidate(s) found before LLM extraction.</CardDescription>
+        </CardHeader>
+        <CardContent className="space-y-3">
+          {candidateSegmentationWarning ? (
+            <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
+              Candidate segmentation may have failed. Extraction may be unreliable.
+            </p>
+          ) : null}
+          {candidates.length === 0 ? <p className="text-sm text-slate-500">No labelled candidates detected in notes files.</p> : null}
+          <div className="max-h-96 space-y-2 overflow-auto">
+            {candidates.slice(0, 80).map((candidate, index) => (
+              <div key={candidate.id} className="rounded-lg border p-3 text-sm">
+                <div className="flex flex-wrap items-center gap-2">
+                  <Badge variant="outline">#{index + 1}</Badge>
+                  <Badge variant="unknown">{candidate.label}</Badge>
+                  {candidate.number ? <Badge variant="outline">{candidate.number}</Badge> : null}
+                  <span className="text-xs text-slate-500">
+                    {candidate.sourceFile}{candidate.pageNumber ? ` · page ${candidate.pageNumber}` : ""}{candidate.sourceLocation ? ` · ${candidate.sourceLocation}` : ""}
+                  </span>
+                </div>
+                <p className="mt-2 text-slate-700">{candidate.rawText.slice(0, 300)}{candidate.rawText.length > 300 ? "..." : ""}</p>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+
       {settings.mode === "manual_json_import" ? (
         <Card className="mt-6">
           <CardHeader>
@@ -208,8 +242,20 @@ export default function ExtractPage() {
         </CardContent>
       </Card>
 
+      {repairItems.length > 0 ? (
+        <Card className="mt-6 border-amber-300 bg-amber-50">
+          <CardHeader>
+            <CardTitle>Needs repair</CardTitle>
+            <CardDescription>These cards were flagged as over-merged or suspicious and are not shown as normal review cards.</CardDescription>
+          </CardHeader>
+          <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+            {repairItems.map((item) => <ExtractedCard key={item.id} item={item} onImportanceChange={(importance) => store.upsertRevisionItem({ ...item, importance, updatedAt: new Date().toISOString() })} />)}
+          </CardContent>
+        </Card>
+      ) : null}
+
       <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-        {store.revisionItems.map((item) => (
+        {normalItems.map((item) => (
           <Card key={item.id}>
             <CardHeader>
               <div className="flex items-center justify-between gap-3">
@@ -222,7 +268,7 @@ export default function ExtractPage() {
               <CardDescription>{item.type} · {item.section || "section unknown"} · {item.sourceLocation || "source unknown"}</CardDescription>
             </CardHeader>
             <CardContent>
-              <MathText className="line-clamp-3 bg-transparent p-0 text-sm text-slate-600">{item.questionPrompt}</MathText>
+              <p className="text-sm text-slate-600">{previewText(item.statement)}</p>
               <p className="mt-2 text-xs text-slate-500">confidence: {item.classificationConfidence || "unknown"}</p>
               {item.guidanceReason ? <p className="mt-2 text-xs text-slate-500">{item.guidanceReason}</p> : null}
               {item.uncertaintyNote ? <p className="mt-1 text-xs text-amber-700">{item.uncertaintyNote}</p> : null}
@@ -290,6 +336,40 @@ export default function ExtractPage() {
       ) : null}
     </div>
   );
+}
+
+function ExtractedCard({ item, onImportanceChange }: { item: RevisionItem; onImportanceChange: (importance: RevisionItem["importance"]) => void }) {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle className="text-base">{item.title}</CardTitle>
+          <Badge variant={item.importance}>{item.importance}</Badge>
+        </div>
+        <CardDescription>{item.type} · {item.sourceLocation || "source unknown"}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <p className="text-sm text-slate-600">{previewText(item.statement)}</p>
+        {item.extractionWarning ? <p className="mt-2 text-xs text-amber-700">{item.extractionWarning}</p> : null}
+        <div className="mt-2">
+          <Select value={item.importance} onChange={(event) => onImportanceChange(event.target.value as RevisionItem["importance"])}>
+            <option value="must_know">must_know</option>
+            <option value="partial">partial</option>
+            <option value="not_required">not_required</option>
+            <option value="unknown">unknown</option>
+          </Select>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
+
+function needsRepair(item: RevisionItem) {
+  return Boolean(item.extractionWarning?.includes("Over-merged") || item.warnings?.some((warning) => warning.includes("Over-merged")));
+}
+
+function previewText(value: string) {
+  return value.length > 200 ? `${value.slice(0, 200)}...` : value;
 }
 
 function toLegacyParsedDocument(sourceFile: string, fullText: string): ParsedDocument {

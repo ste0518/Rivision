@@ -2,7 +2,7 @@ import { createId } from "@/lib/utils";
 import { inferTopic, splitShortLeadingTitle, stripLeadingLabel } from "@/lib/segmentation";
 import type { RevisionItem, RevisionItemType } from "@/lib/types";
 
-const labelledItemRegex = /\b(Definition|Theorem|Lemma|Proposition|Corollary|Proof|Remark|Example|Assumption|Property|Formula)\s*(?:[A-Za-z]?\d+(?:\.\d+)*)?\b/gi;
+const labelledItemRegex = /\b(Definition|Theorem|Lemma|Proposition|Corollary|Proof|Remark|Example|Assumption|Property|Algorithm|Formula)\s*(?:[A-Za-z]?\d+(?:\.\d+)*)?\b/g;
 const proofMarkerRegex = /\bProof(?:\s+of\s+(?:Theorem|Lemma|Proposition|Corollary)\s*[A-Za-z]?\d*(?:\.\d+)*)?\s*[:.]/i;
 
 export function normaliseRevisionItem(item: RevisionItem): RevisionItem {
@@ -81,27 +81,36 @@ export function buildQuestionPrompt(item: Pick<RevisionItem, "type" | "title" | 
 
 export function toLatexText(value: string) {
   let text = value
+    .replace(/\bindexed by t in a subset T of R\^d\b/g, "indexed by \\(t\\) in a subset \\(T\\subset \\mathbb{R}^d\\)")
+    .replace(/\bX\s*=\s*\(X_t\)_\{t\s+in\s+T\}/g, "\\(X=(X_t)_{t\\in T}\\)")
+    .replace(/\brandom variables X_t\b/g, "random variables \\(X_t\\)")
     .replace(/\bR\^([A-Za-z0-9]+)/g, "\\mathbb{R}^$1")
     .replace(/\bN\^?([A-Za-z0-9]*)\b/g, (_match, power: string) => (power ? `\\mathbb{N}^${power}` : "\\mathbb{N}"))
-    .replace(/([A-Za-z0-9_)])\s+in\s+([A-Za-z0-9_{\\])/g, "$1 \\in $2")
-    .replace(/([A-Za-z0-9_)])\s+subset\s+([A-Za-z0-9_{\\])/g, "$1 \\subset $2")
+    .replace(/\bt\s+in\s+T\b/g, "\\(t\\in T\\)")
     .replace(/\bsigma\^2\b/gi, "\\sigma^2")
     .replace(/\bsigma\b/gi, "\\sigma")
     .replace(/\bmu\b/gi, "\\mu")
     .replace(/\bSigma\b/g, "\\Sigma")
     .replace(/\bgamma\b/gi, "\\gamma");
 
-  text = text.replace(/([A-Z])=\(([^)]+)\)_\{([^}]+)\}/g, (_match, lhs: string, inner: string, subscript: string) => {
+  text = text.replace(/([A-Z])=\(([^)]+)\)_\{([^}]+)\}/g, (match, lhs: string, inner: string, subscript: string, offset: number, source: string) => {
+    if (isInsideInlineMath(source, offset)) return match;
     const compactSubscript = subscript.replace(/\s*\\in\s*/g, "\\in ");
     return `\\(${lhs}=(${inner})_{${compactSubscript}}\\)`;
   });
   text = text.replace(/\\mathbb\{R\}\^([A-Za-z0-9]+)/g, (match, _power: string, offset: number, source: string) =>
-    source.slice(Math.max(0, offset - 2), offset) === "\\(" ? match : `\\(${match}\\)`,
+    isInsideInlineMath(source, offset) ? match : `\\(${match}\\)`,
   );
   text = text.replace(/\\mathbb\{N\}(?:\^([A-Za-z0-9]+))?/g, (match, _power: string, offset: number, source: string) =>
-    source.slice(Math.max(0, offset - 2), offset) === "\\(" ? match : `\\(${match}\\)`,
+    isInsideInlineMath(source, offset) ? match : `\\(${match}\\)`,
   );
   return text;
+}
+
+function isInsideInlineMath(source: string, offset: number) {
+  const open = source.lastIndexOf("\\(", offset);
+  const close = source.lastIndexOf("\\)", offset);
+  return open > close;
 }
 
 export function countLabelledItems(value: string) {
@@ -109,7 +118,7 @@ export function countLabelledItems(value: string) {
 }
 
 export function typeFromLabel(value: string): RevisionItemType | undefined {
-  const match = value.match(/\b(Definition|Theorem|Lemma|Proposition|Corollary|Proof|Remark|Example|Assumption|Property|Formula)\s*(?:[A-Za-z]?\d+(?:\.\d+)*)?\b/i);
+  const match = value.match(/\b(Definition|Theorem|Lemma|Proposition|Corollary|Proof|Remark|Example|Assumption|Property|Algorithm|Formula)\s*(?:[A-Za-z]?\d+(?:\.\d+)*)?\b/);
   if (!match) return undefined;
   const word = match[1].toLowerCase();
   if (word === "definition") return "definition";
@@ -122,6 +131,7 @@ export function typeFromLabel(value: string): RevisionItemType | undefined {
   if (word === "example") return "example";
   if (word === "assumption") return "assumption";
   if (word === "property") return "property";
+  if (word === "algorithm") return "algorithm";
   if (word === "formula") return "formula";
   return undefined;
 }
@@ -157,8 +167,14 @@ function topicFromItem(item: Pick<RevisionItem, "type" | "title" | "statement">)
 }
 
 function buildExtractionWarning(item: Pick<RevisionItem, "title" | "statement" | "answer" | "type"> & { proof?: string }) {
-  if (countLabelledItems(`${item.statement} ${item.proof ?? ""}`) > 1) return "This card may contain multiple merged items.";
-  if (item.type === "definition" && item.statement.length > 1500) return "Definition is unusually long and may include unrelated text.";
+  if (countLabelledItems(`${item.statement} ${item.proof ?? ""}`) > 1) return "Over-merged card: contains multiple labelled items.";
+  if (item.type === "definition" && item.statement.length > 800) return "Definition is unusually long and may include unrelated text.";
+  if (item.type === "definition" && /\b(Theorem|Proof|Remark|Definition|Lemma|Proposition|Corollary)\b/.test(item.statement)) {
+    return "Over-merged card: contains multiple labelled items.";
+  }
+  if (theoremLike(item.type) && /\bDefinition\b[\s\S]*\bTheorem\b/.test(item.statement)) {
+    return "Over-merged card: theorem statement contains earlier definition text.";
+  }
   if (item.title.length > 140) return "Title is unusually long.";
   if (item.answer && item.answer.length > 2500) return "Answer is unusually long and may repeat a whole section.";
   if (/\b\d+(?:\.\d+)+\s+[A-Z][A-Za-z].{5,80}/.test(item.statement) && countLabelledItems(item.statement) > 0) {

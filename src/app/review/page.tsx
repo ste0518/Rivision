@@ -15,7 +15,10 @@ export default function ReviewPage() {
   const store = useStudyStore();
   const [revealed, setRevealed] = useState(false);
   const [proofVisible, setProofVisible] = useState(false);
-  const dueCards = useMemo(() => store.revisionItems.filter((item) => item.importance !== "not_required" && isDue(item)), [store.revisionItems]);
+  const dueCards = useMemo(
+    () => store.revisionItems.filter((item) => item.importance !== "not_required" && !needsRepair(item) && isDue(item)),
+    [store.revisionItems],
+  );
   const card = dueCards[0];
   function rate(rating: ReviewRating) {
     if (!card) return;
@@ -85,4 +88,8 @@ export default function ReviewPage() {
       )}
     </div>
   );
+}
+
+function needsRepair(item: { extractionWarning?: string; warnings?: string[] }) {
+  return Boolean(item.extractionWarning?.includes("Over-merged") || item.warnings?.some((warning) => warning.includes("Over-merged")));
 }

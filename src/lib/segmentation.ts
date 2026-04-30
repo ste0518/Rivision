@@ -1,22 +1,20 @@
-import type { CandidateRevisionBlock, ParsedDocument, RevisionItemType } from "@/lib/types";
+import { createId } from "@/lib/utils";
+import type { CandidateRevisionBlock, ParsedDocument, RevisionCandidateLabel, RevisionItemType } from "@/lib/types";
 
 type Marker = {
   kind: "label" | "section";
   start: number;
   end: number;
-  label: string;
+  label: RevisionCandidateLabel;
   type?: RevisionItemType;
   number?: string;
 };
 
 const labelWords = [
   "Definition",
-  "Def\\.?",
   "Theorem",
-  "Thm\\.?",
   "Lemma",
   "Proposition",
-  "Prop\\.?",
   "Corollary",
   "Remark",
   "Example",
@@ -25,14 +23,19 @@ const labelWords = [
   "Formula",
   "Equation",
   "Proof",
+  "Algorithm",
 ];
 
 const labelRegex = new RegExp(
-  `(^|[\\n\\r]|[.!?]\\s+|\\]\\s+|\\s{2,})(${labelWords.join("|")})\\s*([A-Za-z]?\\d+(?:\\.\\d+)*)?\\s*[:.)-]?\\s*`,
-  "gi",
+  `\\b(${labelWords.join("|")})\\s*(\\d+(?:\\.\\d+)*)?\\s*(?:[.:]|\\[[A-Za-z]{1,8}\\])?\\s*`,
+  "g",
 );
 
-export function segmentRevisionCandidates(document: ParsedDocument): CandidateRevisionBlock[] {
+export function segmentRevisionCandidates(parsedDocuments: ParsedDocument[]): CandidateRevisionBlock[] {
+  return parsedDocuments.flatMap(segmentRevisionDocument);
+}
+
+export function segmentRevisionDocument(document: ParsedDocument): CandidateRevisionBlock[] {
   const text = document.fullText.replace(/\r\n/g, "\n");
   if (!text.trim()) return [];
 
@@ -47,6 +50,7 @@ export function segmentRevisionCandidates(document: ParsedDocument): CandidateRe
     const title = inferCandidateTitle(marker.type ?? "other", marker.number, statement);
 
     return {
+      id: createId("candidate"),
       label: marker.label,
       type: marker.type ?? "other",
       number: marker.number,
@@ -64,7 +68,7 @@ export function segmentRevisionCandidates(document: ParsedDocument): CandidateRe
 
 export function stripLeadingLabel(rawText: string) {
   return rawText
-    .replace(/^\s*(Definition|Def\.?|Theorem|Thm\.?|Lemma|Proposition|Prop\.?|Corollary|Remark|Example|Assumption|Property|Formula|Equation|Proof)\s*[A-Za-z]?\d*(?:\.\d+)*\s*[:.)-]?\s*/i, "")
+    .replace(/^\s*(Definition|Theorem|Lemma|Proposition|Corollary|Remark|Example|Assumption|Property|Formula|Equation|Proof|Algorithm)\s*\d*(?:\.\d+)*\s*[:.)-]?\s*/i, "")
     .replace(/^\[[^\]]{1,24}\]\s*/, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -72,16 +76,17 @@ export function stripLeadingLabel(rawText: string) {
 
 export function labelToType(label: string): RevisionItemType | null {
   const word = label.toLowerCase().replace(/\./g, "");
-  if (word === "definition" || word === "def") return "definition";
-  if (word === "theorem" || word === "thm") return "theorem";
+  if (word === "definition") return "definition";
+  if (word === "theorem") return "theorem";
   if (word === "lemma") return "lemma";
-  if (word === "proposition" || word === "prop") return "proposition";
+  if (word === "proposition") return "proposition";
   if (word === "corollary") return "corollary";
   if (word === "proof") return "proof";
   if (word === "remark") return "remark";
   if (word === "example") return "example";
   if (word === "assumption") return "assumption";
   if (word === "property") return "property";
+  if (word === "algorithm") return "algorithm";
   if (word === "formula" || word === "equation") return "formula";
   return null;
 }
@@ -128,24 +133,39 @@ function collectMarkers(text: string) {
   labelRegex.lastIndex = 0;
 
   for (const match of text.matchAll(labelRegex)) {
-    const prefix = match[1] ?? "";
-    const label = match[2] ?? "";
-    const start = (match.index ?? 0) + prefix.length;
+    const label = normaliseCandidateLabel(match[1] ?? "");
+    const start = match.index ?? 0;
     const type = labelToType(label);
     if (!type) continue;
+    if (isFalsePositiveLabel(text, start)) continue;
     markers.push({
       kind: "label",
       start,
       end: (match.index ?? 0) + match[0].length,
       label,
       type,
-      number: match[3],
+      number: match[2],
     });
   }
 
   markers.push(...collectSectionMarkers(text));
   markers.push(...collectFormulaMarkers(text, markers));
   return markers.sort((a, b) => a.start - b.start || a.end - b.end);
+}
+
+function normaliseCandidateLabel(label: string): RevisionCandidateLabel {
+  if (label === "Equation") return "Formula";
+  if (labelWords.includes(label)) return label as RevisionCandidateLabel;
+  return "Other";
+}
+
+function isFalsePositiveLabel(text: string, start: number) {
+  const before = text.slice(Math.max(0, start - 16), start);
+  if (/\bof\s+$/i.test(before)) return true;
+  const previousChar = text[start - 1];
+  const isAtTextStart = start === 0;
+  const followsBoundary = !previousChar || /[\s([{:;.?!]/.test(previousChar);
+  return !isAtTextStart && !followsBoundary;
 }
 
 function collectSectionMarkers(text: string) {
@@ -162,7 +182,7 @@ function collectSectionMarkers(text: string) {
         kind: "section",
         start: offset + leadingWhitespace,
         end: offset + line.length,
-        label: trimmed,
+        label: "Other",
       });
     }
     offset += line.length + 1;
@@ -182,7 +202,7 @@ function collectFormulaMarkers(text: string, existingMarkers: Marker[]) {
         kind: "label",
         start,
         end: offset + line.length,
-        label: "Formula",
+        label: "Formula" satisfies RevisionCandidateLabel,
         type: "formula",
       });
     }

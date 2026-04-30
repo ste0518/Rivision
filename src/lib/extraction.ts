@@ -4,7 +4,7 @@ import { segmentRevisionCandidates, stripLeadingLabel } from "@/lib/segmentation
 import { buildQuestionPrompt, extractNumber, splitProofFromStatement, theoremLike, toLatexText } from "@/lib/revision-item-utils";
 import type { ExtractionPipelineMode, ExtractionVerificationReport, ParsedDocument, RevisionItem, RevisionItemType } from "@/lib/types";
 import { createId } from "@/lib/utils";
-import { buildSuspiciousItems, withValidation } from "@/lib/validation";
+import { buildSuspiciousItems, validateAndRepairRevisionItems, withValidation } from "@/lib/validation";
 
 export type ExtractRevisionItemsInput = {
   notesDocuments: ParsedDocument[];
@@ -32,7 +32,7 @@ export async function extractRevisionItems({
   if (settings.mode === "openai_api" || settings.mode === "cheap_scan_then_verify") {
     const llmResult = await extractViaApi({ notesDocuments, guidanceDocuments, sourceFile, settings });
     if (llmResult.items.length > 0 || llmResult.verification) {
-      const items = llmResult.items.map(withValidation);
+      const items = validateAndRepairRevisionItems(llmResult.items).map(withValidation);
       return {
         items,
         verification: mergeSuspiciousItems(llmResult.verification ?? emptyVerificationReport("Verification unavailable."), items),
@@ -43,7 +43,7 @@ export async function extractRevisionItems({
 
   const extracted = deterministicExtract(notesDocuments, notesText, guidanceText, sourceFile, safeMode);
   if (extracted.length > 0) {
-    const items = extracted.map(withValidation);
+    const items = validateAndRepairRevisionItems(extracted).map(withValidation);
     return {
       items,
       verification: mergeSuspiciousItems(emptyVerificationReport("Local deterministic extraction mode does not run LLM verification."), items),
@@ -173,7 +173,7 @@ function deterministicExtract(
     return [];
   }
 
-  const candidates = notesDocuments.flatMap(segmentRevisionCandidates);
+  const candidates = segmentRevisionCandidates(notesDocuments);
   const items: RevisionItem[] = [];
   const timestamp = new Date().toISOString();
   const consumedProofs = new Set<number>();
@@ -231,43 +231,6 @@ function deterministicExtract(
     });
   }
 
-  for (const match of notesText.matchAll(/\b(definition|theorem|lemma|proposition|corollary)\s+of\s+([^\n.:]{3,120}?)\s+(?:is|states?\s+that)\s+([^\n]{20,})/gi)) {
-    const type = normaliseType(match[1]);
-    if (!type) continue;
-    const statement = clean(match[3]);
-    const title = `${capitalise(type)} of ${clean(match[2])}`;
-    const { importance, reason } = classifyImportance(type, title, statement, guidanceText);
-    const uncertaintyNote = statement.length < 40 ? "Statement may be incomplete after text parsing." : undefined;
-    const theoremNumber = extractNumber(title);
-    const proofRequired = theoremLike(type) ? classifyProofRequired(guidanceText, title, statement) : undefined;
-    const answer = buildAnswer(type, statement);
-
-    items.push({
-      id: createId("card"),
-      type,
-      title,
-      statement,
-      statementLatex: toLatexText(statement),
-      originalRawText: match[0],
-      sourceFile,
-      sourceLocation: "inline pattern",
-      section: undefined,
-      theoremNumber,
-      tags: inferTags(type, `${title} ${statement}`),
-      importance: uncertaintyNote ? "unknown" : importance,
-      classificationConfidence: uncertaintyNote ? "low" : "medium",
-      guidanceReason: reason,
-      uncertaintyNote,
-      proofRequired,
-      questionPrompt: buildQuestionPrompt({ type, title, theoremNumber, statement, proofRequired }),
-      answer,
-      answerLatex: toLatexText(answer),
-      createdAt: timestamp,
-      updatedAt: timestamp,
-      reviewCount: 0,
-    });
-  }
-
   return dedupeItems(items);
 }
 
@@ -280,21 +243,6 @@ function splitTitleFromStatement(statement: string) {
     return { title, statement: firstSentence[2].trim() };
   }
   return { title: undefined, statement };
-}
-
-function normaliseType(value: string): RevisionItemType | null {
-  const word = value.toLowerCase().replace(/\./g, "");
-  if (word === "definition" || word === "def") return "definition";
-  if (word === "theorem" || word === "thm") return "theorem";
-  if (word === "lemma") return "lemma";
-  if (word === "proposition" || word === "prop") return "proposition";
-  if (word === "corollary") return "corollary";
-  if (word === "proof") return "proof";
-  if (word === "remark") return "remark";
-  if (word === "example") return "example";
-  if (word === "algorithm") return "algorithm";
-  if (word === "formula" || word === "equation") return "formula";
-  return null;
 }
 
 function dedupeItems(items: RevisionItem[]) {
