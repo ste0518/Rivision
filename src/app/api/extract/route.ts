@@ -1,13 +1,13 @@
 import { NextResponse } from "next/server";
 import { runLlmExtractionPipeline } from "@/lib/llm/pipeline";
 import type { LlmPipelineSettings } from "@/lib/llm/provider";
+import type { ParsedDocument } from "@/lib/types";
 
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as {
-      notesText: string;
-      guidanceText: string;
-      sourceFile: string;
+      notesDocuments: ParsedDocument[];
+      guidanceDocuments: ParsedDocument[];
       settings?: Partial<LlmPipelineSettings>;
     };
 
@@ -19,9 +19,8 @@ export async function POST(request: Request) {
     }
 
     const result = await runLlmExtractionPipeline({
-      notesText: body.notesText || "",
-      guidanceText: body.guidanceText || "",
-      sourceFile: body.sourceFile || "Uploaded notes",
+      notesDocuments: body.notesDocuments || [],
+      guidanceDocuments: body.guidanceDocuments || [],
       settings: body.settings,
     });
 

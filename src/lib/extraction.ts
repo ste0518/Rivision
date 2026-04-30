@@ -1,12 +1,12 @@
 import { createMockRevisionItems } from "@/lib/mock-data";
 import { defaultLlmPipelineSettings, type LlmPipelineSettings } from "@/lib/llm/provider";
-import type { Importance, RevisionItem, RevisionItemType } from "@/lib/types";
+import type { ExtractionPipelineMode, ExtractionVerificationReport, ParsedDocument, RevisionItem, RevisionItemType } from "@/lib/types";
 import { createId } from "@/lib/utils";
 import { withValidation } from "@/lib/validation";
 
-type ExtractRevisionItemsInput = {
-  notesText: string;
-  guidanceText: string;
+export type ExtractRevisionItemsInput = {
+  notesDocuments: ParsedDocument[];
+  guidanceDocuments: ParsedDocument[];
   sourceFile?: string;
 };
 
@@ -17,26 +17,48 @@ export function getLlmExtractionPrompt() {
 }
 
 export async function extractRevisionItems({
-  notesText,
-  guidanceText,
+  notesDocuments,
+  guidanceDocuments,
   sourceFile = "Uploaded notes",
-}: ExtractRevisionItemsInput): Promise<RevisionItem[]> {
+}: ExtractRevisionItemsInput): Promise<{ items: RevisionItem[]; verification: ExtractionVerificationReport; error?: string }> {
+  const notesText = notesDocuments.map((doc) => doc.fullText).join("\n\n");
+  const guidanceText = guidanceDocuments.map((doc) => doc.fullText).join("\n\n");
+  const hasRealInput = Boolean(notesText.trim() || guidanceText.trim());
+
   const settings = loadLlmPipelineSettings();
+  const safeMode = settings.mode as ExtractionPipelineMode;
   if (settings.mode === "openai_api" || settings.mode === "cheap_scan_then_verify") {
-    const llmItems = await extractViaApi({
-      notesText,
-      guidanceText,
-      sourceFile,
-      settings,
-    });
-    if (llmItems.length > 0) return llmItems.map(withValidation);
+    const llmResult = await extractViaApi({ notesDocuments, guidanceDocuments, sourceFile, settings });
+    if (llmResult.items.length > 0 || llmResult.verification) {
+      return {
+        items: llmResult.items.map(withValidation),
+        verification: llmResult.verification ?? emptyVerificationReport("Verification unavailable."),
+        error: llmResult.error,
+      };
+    }
   }
 
-  const extracted = deterministicExtract(notesText, guidanceText, sourceFile);
-  if (extracted.length > 0) return extracted.map(withValidation);
+  const extracted = deterministicExtract(notesText, guidanceText, sourceFile, safeMode);
+  if (extracted.length > 0) {
+    return {
+      items: extracted.map(withValidation),
+      verification: emptyVerificationReport("Local deterministic extraction mode does not run LLM verification."),
+    };
+  }
 
-  // TODO: Replace or augment this fallback with an LLM adapter using getLlmExtractionPrompt().
-  return createMockRevisionItems().map(withValidation);
+  // Avoid showing mock cards when the user already provided real files.
+  if (hasRealInput) {
+    return {
+      items: [],
+      verification: emptyVerificationReport("No extractable items detected from parsed content."),
+    };
+  }
+
+  // Keep a mock fallback only for empty input demo mode.
+  return {
+    items: createMockRevisionItems().map(withValidation),
+    verification: emptyVerificationReport("Demo mode: mock data"),
+  };
 }
 
 export function generateManualExtractionPrompt(input: { notesText: string; guidanceText: string; sourceFile: string }) {
@@ -53,11 +75,14 @@ Return STRICT JSON ONLY as an array of RevisionItem objects matching this schema
 - proofRequired?: boolean
 - sourceFile: string
 - sourceLocation?: string
+- pageNumber?: number
 - section?: string
 - theoremNumber?: string
 - tags: string[]
 - importance: "must_know" | "partial" | "not_required" | "unknown"
+- classificationConfidence?: "high" | "medium" | "low"
 - guidanceReason?: string
+- guidanceEvidence?: string[]
 - uncertaintyNote?: string
 - questionPrompt: string
 - answer: string
@@ -84,22 +109,22 @@ ${input.notesText}`;
 }
 
 async function extractViaApi(input: {
-  notesText: string;
-  guidanceText: string;
+  notesDocuments: ParsedDocument[];
+  guidanceDocuments: ParsedDocument[];
   sourceFile: string;
   settings: LlmPipelineSettings;
-}) {
+}): Promise<{ items: RevisionItem[]; verification?: ExtractionVerificationReport; error?: string }> {
   try {
     const response = await fetch("/api/extract", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
     });
-    if (!response.ok) return [];
-    const payload = (await response.json()) as { items?: RevisionItem[] };
-    return payload.items ?? [];
+    const payload = (await response.json()) as { items?: RevisionItem[]; verification?: ExtractionVerificationReport; error?: string };
+    if (!response.ok) return { items: payload.items ?? [], verification: payload.verification, error: payload.error ?? "LLM extraction failed." };
+    return { items: payload.items ?? [], verification: payload.verification };
   } catch {
-    return [];
+    return { items: [], error: "Network error while contacting extraction API." };
   }
 }
 
@@ -121,7 +146,8 @@ export function saveLlmPipelineSettings(settings: LlmPipelineSettings) {
   window.localStorage.setItem(llmSettingsStorageKey, JSON.stringify(settings));
 }
 
-function deterministicExtract(notesText: string, guidanceText: string, sourceFile: string): RevisionItem[] {
+function deterministicExtract(notesText: string, guidanceText: string, sourceFile: string, mode: ExtractionPipelineMode): RevisionItem[] {
+  if (mode !== "local_rules_only") return [];
   if (!notesText.trim() || notesText.includes("[PDF placeholder]") || notesText.includes("[DOCX placeholder]")) {
     return [];
   }
@@ -157,6 +183,7 @@ function deterministicExtract(notesText: string, guidanceText: string, sourceFil
       theoremNumber,
       tags: inferTags(marker.type, `${title} ${statement}`),
       importance: uncertaintyNote ? "unknown" : importance,
+      classificationConfidence: uncertaintyNote ? "low" : "medium",
       guidanceReason: reason,
       uncertaintyNote,
       questionPrompt: buildQuestion(marker.type, title),
@@ -186,6 +213,7 @@ function deterministicExtract(notesText: string, guidanceText: string, sourceFil
       theoremNumber: extractNumber(title),
       tags: inferTags(type, `${title} ${statement}`),
       importance: uncertaintyNote ? "unknown" : importance,
+      classificationConfidence: uncertaintyNote ? "low" : "medium",
       guidanceReason: reason,
       uncertaintyNote,
       questionPrompt: buildQuestion(type, title),
@@ -288,7 +316,7 @@ function capitalise(value: string) {
   return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
-function classifyImportance(type: RevisionItemType, title: string, statement: string, guidanceText: string): { importance: Importance; reason?: string } {
+function classifyImportance(type: RevisionItemType, title: string, statement: string, guidanceText: string): { importance: RevisionItem["importance"]; reason?: string } {
   const guidance = guidanceText.toLowerCase();
   const haystack = `${title} ${statement}`.toLowerCase();
   if (!guidance.trim()) return { importance: "unknown", reason: "No guidance file content was available." };
@@ -327,6 +355,16 @@ function classifyImportance(type: RevisionItemType, title: string, statement: st
   }
 
   return { importance: "unknown", reason: "Could not confidently match this item to the guidance." };
+}
+
+function emptyVerificationReport(notes: string): ExtractionVerificationReport {
+  return {
+    missingCandidates: [],
+    suspiciousItems: [],
+    guidanceAmbiguities: [],
+    overallCompleteness: "low",
+    notes,
+  };
 }
 
 function inferTags(type: RevisionItemType, text: string) {

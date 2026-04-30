@@ -1,22 +1,21 @@
-import type { ExtractionVerificationReport, RevisionItem } from "@/lib/types";
+import type { ExtractionPipelineMode, ExtractionVerificationReport, ParsedDocument, RevisionItem } from "@/lib/types";
 
 export interface LLMProvider {
   extractRevisionItems(input: {
-    notesText: string;
-    guidanceText: string;
-    sourceFile: string;
+    notesDocuments: ParsedDocument[];
+    guidanceDocuments: ParsedDocument[];
+    pipelineMode: ExtractionPipelineMode;
   }): Promise<RevisionItem[]>;
 
   verifyExtractionCompleteness(input: {
-    notesText: string;
+    notesDocuments: ParsedDocument[];
+    guidanceDocuments: ParsedDocument[];
     extractedItems: RevisionItem[];
   }): Promise<ExtractionVerificationReport>;
 }
 
-export type ExtractionMode = "local_rules_only" | "manual_json_import" | "openai_api" | "cheap_scan_then_verify";
-
 export type LlmPipelineSettings = {
-  mode: ExtractionMode;
+  mode: ExtractionPipelineMode;
   cheapModel: string;
   primaryModel: string;
 };
