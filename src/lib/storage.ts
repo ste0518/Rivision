@@ -1,6 +1,14 @@
-import type { GuidanceFile, RejectedRevisionItem, RevisionItem, ReviewSession, StudyFile } from "@/lib/types";
+import type { CourseKnowledgeMap, CurationReport, GuidanceFile, RejectedRevisionItem, RevisionItem, ReviewSession, StudyFile } from "@/lib/types";
 
-export type StudyState = { notesFiles: StudyFile[]; guidanceFiles: GuidanceFile[]; revisionItems: RevisionItem[]; rejectedItems: RejectedRevisionItem[]; reviewSessions: ReviewSession[]; };
+export type StudyState = {
+  notesFiles: StudyFile[];
+  guidanceFiles: GuidanceFile[];
+  revisionItems: RevisionItem[];
+  rejectedItems: RejectedRevisionItem[];
+  reviewSessions: ReviewSession[];
+  courseKnowledgeMap?: CourseKnowledgeMap;
+  curationReport?: CurationReport;
+};
 export const emptyStudyState: StudyState = { notesFiles: [], guidanceFiles: [], revisionItems: [], rejectedItems: [], reviewSessions: [] };
 const storageKey = "rivision.studyState.v1";
 export function loadStudyState(): StudyState {

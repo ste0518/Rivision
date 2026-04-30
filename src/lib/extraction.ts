@@ -1,3 +1,251 @@
+import { curateRevisionDeck } from "@/lib/curation";
+import { defaultLlmPipelineSettings, type LlmPipelineSettings } from "@/lib/llm/provider";
+import { extractionSystemPrompt } from "@/lib/llm/prompts";
+import { attachProofsToPreviousTheorem, segmentRevisionCandidates } from "@/lib/segmentation";
+import type {
+  CourseKnowledgeMap,
+  CurationReport,
+  CuratedDeckResult,
+  ExtractionPipelineMode,
+  ExtractionVerificationReport,
+  ParsedDocument,
+  RejectedRevisionItem,
+  RevisionItem,
+} from "@/lib/types";
+import { buildSuspiciousItems, validateAndRepairRevisionItems, withValidation } from "@/lib/validation";
+
+export type ExtractRevisionItemsInput = {
+  notesDocuments: ParsedDocument[];
+  guidanceDocuments: ParsedDocument[];
+  sourceFile?: string;
+};
+
+export type ExtractRevisionItemsResult = {
+  items: RevisionItem[];
+  rejectedItems: RejectedRevisionItem[];
+  verification: ExtractionVerificationReport;
+  courseKnowledgeMap: CourseKnowledgeMap;
+  curationReport: CurationReport;
+  error?: string;
+};
+
+export function getLlmExtractionPrompt() {
+  return extractionSystemPrompt;
+}
+
+export async function extractRevisionItems({
+  notesDocuments,
+  guidanceDocuments,
+  sourceFile = "Uploaded notes",
+}: ExtractRevisionItemsInput): Promise<ExtractRevisionItemsResult> {
+  const notesText = notesDocuments.map((doc) => doc.fullText).join("\n\n");
+  const guidanceText = guidanceDocuments.map((doc) => doc.fullText).join("\n\n");
+  const hasRealInput = Boolean(notesText.trim() || guidanceText.trim());
+  const settings = loadLlmPipelineSettings();
+  const safeMode = settings.mode as ExtractionPipelineMode;
+
+  if (settings.mode === "openai_api" || settings.mode === "cheap_scan_then_verify") {
+    const llmResult = await extractViaApi({ notesDocuments, guidanceDocuments, sourceFile, settings });
+    if (llmResult.items.length > 0 || llmResult.rejectedItems.length > 0 || llmResult.verification || llmResult.error) {
+      const { items, rejectedItems } = postProcessRevisionItems(llmResult.items, llmResult.rejectedItems);
+      return {
+        items,
+        rejectedItems,
+        courseKnowledgeMap: llmResult.courseKnowledgeMap ?? emptyCourseKnowledgeMap(),
+        curationReport: llmResult.curationReport ?? emptyCurationReport(0, items.length, rejectedItems.length),
+        verification: mergeSuspiciousItems(llmResult.verification ?? emptyVerificationReport("Verification unavailable."), items),
+        error: llmResult.error,
+      };
+    }
+  }
+
+  const curated = await deterministicCurate(notesDocuments, guidanceDocuments, notesText, safeMode);
+  if (curated.keptItems.length > 0 || curated.rejectedItems.length > 0) {
+    const { items, rejectedItems } = postProcessRevisionItems(curated.keptItems, curated.rejectedItems);
+    return {
+      items,
+      rejectedItems,
+      courseKnowledgeMap: curated.courseKnowledgeMap,
+      curationReport: curated.curationReport,
+      verification: mergeSuspiciousItems(emptyVerificationReport("Local deterministic extraction mode does not run LLM verification."), items),
+    };
+  }
+
+  if (hasRealInput) {
+    return {
+      items: [],
+      rejectedItems: [],
+      courseKnowledgeMap: emptyCourseKnowledgeMap(),
+      curationReport: emptyCurationReport(0, 0, 0),
+      verification: emptyVerificationReport("No extractable items detected from parsed content."),
+    };
+  }
+
+  return {
+    items: [],
+    rejectedItems: [],
+    courseKnowledgeMap: emptyCourseKnowledgeMap(),
+    curationReport: emptyCurationReport(0, 0, 0),
+    verification: emptyVerificationReport("Demo mode: upload notes and guidance to build a revision deck."),
+  };
+}
+
+export function generateManualExtractionPrompt(input: { notesText: string; guidanceText: string; sourceFile: string }) {
+  return `${extractionSystemPrompt}
+
+Return STRICT JSON ONLY as a CuratedDeckResult object with keptItems, rejectedItems, courseKnowledgeMap, and curationReport.
+
+Every kept RevisionItem must include id, type, title, conceptName, displayTitle, cardFront, taskPrompt, cardPurpose, statement, sourceFile, tags, importance, questionPrompt, answer, createdAt, and updatedAt.
+
+Rejected items must include originalCandidateId, title, type, rejectionCategory, rejectionReason, confidence, and sourceLocation when available.
+
+Source file: ${input.sourceFile}
+
+Guidance text:
+${input.guidanceText || "(none)"}
+
+Lecture notes:
+${input.notesText}`;
+}
+
+async function extractViaApi(input: {
+  notesDocuments: ParsedDocument[];
+  guidanceDocuments: ParsedDocument[];
+  sourceFile: string;
+  settings: LlmPipelineSettings;
+}): Promise<Partial<ExtractRevisionItemsResult> & { items: RevisionItem[]; rejectedItems: RejectedRevisionItem[] }> {
+  try {
+    const response = await fetch("/api/extract", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(input),
+    });
+    const payload = (await response.json()) as Partial<ExtractRevisionItemsResult>;
+    if (!response.ok) {
+      return {
+        items: payload.items ?? [],
+        rejectedItems: payload.rejectedItems ?? [],
+        verification: payload.verification,
+        courseKnowledgeMap: payload.courseKnowledgeMap,
+        curationReport: payload.curationReport,
+        error: payload.error ?? "LLM curation failed.",
+      };
+    }
+    return {
+      items: payload.items ?? [],
+      rejectedItems: payload.rejectedItems ?? [],
+      verification: payload.verification,
+      courseKnowledgeMap: payload.courseKnowledgeMap,
+      curationReport: payload.curationReport,
+    };
+  } catch {
+    return { items: [], rejectedItems: [], error: "Network error while contacting extraction API." };
+  }
+}
+
+const llmSettingsStorageKey = "rivision.llm.settings.v1";
+
+export function loadLlmPipelineSettings(): LlmPipelineSettings {
+  if (typeof window === "undefined") return defaultLlmPipelineSettings;
+  const raw = window.localStorage.getItem(llmSettingsStorageKey);
+  if (!raw) return defaultLlmPipelineSettings;
+  try {
+    return { ...defaultLlmPipelineSettings, ...(JSON.parse(raw) as Partial<LlmPipelineSettings>) };
+  } catch {
+    return defaultLlmPipelineSettings;
+  }
+}
+
+export function saveLlmPipelineSettings(settings: LlmPipelineSettings) {
+  if (typeof window === "undefined") return;
+  window.localStorage.setItem(llmSettingsStorageKey, JSON.stringify(settings));
+}
+
+async function deterministicCurate(
+  notesDocuments: ParsedDocument[],
+  guidanceDocuments: ParsedDocument[],
+  notesText: string,
+  mode: ExtractionPipelineMode,
+): Promise<CuratedDeckResult> {
+  if (mode !== "local_rules_only") return emptyCuratedDeck();
+  if (!notesText.trim() || notesText.includes("[PDF placeholder]") || notesText.includes("[DOCX placeholder]")) return emptyCuratedDeck();
+  const candidates = attachProofsToPreviousTheorem(segmentRevisionCandidates(notesDocuments));
+  return curateRevisionDeck({ candidates, guidanceDocuments, parsedNotes: notesDocuments });
+}
+
+function postProcessRevisionItems(items: RevisionItem[], rejectedItems: RejectedRevisionItem[]) {
+  const validation = validateAndRepairRevisionItems(items);
+  return {
+    items: [...validation.validItems, ...validation.invalidItems].map(withValidation),
+    rejectedItems: rejectedItems.map((item) => ({
+      ...item,
+      originalItem: item.originalItem ? withValidation(item.originalItem) : undefined,
+    })),
+  };
+}
+
+function mergeSuspiciousItems(report: ExtractionVerificationReport, items: RevisionItem[]): ExtractionVerificationReport {
+  const existing = new Set(report.suspiciousItems.map((item) => `${item.itemId}|${item.issue}`));
+  const suspiciousItems = [...report.suspiciousItems];
+  for (const item of buildSuspiciousItems(items)) {
+    const key = `${item.itemId}|${item.issue}`;
+    if (existing.has(key)) continue;
+    existing.add(key);
+    suspiciousItems.push(item);
+  }
+  return { ...report, suspiciousItems };
+}
+
+function emptyVerificationReport(notes: string): ExtractionVerificationReport {
+  return {
+    missingCandidates: [],
+    suspiciousItems: [],
+    guidanceAmbiguities: [],
+    overallCompleteness: "low",
+    notes,
+  };
+}
+
+function emptyCuratedDeck(): CuratedDeckResult {
+  return {
+    keptItems: [],
+    rejectedItems: [],
+    courseKnowledgeMap: emptyCourseKnowledgeMap(),
+    curationReport: emptyCurationReport(0, 0, 0),
+  };
+}
+
+function emptyCourseKnowledgeMap(): CourseKnowledgeMap {
+  return {
+    coreTopics: [],
+    requiredSections: [],
+    formulaPolicy: {
+      standaloneFormulaRule: "Only named, central, examinable formulas become standalone cards.",
+      keepStandaloneWhen: [],
+      embedOrRejectWhen: [],
+      guidanceEvidence: [],
+    },
+    proofPolicy: {
+      proofCardRule: "Create proof-recall cards only when guidance asks for proof or derivation.",
+      proofRequiredWhen: [],
+      proofOptionalWhen: [],
+      guidanceEvidence: [],
+    },
+  };
+}
+
+function emptyCurationReport(totalCandidates: number, keptCount: number, rejectedCount: number): CurationReport {
+  return {
+    totalCandidates,
+    keptCount,
+    rejectedCount,
+    formulaCandidates: 0,
+    formulaKeptCount: 0,
+    formulaRejectedCount: 0,
+    notes: [],
+  };
+}
+/*
 import { createMockRevisionItems } from "@/lib/mock-data";
 import { defaultLlmPipelineSettings, type LlmPipelineSettings } from "@/lib/llm/provider";
 import { attachProofsToPreviousTheorem, segmentRevisionCandidates, stripLeadingLabel } from "@/lib/segmentation";
@@ -410,3 +658,4 @@ function buildAnswer(type: RevisionItemType, statement: string) {
   if (type === "formula") return `${statement}\n\nExplain the notation and conditions under which the formula applies.`;
   return statement;
 }
+*/

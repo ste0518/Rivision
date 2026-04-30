@@ -13,7 +13,7 @@ import { MathMarkdown } from "@/components/MathMarkdown";
 import { extractRevisionItems, generateManualExtractionPrompt, loadLlmPipelineSettings } from "@/lib/extraction";
 import { buildSegmentationDebug, segmentRevisionCandidates } from "@/lib/segmentation";
 import { validateRevisionItemsPayload, withValidation } from "@/lib/validation";
-import type { ExtractionVerificationReport, ParsedDocument, RevisionItem } from "@/lib/types";
+import type { CuratedDeckResult, ExtractionVerificationReport, ParsedDocument, RevisionItem } from "@/lib/types";
 import { useStudyStore } from "@/hooks/use-study-store";
 import { createId } from "@/lib/utils";
 
@@ -36,8 +36,8 @@ export default function ExtractPage() {
   const candidates = useMemo(() => segmentRevisionCandidates(notesDocuments), [notesDocuments]);
   const segmentationDebug = useMemo(() => buildSegmentationDebug(notesDocuments), [notesDocuments]);
   const candidateSegmentationWarning = segmentationDebug.some((document) => document.warnings.length > 0);
-  const repairItems = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && needsRepair(item)), [store.revisionItems]);
-  const normalItems = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && !needsRepair(item)), [store.revisionItems]);
+  const needsReviewItems = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && (item.curationStatus === "needs_review" || needsRepair(item))), [store.revisionItems]);
+  const normalItems = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && item.curationStatus !== "needs_review" && item.standaloneValue !== "low" && !needsRepair(item)), [store.revisionItems]);
   const failedDocuments = useMemo(
     () => allDocuments.filter((doc) => !doc.diagnostics.success || doc.diagnostics.extractionQuality === "failed" || !doc.fullText.trim()),
     [allDocuments],
@@ -66,7 +66,7 @@ export default function ExtractPage() {
     }
 
     const result = await extractRevisionItems({ notesDocuments, guidanceDocuments, sourceFile });
-    store.setRevisionItems(result.items, result.rejectedItems);
+    store.setRevisionItems(result.items, result.rejectedItems, { courseKnowledgeMap: result.courseKnowledgeMap, curationReport: result.curationReport });
     setVerification(result.verification);
     if (result.error) setApiError(result.error);
 
@@ -74,10 +74,10 @@ export default function ExtractPage() {
       if (result.items.length === 0) {
         setStatus("OpenAI extraction returned no kept items. Check parsing diagnostics and rejected low-relevance items.");
       } else {
-        setStatus(`Extraction complete via OpenAI pipeline with ${result.items.length} kept and ${result.rejectedItems.length} rejected item(s).`);
+        setStatus(`Deck curation complete via OpenAI pipeline with ${result.curationReport.keptCount} kept, ${result.items.filter((item) => item.curationStatus === "needs_review").length} needing review, and ${result.rejectedItems.length} rejected item(s).`);
       }
     } else {
-      setStatus(`Extraction complete via local deterministic rules with ${result.items.length} kept and ${result.rejectedItems.length} rejected item(s).`);
+      setStatus(`Deck curation complete via local deterministic rules with ${result.curationReport.keptCount} kept, ${result.items.filter((item) => item.curationStatus === "needs_review").length} needing review, and ${result.rejectedItems.length} rejected item(s).`);
     }
 
     setExtracting(false);
@@ -86,10 +86,11 @@ export default function ExtractPage() {
   function handleManualImport() {
     try {
       const parsed = JSON.parse(manualJson) as unknown;
-      const result = validateRevisionItemsPayload(parsed);
+      const manualDeck = isCuratedDeckResult(parsed) ? parsed : undefined;
+      const result = validateRevisionItemsPayload(manualDeck ? manualDeck.keptItems : parsed);
       setManualErrors(result.errors);
       if (result.errors.length > 0) return;
-      store.setRevisionItems(result.items.map(withValidation), []);
+      store.setRevisionItems(result.items.map(withValidation), manualDeck?.rejectedItems ?? [], manualDeck ? { courseKnowledgeMap: manualDeck.courseKnowledgeMap, curationReport: manualDeck.curationReport } : undefined);
       setStatus(`Imported ${result.items.length} card(s) from manual JSON.`);
     } catch {
       setManualErrors(["JSON parse error. Please provide valid JSON array."]);
@@ -123,6 +124,7 @@ export default function ExtractPage() {
       pageNumber: candidate.pageNumber,
       tags: ["verification-missing"],
       importance: "unknown",
+      cardPurpose: candidate.type === "definition" ? "definition_recall" : candidate.type === "formula" ? "formula_recall" : "theorem_statement",
       classificationConfidence: "low",
       guidanceReason: "Added manually from verification report.",
       uncertaintyNote: "Candidate auto-created from verification report; review needed.",
@@ -169,6 +171,21 @@ export default function ExtractPage() {
           )}
         </CardContent>
       </Card>
+
+      {store.curationReport ? (
+        <Card className="mt-6">
+          <CardHeader>
+            <CardTitle>Curation report</CardTitle>
+            <CardDescription>
+              {store.curationReport.totalCandidates} candidate(s) scored · {store.curationReport.keptCount} kept · {needsReviewItems.length} need review · {store.curationReport.rejectedCount} rejected
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm text-slate-600">
+            <p>Formulas: {store.curationReport.formulaKeptCount} kept / {store.curationReport.formulaRejectedCount} rejected from {store.curationReport.formulaCandidates} candidate(s).</p>
+            {store.curationReport.notes.map((note) => <p key={note}>{note}</p>)}
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card className="mt-6">
         <CardHeader>
@@ -268,14 +285,21 @@ export default function ExtractPage() {
         </CardContent>
       </Card>
 
-      {repairItems.length > 0 ? (
+      {needsReviewItems.length > 0 ? (
         <Card className="mt-6 border-amber-300 bg-amber-50">
           <CardHeader>
-            <CardTitle>Needs repair</CardTitle>
-            <CardDescription>These cards were flagged as over-merged or suspicious and are not shown as normal review cards.</CardDescription>
+            <CardTitle>Needs review</CardTitle>
+            <CardDescription>Borderline or suspicious items. These are not shown in normal review until manually accepted.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {repairItems.map((item) => <ExtractedCard key={item.id} item={item} onImportanceChange={(importance) => store.upsertRevisionItem({ ...item, importance, updatedAt: new Date().toISOString() })} />)}
+            {needsReviewItems.map((item) => (
+              <ExtractedCard
+                key={item.id}
+                item={item}
+                onImportanceChange={(importance) => store.upsertRevisionItem({ ...item, importance, updatedAt: new Date().toISOString() })}
+                onAccept={() => store.upsertRevisionItem({ ...item, curationStatus: "kept", updatedAt: new Date().toISOString() })}
+              />
+            ))}
           </CardContent>
         </Card>
       ) : null}
@@ -291,15 +315,15 @@ export default function ExtractPage() {
               <div key={rejected.id} className="rounded-lg border bg-white p-3 text-sm">
                 <div className="flex flex-wrap items-center justify-between gap-3">
                   <div>
-                    <p className="font-medium">{rejected.originalItem.title}</p>
+                    <p className="font-medium">{rejected.title}</p>
                     <p className="text-xs text-slate-500">
-                      {rejected.originalItem.type} · {rejected.rejectionCategory} · confidence {rejected.confidence} · {rejected.originalItem.sourceLocation || "source unknown"}
+                      {rejected.type} · {rejected.rejectionCategory} · confidence {rejected.confidence} · {rejected.sourceLocation || rejected.originalItem?.sourceLocation || "source unknown"}
                     </p>
                   </div>
-                  <Button size="sm" variant="outline" onClick={() => store.restoreRejectedItem(rejected.id)}>Restore as card</Button>
+                  <Button size="sm" variant="outline" onClick={() => store.restoreRejectedItem(rejected.id)} disabled={!rejected.originalItem}>Restore as card</Button>
                 </div>
                 <p className="mt-2 text-slate-700">{rejected.rejectionReason}</p>
-                <MathMarkdown content={previewText(rejected.originalItem.statementLatex || rejected.originalItem.statement)} className="mt-2 bg-transparent p-0 text-sm text-slate-500" />
+                {rejected.originalItem ? <MathMarkdown content={previewText(rejected.originalItem.statementLatex || rejected.originalItem.statement)} className="mt-2 bg-transparent p-0 text-sm text-slate-500" /> : null}
               </div>
             ))}
           </CardContent>
@@ -309,7 +333,7 @@ export default function ExtractPage() {
       {normalItems.length > 0 ? (
         <Card className="mt-6">
           <CardHeader>
-            <CardTitle>Kept cards</CardTitle>
+          <CardTitle>Kept revision cards</CardTitle>
             <CardDescription>These cards are included in normal review.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
@@ -323,11 +347,11 @@ export default function ExtractPage() {
                       {item.extractionWarning || item.warnings?.length ? <Badge variant="unknown">check extraction</Badge> : null}
                     </div>
                   </div>
-                  <CardDescription>{item.type} · {item.section || "section unknown"} · {item.sourceLocation || "source unknown"}</CardDescription>
+                  <CardDescription>{item.type} · {item.cardPurpose} · {item.section || "section unknown"} · {item.sourceLocation || "source unknown"}</CardDescription>
                 </CardHeader>
                 <CardContent>
                   <MathMarkdown content={previewText(item.statementLatex || item.statement)} className="bg-transparent p-0 text-sm text-slate-600" />
-                  <p className="mt-2 text-xs text-slate-500">confidence: {item.classificationConfidence || "unknown"} · standalone {item.standaloneValue ?? "unknown"}</p>
+                  <p className="mt-2 text-xs text-slate-500">confidence: {item.classificationConfidence || "unknown"} · standalone {item.standaloneValue ?? "unknown"} · purpose {item.cardPurpose}</p>
                   {item.relevanceReason ? <p className="mt-2 text-xs text-slate-500">{item.relevanceReason}</p> : null}
                   {item.guidanceReason ? <p className="mt-2 text-xs text-slate-500">{item.guidanceReason}</p> : null}
                   {item.uncertaintyNote ? <p className="mt-1 text-xs text-amber-700">{item.uncertaintyNote}</p> : null}
@@ -399,7 +423,7 @@ export default function ExtractPage() {
   );
 }
 
-function ExtractedCard({ item, onImportanceChange }: { item: RevisionItem; onImportanceChange: (importance: RevisionItem["importance"]) => void }) {
+function ExtractedCard({ item, onImportanceChange, onAccept }: { item: RevisionItem; onImportanceChange: (importance: RevisionItem["importance"]) => void; onAccept?: () => void }) {
   return (
     <Card>
       <CardHeader>
@@ -411,14 +435,16 @@ function ExtractedCard({ item, onImportanceChange }: { item: RevisionItem; onImp
       </CardHeader>
       <CardContent>
         <MathMarkdown content={previewText(item.statementLatex || item.statement)} className="bg-transparent p-0 text-sm text-slate-600" />
+        {item.relevanceReason ? <p className="mt-2 text-xs text-slate-500">{item.relevanceReason}</p> : null}
         {item.extractionWarning ? <p className="mt-2 text-xs text-amber-700">{item.extractionWarning}</p> : null}
-        <div className="mt-2">
+        <div className="mt-2 flex flex-wrap gap-2">
           <Select value={item.importance} onChange={(event) => onImportanceChange(event.target.value as RevisionItem["importance"])}>
             <option value="must_know">must_know</option>
             <option value="partial">partial</option>
             <option value="not_required">not_required</option>
             <option value="unknown">unknown</option>
           </Select>
+          {onAccept ? <Button size="sm" variant="outline" onClick={onAccept}>Keep in review</Button> : null}
         </div>
       </CardContent>
     </Card>
@@ -441,6 +467,15 @@ function needsRepair(item: RevisionItem) {
 
 function previewText(value: string) {
   return value.length > 200 ? `${value.slice(0, 200)}...` : value;
+}
+
+function isCuratedDeckResult(value: unknown): value is CuratedDeckResult {
+  return Boolean(
+    value &&
+      typeof value === "object" &&
+      Array.isArray((value as Partial<CuratedDeckResult>).keptItems) &&
+      Array.isArray((value as Partial<CuratedDeckResult>).rejectedItems),
+  );
 }
 
 function toLegacyParsedDocument(sourceFile: string, fullText: string): ParsedDocument {

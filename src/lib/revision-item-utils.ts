@@ -19,10 +19,11 @@ export function normaliseRevisionItem(item: RevisionItem): RevisionItem {
   const conceptName = (isUsableConceptName(item.conceptName) ? item.conceptName : extractedConceptName) || correctedType;
   const displayTitle = buildDisplayTitle(correctedType, theoremNumber, conceptName, item.displayTitle ?? item.title);
   const cardFront = buildCardFront({ ...item, type: correctedType, theoremNumber, conceptName, displayTitle });
-  const taskPrompt = item.taskPrompt ?? buildTaskPrompt(correctedType, Boolean(item.proofRequired));
   const title = normaliseTitle({ ...item, type: correctedType, theoremNumber, statement, titleTopic: statementParts.title, conceptName, displayTitle });
   const extractionWarning = item.extractionWarning ?? buildExtractionWarning({ ...item, type: correctedType, title, statement, proof });
   const proofRequired = theoremLike(correctedType) ? item.proofRequired : undefined;
+  const cardPurpose = item.cardPurpose ?? inferCardPurpose(correctedType, title, statement, proofRequired);
+  const taskPrompt = item.taskPrompt ?? buildTaskPrompt(correctedType, Boolean(proofRequired), cardPurpose);
   const answer = cleanAnswer(correctedType, statement, item.answer);
   const statementLatex = repairMathTextToLatex(item.statementLatex || statement);
   const proofLatex = proof ? repairMathTextToLatex(item.proofLatex || proof) : undefined;
@@ -37,6 +38,8 @@ export function normaliseRevisionItem(item: RevisionItem): RevisionItem {
     displayTitle,
     cardFront,
     taskPrompt,
+    cardPurpose,
+    curationStatus: item.curationStatus ?? "kept",
     statement,
     statementLatex,
     originalRawText,
@@ -312,7 +315,29 @@ function buildCardFront(item: ConceptItem) {
   return item.conceptName || item.displayTitle || item.title;
 }
 
-function buildTaskPrompt(type: RevisionItemType, proofRequired: boolean) {
+function inferCardPurpose(type: RevisionItemType, title: string, statement: string, proofRequired?: boolean): RevisionItem["cardPurpose"] {
+  const lower = `${title} ${statement}`.toLowerCase();
+  if (type === "proof" || proofRequired) return "proof_recall";
+  if (type === "definition") {
+    if (/\b(vs|versus|difference|distinction|strict|weak)\b/.test(lower) && /\bstationarity|stationary\b/.test(lower)) return "conceptual_distinction";
+    return "definition_recall";
+  }
+  if (theoremLike(type)) return "theorem_statement";
+  if (type === "formula") {
+    if (/\bkriging system|ordinary kriging|set up|calculate|solve\b/.test(lower)) return "calculation_template";
+    return "formula_recall";
+  }
+  if (type === "algorithm") return "method_steps";
+  if (/\bcondition|applies|valid|when can|if and only if\b/.test(lower)) return "application_condition";
+  if (/\b(vs|versus|difference|distinction|compare|strict|weak)\b/.test(lower)) return "conceptual_distinction";
+  return "definition_recall";
+}
+
+function buildTaskPrompt(type: RevisionItemType, proofRequired: boolean, purpose: RevisionItem["cardPurpose"]) {
+  if (purpose === "conceptual_distinction") return "Explain the difference and implication relationship.";
+  if (purpose === "calculation_template") return "Set up the calculation template.";
+  if (purpose === "method_steps") return "Recall the method steps.";
+  if (purpose === "application_condition") return "State when this applies.";
   if (type === "definition") return "Recall the exact definition.";
   if (type === "formula") return "Write down the formula and explain each term.";
   if (type === "proof" || proofRequired) return "Reproduce the proof.";

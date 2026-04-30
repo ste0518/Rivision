@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createMockRevisionItems } from "@/lib/mock-data";
 import { emptyStudyState, loadStudyState, saveStudyState, type StudyState } from "@/lib/storage";
-import type { GuidanceFile, RejectedRevisionItem, RevisionItem, ReviewRating, ReviewSession, StudyFile } from "@/lib/types";
+import type { CourseKnowledgeMap, CurationReport, GuidanceFile, RejectedRevisionItem, RevisionItem, ReviewRating, ReviewSession, StudyFile } from "@/lib/types";
 import { applyReviewRating } from "@/lib/srs";
 import { withValidation } from "@/lib/validation";
 
@@ -28,8 +28,14 @@ export function useStudyStore() {
     addGuidanceFiles(files: GuidanceFile[]) { setState((current) => ({ ...current, guidanceFiles: [...current.guidanceFiles, ...files] })); },
     removeNotesFile(id: string) { setState((current) => ({ ...current, notesFiles: current.notesFiles.filter((file) => file.id !== id) })); },
     removeGuidanceFile(id: string) { setState((current) => ({ ...current, guidanceFiles: current.guidanceFiles.filter((file) => file.id !== id) })); },
-    setRevisionItems(items: RevisionItem[], rejectedItems?: RejectedRevisionItem[]) {
-      setState((current) => ({ ...current, revisionItems: items.map(withValidation), rejectedItems: rejectedItems ?? current.rejectedItems }));
+    setRevisionItems(items: RevisionItem[], rejectedItems?: RejectedRevisionItem[], curation?: { courseKnowledgeMap?: CourseKnowledgeMap; curationReport?: CurationReport }) {
+      setState((current) => ({
+        ...current,
+        revisionItems: items.map(withValidation),
+        rejectedItems: rejectedItems ?? current.rejectedItems,
+        courseKnowledgeMap: curation?.courseKnowledgeMap ?? current.courseKnowledgeMap,
+        curationReport: curation?.curationReport ?? current.curationReport,
+      }));
     },
     setRejectedItems(rejectedItems: RejectedRevisionItem[]) {
       setState((current) => ({ ...current, rejectedItems }));
@@ -44,7 +50,7 @@ export function useStudyStore() {
     restoreRejectedItem(id: string) {
       setState((current) => {
         const rejected = current.rejectedItems.find((item) => item.id === id);
-        if (!rejected) return current;
+        if (!rejected?.originalItem) return current;
         return {
           ...current,
           rejectedItems: current.rejectedItems.filter((item) => item.id !== id),

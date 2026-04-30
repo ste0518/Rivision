@@ -1,9 +1,10 @@
 import OpenAI from "openai";
+import { createRevisionItemFromCandidate, curateRevisionDeck } from "@/lib/curation";
 import { extractionSystemPrompt, verificationSystemPrompt } from "@/lib/llm/prompts";
 import type { LLMProvider } from "@/lib/llm/provider";
-import { revisionItemsResponseSchema, verificationReportSchema } from "@/lib/llm/schemas";
+import { curatedDeckResponseSchema, verificationReportSchema } from "@/lib/llm/schemas";
 import { attachProofsToPreviousTheorem, segmentRevisionCandidates } from "@/lib/segmentation";
-import type { ExtractionPipelineMode, ExtractionVerificationReport, ParsedDocument, RevisionItem } from "@/lib/types";
+import type { CandidateRevisionBlock, CuratedDeckResult, ExtractionPipelineMode, ExtractionVerificationReport, ParsedDocument, RejectedRevisionItem, RevisionItem } from "@/lib/types";
 
 type OpenAiProviderOptions = {
   model: string;
@@ -23,6 +24,16 @@ export class OpenAiResponsesProvider implements LLMProvider {
     guidanceDocuments: ParsedDocument[];
     pipelineMode: ExtractionPipelineMode;
   }): Promise<RevisionItem[]> {
+    const curated = await this.curateRevisionDeck(input);
+    return curated.keptItems;
+  }
+
+  async curateRevisionDeck(input: {
+    notesDocuments: ParsedDocument[];
+    guidanceDocuments: ParsedDocument[];
+    pipelineMode: ExtractionPipelineMode;
+  }): Promise<CuratedDeckResult> {
+    const candidates = attachProofsToPreviousTheorem(segmentRevisionCandidates(input.notesDocuments));
     const notesText = renderCandidateDocumentSet(input.notesDocuments, input.guidanceDocuments);
     const guidanceText = renderDocumentSet("GUIDANCE", input.guidanceDocuments);
 
@@ -38,15 +49,20 @@ export class OpenAiResponsesProvider implements LLMProvider {
       text: {
         format: {
           type: "json_schema",
-          name: "revision_item_array",
-          schema: revisionItemsResponseSchema,
-          strict: true,
+          name: "curated_revision_deck",
+          schema: curatedDeckResponseSchema,
+          strict: false,
         },
       },
     });
 
-    const payload = safeParseJson<{ items: RevisionItem[] }>(response.output_text);
-    return payload?.items ?? [];
+    const payload = safeParseJson<CuratedDeckResult>(response.output_text);
+    if (payload) return { ...payload, rejectedItems: hydrateRejectedItems(payload.rejectedItems, candidates, guidanceText) };
+    return curateRevisionDeck({
+      candidates,
+      guidanceDocuments: input.guidanceDocuments,
+      parsedNotes: input.notesDocuments,
+    });
   }
 
   async verifyExtractionCompleteness(input: {
@@ -92,6 +108,20 @@ export class OpenAiResponsesProvider implements LLMProvider {
 function renderCandidateDocumentSet(notesDocuments: ParsedDocument[], guidanceDocuments: ParsedDocument[]) {
   const candidates = attachProofsToPreviousTheorem(segmentRevisionCandidates(notesDocuments));
   return JSON.stringify({ candidates, guidanceDocuments }, null, 2);
+}
+
+function hydrateRejectedItems(rejectedItems: RejectedRevisionItem[], candidates: CandidateRevisionBlock[], guidanceText: string) {
+  const byCandidateId = new Map(candidates.map((candidate) => [candidate.id, candidate]));
+  return rejectedItems.map((item) => {
+    if (item.originalItem || !item.originalCandidateId) return item;
+    const candidate = byCandidateId.get(item.originalCandidateId);
+    if (!candidate) return item;
+    return {
+      ...item,
+      originalItem: createRevisionItemFromCandidate(candidate, guidanceText),
+      sourceLocation: item.sourceLocation ?? candidate.sourceLocation,
+    };
+  });
 }
 
 function safeParseJson<T>(value: string): T | null {

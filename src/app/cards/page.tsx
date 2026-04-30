@@ -15,7 +15,7 @@ import { CardForm } from "@/components/card-form";
 import { PageHeader } from "@/components/page-header";
 import { MathMarkdown } from "@/components/MathMarkdown";
 import { exportRevisionItems, importRevisionItems } from "@/lib/storage";
-import { importances, revisionItemTypes, type RevisionItem } from "@/lib/types";
+import { cardPurposes, importances, revisionItemTypes, type RevisionItem } from "@/lib/types";
 import { useStudyStore } from "@/hooks/use-study-store";
 
 type UndoState = { message: string; itemIds: string[]; action: "delete" | "restore" } | null;
@@ -25,12 +25,12 @@ export default function CardsPage() {
   const [editing, setEditing] = useState<RevisionItem | undefined>();
   const [adding, setAdding] = useState(false);
   const [importText, setImportText] = useState("");
-  const [filters, setFilters] = useState({ type: "all", importance: "all", section: "", tag: "", source: "" });
+  const [filters, setFilters] = useState({ type: "all", cardPurpose: "all", importance: "all", section: "", tag: "", source: "", showRejected: false, showDeleted: false });
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedDeletedIds, setSelectedDeletedIds] = useState<string[]>([]);
   const [undo, setUndo] = useState<UndoState>(null);
 
-  const activeCards = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && !needsRepair(item)), [store.revisionItems]);
+  const activeCards = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && item.curationStatus !== "needs_review" && item.standaloneValue !== "low" && !needsRepair(item)), [store.revisionItems]);
   const deletedCards = useMemo(() => store.revisionItems.filter((item) => item.isDeleted), [store.revisionItems]);
   const filtered = useMemo(() => activeCards.filter((item) => matchesFilters(item, filters)), [activeCards, filters]);
 
@@ -80,10 +80,14 @@ export default function CardsPage() {
       {undo ? <UndoBanner message={undo.message} onUndo={handleUndo} onDismiss={() => setUndo(null)} /> : null}
 
       <Card className="mb-6">
-        <CardContent className="grid gap-3 pt-6 md:grid-cols-5">
+        <CardContent className="grid gap-3 pt-6 md:grid-cols-6">
           <Select value={filters.type} onChange={(event) => setFilters({ ...filters, type: event.target.value })}>
             <option value="all">All types</option>
             {revisionItemTypes.map((type) => <option key={type}>{type}</option>)}
+          </Select>
+          <Select value={filters.cardPurpose} onChange={(event) => setFilters({ ...filters, cardPurpose: event.target.value })}>
+            <option value="all">All purposes</option>
+            {cardPurposes.map((purpose) => <option key={purpose}>{purpose}</option>)}
           </Select>
           <Select value={filters.importance} onChange={(event) => setFilters({ ...filters, importance: event.target.value })}>
             <option value="all">All importance</option>
@@ -92,6 +96,14 @@ export default function CardsPage() {
           <Input placeholder="Section" value={filters.section} onChange={(event) => setFilters({ ...filters, section: event.target.value })} />
           <Input placeholder="Tag" value={filters.tag} onChange={(event) => setFilters({ ...filters, tag: event.target.value })} />
           <Input placeholder="Source file" value={filters.source} onChange={(event) => setFilters({ ...filters, source: event.target.value })} />
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={filters.showRejected} onChange={(event) => setFilters({ ...filters, showRejected: event.target.checked })} />
+            Show rejected
+          </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={filters.showDeleted} onChange={(event) => setFilters({ ...filters, showDeleted: event.target.checked })} />
+            Show deleted
+          </label>
         </CardContent>
       </Card>
 
@@ -137,7 +149,7 @@ export default function CardsPage() {
                   <TableCell>
                     <div className="space-y-2">
                       <MathMarkdown content={item.cardFront} className="bg-transparent p-0 font-medium text-slate-950" />
-                      <div className="text-xs text-slate-500">{item.displayTitle || item.title} · {item.type} · {item.tags.join(", ")} · standalone {item.standaloneValue ?? "unknown"}</div>
+                      <div className="text-xs text-slate-500">{item.displayTitle || item.title} · {item.type} · {item.cardPurpose} · {item.tags.join(", ")} · standalone {item.standaloneValue ?? "unknown"}</div>
                       <MathMarkdown content={item.statementLatex || item.statement} className="bg-transparent p-0 text-sm text-slate-600" />
                     </div>
                   </TableCell>
@@ -157,6 +169,26 @@ export default function CardsPage() {
         </CardContent>
       </Card>
 
+      {filters.showRejected ? (
+        <Card className="mt-6">
+          <CardHeader><CardTitle>Rejected / low relevance ({store.rejectedItems.length})</CardTitle></CardHeader>
+          <CardContent className="space-y-3">
+            {store.rejectedItems.length === 0 ? <p className="text-sm text-slate-500">No rejected items.</p> : null}
+            {store.rejectedItems.map((item) => (
+              <div key={item.id} className="flex flex-wrap items-center justify-between gap-3 rounded-lg border p-3 text-sm">
+                <div>
+                  <p className="font-medium">{item.title}</p>
+                  <p className="text-xs text-slate-500">{item.type} · {item.rejectionCategory} · {item.sourceLocation || item.originalItem?.sourceLocation || "source unknown"}</p>
+                  <p className="mt-1 text-slate-600">{item.rejectionReason}</p>
+                </div>
+                <Button size="sm" variant="outline" onClick={() => store.restoreRejectedItem(item.id)} disabled={!item.originalItem}>Restore</Button>
+              </div>
+            ))}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {filters.showDeleted ? (
       <Card className="mt-6">
         <CardHeader><CardTitle>Deleted cards ({deletedCards.length})</CardTitle></CardHeader>
         <CardContent className="space-y-3">
@@ -185,6 +217,7 @@ export default function CardsPage() {
           ))}
         </CardContent>
       </Card>
+      ) : null}
 
       {editing ? (
         <Card className="mt-6">
@@ -231,8 +264,9 @@ function needsRepair(item: RevisionItem) {
   );
 }
 
-function matchesFilters(item: RevisionItem, filters: { type: string; importance: string; section: string; tag: string; source: string }) {
+function matchesFilters(item: RevisionItem, filters: { type: string; cardPurpose: string; importance: string; section: string; tag: string; source: string }) {
   return (filters.type === "all" || item.type === filters.type) &&
+    (filters.cardPurpose === "all" || item.cardPurpose === filters.cardPurpose) &&
     (filters.importance === "all" || item.importance === filters.importance) &&
     (!filters.section || item.section?.toLowerCase().includes(filters.section.toLowerCase())) &&
     (!filters.tag || item.tags.some((tag) => tag.toLowerCase().includes(filters.tag.toLowerCase()))) &&

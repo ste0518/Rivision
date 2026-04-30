@@ -17,7 +17,7 @@ export default function ReviewPage() {
   const [proofVisible, setProofVisible] = useState(false);
   const [deletedCardId, setDeletedCardId] = useState<string | null>(null);
   const dueCards = useMemo(
-    () => store.revisionItems.filter((item) => !item.isDeleted && item.importance !== "not_required" && !needsRepair(item) && isDue(item)),
+    () => store.revisionItems.filter((item) => !item.isDeleted && item.curationStatus !== "needs_review" && item.standaloneValue !== "low" && item.importance !== "not_required" && !needsRepair(item) && isDue(item)),
     [store.revisionItems],
   );
   const card = dueCards[0];
@@ -63,6 +63,7 @@ export default function ReviewPage() {
             <div className="flex flex-wrap items-center gap-2">
               <Badge variant="outline">{displayLabel(card)}</Badge>
               <Badge variant="outline">{card.type}</Badge>
+              <Badge variant="outline">{card.cardPurpose}</Badge>
               <Badge variant={card.importance}>{card.importance}</Badge>
               {card.extractionWarning || card.warnings?.length ? <Badge variant="unknown">check extraction</Badge> : null}
             </div>

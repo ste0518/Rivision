@@ -1,4 +1,4 @@
-import type { ExtractionPipelineMode, ExtractionVerificationReport, ParsedDocument, RevisionItem } from "@/lib/types";
+import type { CuratedDeckResult, ExtractionPipelineMode, ExtractionVerificationReport, ParsedDocument, RevisionItem } from "@/lib/types";
 
 export interface LLMProvider {
   extractRevisionItems(input: {
@@ -6,6 +6,12 @@ export interface LLMProvider {
     guidanceDocuments: ParsedDocument[];
     pipelineMode: ExtractionPipelineMode;
   }): Promise<RevisionItem[]>;
+
+  curateRevisionDeck(input: {
+    notesDocuments: ParsedDocument[];
+    guidanceDocuments: ParsedDocument[];
+    pipelineMode: ExtractionPipelineMode;
+  }): Promise<CuratedDeckResult>;
 
   verifyExtractionCompleteness(input: {
     notesDocuments: ParsedDocument[];

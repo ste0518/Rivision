@@ -240,10 +240,14 @@ function toRejectedItem(
 ): RejectedRevisionItem {
   return {
     id: createId("rejected"),
+    originalCandidateId: originalItem.relevanceScore?.candidateId,
     originalItem: { ...originalItem, standaloneValue: originalItem.standaloneValue ?? "low", relevanceReason: originalItem.relevanceReason ?? rejectionReason },
+    title: originalItem.displayTitle || originalItem.title,
+    type: originalItem.type,
     rejectionCategory,
     rejectionReason,
     confidence,
+    sourceLocation: originalItem.sourceLocation,
   };
 }
 
