@@ -18,9 +18,9 @@ export function normaliseRevisionItem(item: RevisionItem): RevisionItem {
   const extractionWarning = item.extractionWarning ?? buildExtractionWarning({ ...item, type: correctedType, title, statement, proof });
   const proofRequired = theoremLike(correctedType) ? item.proofRequired : undefined;
   const answer = cleanAnswer(correctedType, statement, item.answer);
-  const statementLatex = item.statementLatex ?? toLatexText(statement);
-  const proofLatex = proof ? item.proofLatex ?? toLatexText(proof) : undefined;
-  const answerLatex = item.answerLatex ?? toLatexText(answer);
+  const statementLatex = item.statementLatex ?? convertCommonMathToLatex(statement);
+  const proofLatex = proof ? item.proofLatex ?? convertCommonMathToLatex(proof) : undefined;
+  const answerLatex = item.answerLatex ?? convertCommonMathToLatex(answer);
 
   return {
     ...item,
@@ -64,7 +64,7 @@ export function buildQuestionPrompt(item: Pick<RevisionItem, "type" | "title" | 
   if (theoremLike(item.type)) {
     if (item.proofRequired) return `Prove ${numberedLabel}.`;
     if (item.proofRequired === false) return `State ${numberedLabel}. The proof is not required.`;
-    return `State ${numberedLabel} and explain the conditions under which it applies.`;
+    return `State ${numberedLabel} and explain its conditions.`;
   }
 
   if (item.type === "formula") {
@@ -79,31 +79,27 @@ export function buildQuestionPrompt(item: Pick<RevisionItem, "type" | "title" | 
   return `Explain ${cleanTitle(item.title)}.`;
 }
 
-export function toLatexText(value: string) {
-  let text = value
-    .replace(/\bindexed by t in a subset T of R\^d\b/g, "indexed by \\(t\\) in a subset \\(T\\subset \\mathbb{R}^d\\)")
-    .replace(/\bX\s*=\s*\(X_t\)_\{t\s+in\s+T\}/g, "\\(X=(X_t)_{t\\in T}\\)")
-    .replace(/\brandom variables X_t\b/g, "random variables \\(X_t\\)")
-    .replace(/\bR\^([A-Za-z0-9]+)/g, "\\mathbb{R}^$1")
-    .replace(/\bN\^?([A-Za-z0-9]*)\b/g, (_match, power: string) => (power ? `\\mathbb{N}^${power}` : "\\mathbb{N}"))
-    .replace(/\bt\s+in\s+T\b/g, "\\(t\\in T\\)")
-    .replace(/\bsigma\^2\b/gi, "\\sigma^2")
-    .replace(/\bsigma\b/gi, "\\sigma")
-    .replace(/\bmu\b/gi, "\\mu")
-    .replace(/\bSigma\b/g, "\\Sigma")
-    .replace(/\bgamma\b/gi, "\\gamma");
+export function convertCommonMathToLatex(value: string) {
+  let text = value;
 
-  text = text.replace(/([A-Z])=\(([^)]+)\)_\{([^}]+)\}/g, (match, lhs: string, inner: string, subscript: string, offset: number, source: string) => {
-    if (isInsideInlineMath(source, offset)) return match;
-    const compactSubscript = subscript.replace(/\s*\\in\s*/g, "\\in ");
-    return `\\(${lhs}=(${inner})_{${compactSubscript}}\\)`;
-  });
-  text = text.replace(/\\mathbb\{R\}\^([A-Za-z0-9]+)/g, (match, _power: string, offset: number, source: string) =>
-    isInsideInlineMath(source, offset) ? match : `\\(${match}\\)`,
+  text = replaceOutsideInlineMath(
+    text,
+    /\bX\s*=\s*\(\s*X\s*_?\s*t\s*\)\s*(?:_\{\s*t\s*(?:in|∈)\s*T\s*\}|\s*t\s*∈\s*T)/gi,
+    () => "\\(X=(X_t)_{t\\in T}\\)",
+    false,
   );
-  text = text.replace(/\\mathbb\{N\}(?:\^([A-Za-z0-9]+))?/g, (match, _power: string, offset: number, source: string) =>
-    isInsideInlineMath(source, offset) ? match : `\\(${match}\\)`,
-  );
+  text = replaceOutsideInlineMath(text, /\bX_t\b/g, () => "\\(X_t\\)", false);
+  text = replaceOutsideInlineMath(text, /\bt\s+in\s+T\b/g, () => "\\(t\\in T\\)", false);
+  text = replaceOutsideInlineMath(text, /\bt\s*∈\s*T\b/g, () => "\\(t\\in T\\)", false);
+  text = replaceOutsideInlineMath(text, /\bR\^([A-Za-z0-9]+)\b/g, (_match, power) => `\\mathbb{R}^${power}`);
+  text = replaceOutsideInlineMath(text, /\bR\s+d\b/g, () => "\\mathbb{R}^d");
+  text = replaceOutsideInlineMath(text, /\bsigma\^2\b/gi, () => "\\sigma^2");
+  text = replaceOutsideInlineMath(text, /\bsigma\b/gi, () => "\\sigma");
+  text = replaceOutsideInlineMath(text, /\bmu\b/gi, () => "\\mu");
+  text = replaceOutsideInlineMath(text, /\bSigma\b/g, () => "\\Sigma");
+  text = replaceOutsideInlineMath(text, /\bCov\b/g, () => "\\operatorname{Cov}");
+  text = replaceOutsideInlineMath(text, /\bgamma\b/gi, () => "\\gamma");
+
   return text;
 }
 
@@ -111,6 +107,25 @@ function isInsideInlineMath(source: string, offset: number) {
   const open = source.lastIndexOf("\\(", offset);
   const close = source.lastIndexOf("\\)", offset);
   return open > close;
+}
+
+export const toLatexText = convertCommonMathToLatex;
+
+function replaceOutsideInlineMath(
+  source: string,
+  regex: RegExp,
+  replacement: (match: string, firstGroup: string) => string,
+  wrap = true,
+) {
+  return source.replace(regex, (...args: unknown[]) => {
+    const match = String(args[0]);
+    const firstGroup = typeof args[1] === "string" ? args[1] : "";
+    const offset = Number(args[args.length - 2]);
+    const fullSource = String(args[args.length - 1]);
+    if (isInsideInlineMath(fullSource, offset)) return match;
+    const latex = replacement(match, firstGroup);
+    return wrap ? `\\(${latex}\\)` : latex;
+  });
 }
 
 export function countLabelledItems(value: string) {

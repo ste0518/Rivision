@@ -41,11 +41,7 @@ export async function parsePdfFile(file: File): Promise<ParsedDocument> {
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
       const page = await pdf.getPage(pageNumber);
       const textContent = await page.getTextContent();
-      const text = textContent.items
-        .map((item) => ("str" in item ? String(item.str) : ""))
-        .join(" ")
-        .replace(/\s+/g, " ")
-        .trim();
+      const text = reconstructPdfPageText(textContent.items);
       pages.push({ pageNumber, text, charCount: text.length });
     }
 
@@ -79,6 +75,85 @@ export async function parsePdfFile(file: File): Promise<ParsedDocument> {
       errors,
     });
   }
+}
+
+type PdfTextItem = {
+  str: string;
+  transform: number[];
+  width?: number;
+};
+
+function reconstructPdfPageText(items: unknown[]) {
+  const textItems = items.filter(isPdfTextItem).map((item) => ({
+    str: item.str,
+    x: item.transform[4] ?? 0,
+    y: item.transform[5] ?? 0,
+    width: item.width ?? estimateTextWidth(item.str),
+  }));
+
+  if (textItems.length === 0) return "";
+
+  const sorted = [...textItems].sort((a, b) => b.y - a.y || a.x - b.x);
+  const lineTolerance = 3;
+  const lines: Array<{ y: number; items: typeof sorted }> = [];
+
+  for (const item of sorted) {
+    const line = lines.find((candidate) => Math.abs(candidate.y - item.y) <= lineTolerance);
+    if (line) {
+      line.items.push(item);
+      line.y = (line.y + item.y) / 2;
+    } else {
+      lines.push({ y: item.y, items: [item] });
+    }
+  }
+
+  const reconstructed = lines
+    .sort((a, b) => b.y - a.y)
+    .map((line) => renderPdfLine(line.items.sort((a, b) => a.x - b.x)))
+    .filter(Boolean)
+    .join("\n")
+    .trim();
+
+  if (reconstructed.includes("\n")) return reconstructed;
+
+  return textItems
+    .map((item) => item.str)
+    .join(" ")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+function isPdfTextItem(item: unknown): item is PdfTextItem {
+  return Boolean(
+    item &&
+      typeof item === "object" &&
+      "str" in item &&
+      typeof item.str === "string" &&
+      "transform" in item &&
+      Array.isArray(item.transform),
+  );
+}
+
+function renderPdfLine(items: Array<{ str: string; x: number; width: number }>) {
+  let line = "";
+  let previousRight: number | undefined;
+
+  for (const item of items) {
+    const text = item.str.trim();
+    if (!text) continue;
+    if (previousRight !== undefined) {
+      const gap = item.x - previousRight;
+      if (gap > 2 && !line.endsWith(" ")) line += " ";
+    }
+    line += text;
+    previousRight = item.x + item.width;
+  }
+
+  return line.replace(/[ \t]+/g, " ").trim();
+}
+
+function estimateTextWidth(text: string) {
+  return Math.max(text.length * 4, 1);
 }
 
 export async function parseDocxFile(file: File): Promise<ParsedDocument> {

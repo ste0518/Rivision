@@ -72,11 +72,14 @@ export type RevisionCandidate = {
   number?: string;
   title?: string;
   rawText: string;
+  statement?: string;
+  proof?: string;
   sourceFile: string;
   pageNumber?: number;
   sourceLocation?: string;
   startOffset: number;
   endOffset: number;
+  extractionWarning?: string;
   section?: string;
 };
 

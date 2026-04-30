@@ -10,7 +10,7 @@ import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { PageHeader } from "@/components/page-header";
 import { extractRevisionItems, generateManualExtractionPrompt, loadLlmPipelineSettings } from "@/lib/extraction";
-import { segmentRevisionCandidates } from "@/lib/segmentation";
+import { buildSegmentationDebug, segmentRevisionCandidates } from "@/lib/segmentation";
 import { validateRevisionItemsPayload, withValidation } from "@/lib/validation";
 import type { ExtractionVerificationReport, ParsedDocument, RevisionItem } from "@/lib/types";
 import { useStudyStore } from "@/hooks/use-study-store";
@@ -33,7 +33,8 @@ export default function ExtractPage() {
   const sourceFile = useMemo(() => store.notesFiles.map((file) => file.name).join(", ") || "Mock notes", [store.notesFiles]);
   const allDocuments = useMemo(() => [...notesDocuments, ...guidanceDocuments], [guidanceDocuments, notesDocuments]);
   const candidates = useMemo(() => segmentRevisionCandidates(notesDocuments), [notesDocuments]);
-  const candidateSegmentationWarning = candidates.length === 0 || candidates.some((candidate) => candidate.rawText.length > 2000);
+  const segmentationDebug = useMemo(() => buildSegmentationDebug(notesDocuments), [notesDocuments]);
+  const candidateSegmentationWarning = segmentationDebug.some((document) => document.warnings.length > 0);
   const repairItems = useMemo(() => store.revisionItems.filter(needsRepair), [store.revisionItems]);
   const normalItems = useMemo(() => store.revisionItems.filter((item) => !needsRepair(item)), [store.revisionItems]);
   const failedDocuments = useMemo(
@@ -166,28 +167,48 @@ export default function ExtractPage() {
 
       <Card className="mt-6">
         <CardHeader>
-          <CardTitle>Candidate segmentation preview</CardTitle>
-          <CardDescription>{candidates.length} candidate(s) found before LLM extraction.</CardDescription>
+          <CardTitle>Segmentation Debug</CardTitle>
+          <CardDescription>{candidates.length} candidate(s) found before local rules or LLM extraction.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
           {candidateSegmentationWarning ? (
             <p className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-800">
-              Candidate segmentation may have failed. Extraction may be unreliable.
+              Candidate segmentation warnings found. Review these before trusting extraction.
             </p>
           ) : null}
           {candidates.length === 0 ? <p className="text-sm text-slate-500">No labelled candidates detected in notes files.</p> : null}
-          <div className="max-h-96 space-y-2 overflow-auto">
-            {candidates.slice(0, 80).map((candidate, index) => (
-              <div key={candidate.id} className="rounded-lg border p-3 text-sm">
+          <div className="space-y-4">
+            {segmentationDebug.map((document) => (
+              <div key={document.sourceFile} className="rounded-lg border p-3 text-sm">
                 <div className="flex flex-wrap items-center gap-2">
-                  <Badge variant="outline">#{index + 1}</Badge>
-                  <Badge variant="unknown">{candidate.label}</Badge>
-                  {candidate.number ? <Badge variant="outline">{candidate.number}</Badge> : null}
-                  <span className="text-xs text-slate-500">
-                    {candidate.sourceFile}{candidate.pageNumber ? ` · page ${candidate.pageNumber}` : ""}{candidate.sourceLocation ? ` · ${candidate.sourceLocation}` : ""}
-                  </span>
+                  <p className="font-medium">{document.sourceFile}</p>
+                  <Badge variant="outline">chars {document.fullTextCharCount}</Badge>
+                  <Badge variant="outline">label regex matches {document.labelRegexMatchCount}</Badge>
+                  <Badge variant="outline">candidates {document.candidateCount}</Badge>
+                  <Badge variant="outline">avg len {document.averageCandidateLength}</Badge>
+                  <Badge variant={document.maxCandidateLength > 1200 ? "unknown" : "outline"}>max len {document.maxCandidateLength}</Badge>
                 </div>
-                <p className="mt-2 text-slate-700">{candidate.rawText.slice(0, 300)}{candidate.rawText.length > 300 ? "..." : ""}</p>
+                {document.warnings.length > 0 ? (
+                  <div className="mt-2 rounded border border-amber-200 bg-amber-50 p-2 text-amber-800">
+                    {document.warnings.map((warning) => <p key={warning}>{warning}</p>)}
+                  </div>
+                ) : null}
+                <div className="mt-3 max-h-96 space-y-2 overflow-auto">
+                  {document.labels.map((label, index) => (
+                    <div key={label.id} className="rounded-lg border bg-white p-3">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <Badge variant="outline">#{index + 1}</Badge>
+                        <Badge variant="unknown">{label.label}</Badge>
+                        {label.number ? <Badge variant="outline">{label.number}</Badge> : null}
+                        <span className="text-xs text-slate-500">
+                          {label.sourceFile}{label.pageNumber ? ` · page ${label.pageNumber}` : ""} · offsets {label.startOffset}-{label.endOffset} · length {label.rawTextLength}
+                        </span>
+                        {label.containsMultipleMajorLabels ? <Badge variant="unknown">multiple major labels</Badge> : null}
+                      </div>
+                      <p className="mt-2 whitespace-pre-wrap text-slate-700">{label.rawTextPreview}{label.rawTextLength > 300 ? "..." : ""}</p>
+                    </div>
+                  ))}
+                </div>
               </div>
             ))}
           </div>
@@ -365,7 +386,17 @@ function ExtractedCard({ item, onImportanceChange }: { item: RevisionItem; onImp
 }
 
 function needsRepair(item: RevisionItem) {
-  return Boolean(item.extractionWarning?.includes("Over-merged") || item.warnings?.some((warning) => warning.includes("Over-merged")));
+  return Boolean(
+    item.extractionWarning ||
+      item.warnings?.some((warning) =>
+        warning.includes("Over-merged") ||
+        warning.includes("Source location is missing") ||
+        warning.includes("Question prompt") ||
+        warning.includes("Title is unusually long") ||
+        warning.includes("unrelated section") ||
+        warning.includes("multiple major label"),
+      ),
+  );
 }
 
 function previewText(value: string) {

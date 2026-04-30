@@ -1,7 +1,7 @@
 import { createMockRevisionItems } from "@/lib/mock-data";
 import { defaultLlmPipelineSettings, type LlmPipelineSettings } from "@/lib/llm/provider";
-import { segmentRevisionCandidates, stripLeadingLabel } from "@/lib/segmentation";
-import { buildQuestionPrompt, extractNumber, splitProofFromStatement, theoremLike, toLatexText } from "@/lib/revision-item-utils";
+import { attachProofsToPreviousTheorem, segmentRevisionCandidates, stripLeadingLabel } from "@/lib/segmentation";
+import { buildQuestionPrompt, convertCommonMathToLatex, extractNumber, splitProofFromStatement, theoremLike } from "@/lib/revision-item-utils";
 import type { ExtractionPipelineMode, ExtractionVerificationReport, ParsedDocument, RevisionItem, RevisionItemType } from "@/lib/types";
 import { createId } from "@/lib/utils";
 import { buildSuspiciousItems, validateAndRepairRevisionItems, withValidation } from "@/lib/validation";
@@ -12,7 +12,7 @@ export type ExtractRevisionItemsInput = {
   sourceFile?: string;
 };
 
-const llmExtractionPrompt = `You are extracting exam revision flashcards from lecture notes. Use only the supplied notes and guidance. Extract definitions, theorems, propositions, lemmas, formulae, and required proof statements. Classify each item as must_know, partial, not_required, or unknown based only on the guidance. Return strict JSON matching the RevisionItem schema. Do not invent content. Preserve mathematical notation as accurately as possible.`;
+const llmExtractionPrompt = `Extraction is deterministic-first. Uploaded notes are segmented into atomic candidates before any LLM cleanup runs. The LLM receives RevisionCandidate[] plus guidance, cleans notation, classifies importance, and generates prompts, but must not merge candidates or extract from whole pages/sections as the primary source.`;
 
 export function getLlmExtractionPrompt() {
   return llmExtractionPrompt;
@@ -32,7 +32,8 @@ export async function extractRevisionItems({
   if (settings.mode === "openai_api" || settings.mode === "cheap_scan_then_verify") {
     const llmResult = await extractViaApi({ notesDocuments, guidanceDocuments, sourceFile, settings });
     if (llmResult.items.length > 0 || llmResult.verification) {
-      const items = validateAndRepairRevisionItems(llmResult.items).map(withValidation);
+      const validation = validateAndRepairRevisionItems(llmResult.items);
+      const items = [...validation.validItems, ...validation.invalidItems].map(withValidation);
       return {
         items,
         verification: mergeSuspiciousItems(llmResult.verification ?? emptyVerificationReport("Verification unavailable."), items),
@@ -43,7 +44,8 @@ export async function extractRevisionItems({
 
   const extracted = deterministicExtract(notesDocuments, notesText, guidanceText, sourceFile, safeMode);
   if (extracted.length > 0) {
-    const items = validateAndRepairRevisionItems(extracted).map(withValidation);
+    const validation = validateAndRepairRevisionItems(extracted);
+    const items = [...validation.validItems, ...validation.invalidItems].map(withValidation);
     return {
       items,
       verification: mergeSuspiciousItems(emptyVerificationReport("Local deterministic extraction mode does not run LLM verification."), items),
@@ -173,25 +175,17 @@ function deterministicExtract(
     return [];
   }
 
-  const candidates = segmentRevisionCandidates(notesDocuments);
+  const candidates = attachProofsToPreviousTheorem(segmentRevisionCandidates(notesDocuments));
   const items: RevisionItem[] = [];
   const timestamp = new Date().toISOString();
-  const consumedProofs = new Set<number>();
 
-  for (let index = 0; index < candidates.length; index += 1) {
-    if (consumedProofs.has(index)) continue;
-    const candidate = candidates[index];
-    const statementWithPossibleTitle = clean(stripLeadingLabel(candidate.rawText));
+  for (const candidate of candidates) {
+    if (candidate.type === "proof") continue;
+    const statementWithPossibleTitle = clean(candidate.statement ?? stripLeadingLabel(candidate.rawText));
     const titleSplit = splitTitleFromStatement(statementWithPossibleTitle);
     const proofSplit = splitProofFromStatement(titleSplit.statement);
     const statement = clean(proofSplit.statement);
-    let proof = proofSplit.proof;
-
-    const next = candidates[index + 1];
-    if (theoremLike(candidate.type) && next?.type === "proof" && next.sourceFile === candidate.sourceFile) {
-      proof = clean(stripLeadingLabel(next.rawText));
-      consumedProofs.add(index + 1);
-    }
+    let proof = candidate.proof ?? proofSplit.proof;
     proof = proof ? clean(proof) : undefined;
     if (!statement || statement.length < 15) continue;
 
@@ -207,10 +201,10 @@ function deterministicExtract(
       type: candidate.type,
       title,
       statement,
-      statementLatex: toLatexText(statement),
+      statementLatex: convertCommonMathToLatex(statement),
       originalRawText: candidate.rawText,
       proof,
-      proofLatex: proof ? toLatexText(proof) : undefined,
+      proofLatex: proof ? convertCommonMathToLatex(proof) : undefined,
       proofRequired,
       sourceFile: candidate.sourceFile || sourceFile,
       sourceLocation: candidate.sourceLocation,
@@ -222,9 +216,10 @@ function deterministicExtract(
       classificationConfidence: uncertaintyNote ? "low" : "medium",
       guidanceReason: reason,
       uncertaintyNote,
+      extractionWarning: candidate.extractionWarning,
       questionPrompt: buildQuestionPrompt({ type: candidate.type, title, theoremNumber, statement, proofRequired }),
       answer,
-      answerLatex: toLatexText(answer),
+      answerLatex: convertCommonMathToLatex(answer),
       createdAt: timestamp,
       updatedAt: timestamp,
       reviewCount: 0,

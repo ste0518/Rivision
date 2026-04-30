@@ -11,28 +11,17 @@ export async function runLlmExtractionPipeline(input: {
   const settings = { ...defaultLlmPipelineSettings, ...input.settings };
   const primary = new OpenAiResponsesProvider({ model: settings.primaryModel });
 
-  let primaryNotesDocuments = input.notesDocuments;
-
   if (settings.mode === "cheap_scan_then_verify") {
     const cheap = new OpenAiResponsesProvider({ model: settings.cheapModel });
-    const candidateItems = await cheap.extractRevisionItems({
+    await cheap.extractRevisionItems({
       notesDocuments: input.notesDocuments,
       guidanceDocuments: input.guidanceDocuments,
       pipelineMode: settings.mode,
     });
-
-    const candidateSummary = candidateItems
-      .slice(0, 200)
-      .map((item) => `- ${item.type}: ${item.title} (${item.sourceLocation ?? "source unknown"})`)
-      .join("\n");
-
-    primaryNotesDocuments = input.notesDocuments.map((document, index) => index === 0
-      ? { ...document, fullText: `${document.fullText}\n\n[Cheap scan candidate blocks]\n${candidateSummary}` }
-      : document);
   }
 
   const items = await primary.extractRevisionItems({
-    notesDocuments: primaryNotesDocuments,
+    notesDocuments: input.notesDocuments,
     guidanceDocuments: input.guidanceDocuments,
     pipelineMode: settings.mode,
   });

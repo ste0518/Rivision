@@ -91,5 +91,15 @@ export default function ReviewPage() {
 }
 
 function needsRepair(item: { extractionWarning?: string; warnings?: string[] }) {
-  return Boolean(item.extractionWarning?.includes("Over-merged") || item.warnings?.some((warning) => warning.includes("Over-merged")));
+  return Boolean(
+    item.extractionWarning ||
+      item.warnings?.some((warning) =>
+        warning.includes("Over-merged") ||
+        warning.includes("Source location is missing") ||
+        warning.includes("Question prompt") ||
+        warning.includes("Title is unusually long") ||
+        warning.includes("unrelated section") ||
+        warning.includes("multiple major label"),
+      ),
+  );
 }

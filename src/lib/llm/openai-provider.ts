@@ -2,7 +2,7 @@ import OpenAI from "openai";
 import { extractionSystemPrompt, verificationSystemPrompt } from "@/lib/llm/prompts";
 import type { LLMProvider } from "@/lib/llm/provider";
 import { revisionItemsResponseSchema, verificationReportSchema } from "@/lib/llm/schemas";
-import { segmentRevisionCandidates } from "@/lib/segmentation";
+import { attachProofsToPreviousTheorem, segmentRevisionCandidates } from "@/lib/segmentation";
 import type { ExtractionPipelineMode, ExtractionVerificationReport, ParsedDocument, RevisionItem } from "@/lib/types";
 
 type OpenAiProviderOptions = {
@@ -23,7 +23,7 @@ export class OpenAiResponsesProvider implements LLMProvider {
     guidanceDocuments: ParsedDocument[];
     pipelineMode: ExtractionPipelineMode;
   }): Promise<RevisionItem[]> {
-    const notesText = renderCandidateDocumentSet(input.notesDocuments);
+    const notesText = renderCandidateDocumentSet(input.notesDocuments, input.guidanceDocuments);
     const guidanceText = renderDocumentSet("GUIDANCE", input.guidanceDocuments);
 
     const response = await this.client.responses.create({
@@ -89,9 +89,9 @@ export class OpenAiResponsesProvider implements LLMProvider {
   }
 }
 
-function renderCandidateDocumentSet(docs: ParsedDocument[]) {
-  const candidates = segmentRevisionCandidates(docs);
-  return JSON.stringify({ candidates }, null, 2);
+function renderCandidateDocumentSet(notesDocuments: ParsedDocument[], guidanceDocuments: ParsedDocument[]) {
+  const candidates = attachProofsToPreviousTheorem(segmentRevisionCandidates(notesDocuments));
+  return JSON.stringify({ candidates, guidanceDocuments }, null, 2);
 }
 
 function safeParseJson<T>(value: string): T | null {

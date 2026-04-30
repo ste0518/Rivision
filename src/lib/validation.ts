@@ -1,6 +1,12 @@
 import type { RevisionItem } from "@/lib/types";
 import { countLabelledItems, normaliseRevisionItem, typeFromLabel } from "@/lib/revision-item-utils";
 
+export type RevisionItemsValidationResult = {
+  validItems: RevisionItem[];
+  invalidItems: RevisionItem[];
+  warnings: string[];
+};
+
 export function validateRevisionItem(item: RevisionItem): string[] {
   const warnings: string[] = [];
   if (!item.title.trim()) warnings.push("Missing title.");
@@ -10,14 +16,14 @@ export function validateRevisionItem(item: RevisionItem): string[] {
   if (item.importance === "unknown") warnings.push("Importance is unknown.");
   if (!item.sourceLocation?.trim()) warnings.push("Source location is missing.");
   if (item.statement.trim().length > 0 && item.statement.trim().length < 30) warnings.push("Statement is very short and may be incomplete.");
-  if (item.type === "definition" && item.statement.length > 1500) warnings.push("Definition is unusually long and may include unrelated text.");
-  if (item.title.length > 140) warnings.push("Title is unusually long.");
+  if (item.type === "definition" && item.statement.length > 800) warnings.push("Definition is unusually long and may include unrelated text.");
+  if (item.title.length > 120) warnings.push("Title is unusually long.");
   if (item.questionPrompt.length > 180) warnings.push("Question prompt is unusually long.");
-  if (countLabelledItems(`${item.statement} ${item.proof ?? ""}`) > 1) warnings.push("This card may contain multiple merged items.");
+  if (countLabelledItems(item.statement) > 1) warnings.push("This card may contain multiple merged items.");
   if (item.extractionWarning) warnings.push(item.extractionWarning);
   const labelledType = typeFromLabel(item.title) ?? typeFromLabel(item.originalRawText ?? "") ?? typeFromLabel(item.statement);
   if (labelledType && labelledType !== item.type) warnings.push(`Type conflicts with labelled source text (${labelledType}).`);
-  if (/\b\d+(?:\.\d+)+\s+[A-Z][A-Za-z].{5,80}/.test(item.statement) && countLabelledItems(item.statement) > 0) {
+  if (containsSubsectionHeadingAfterItem(item.statement)) {
     warnings.push("Statement appears to include unrelated section text.");
   }
   if (item.answer.length > 2500 || countLabelledItems(item.answer) > 1) warnings.push("Answer may repeat an entire section instead of the item.");
@@ -29,24 +35,32 @@ export function withValidation(item: RevisionItem): RevisionItem {
   return { ...normalised, warnings: validateRevisionItem(normalised) };
 }
 
-export function validateAndRepairRevisionItems(items: RevisionItem[]): RevisionItem[] {
-  return items.map((item) => {
+export function validateAndRepairRevisionItems(items: RevisionItem[]): RevisionItemsValidationResult {
+  const validItems: RevisionItem[] = [];
+  const invalidItems: RevisionItem[] = [];
+  const warnings: string[] = [];
+
+  for (const item of items) {
     const normalised = normaliseRevisionItem(item);
-    const statement = normalised.statement;
-    const warnings: string[] = [];
+    const itemWarnings = collectHardValidationWarnings(normalised);
+    const repaired = itemWarnings.length
+      ? {
+        ...normalised,
+        extractionWarning: normalised.extractionWarning ?? itemWarnings[0],
+        warnings: [...(normalised.warnings ?? []), ...itemWarnings],
+        classificationConfidence: "low" as const,
+      }
+      : normalised;
 
-    if (countLabelledItems(statement) > 1) warnings.push("Over-merged card: contains multiple labelled items.");
-    if (normalised.type === "definition" && statement.length > 800) warnings.push("Definition is unusually long and may include unrelated text.");
-    if (normalised.type === "definition" && /\b(Theorem|Proof|Remark|Definition|Lemma|Proposition|Corollary)\b/.test(statement)) {
-      warnings.push("Over-merged card: contains multiple labelled items.");
+    if (itemWarnings.length > 0) {
+      invalidItems.push(repaired);
+      warnings.push(...itemWarnings.map((warning) => `${normalised.title}: ${warning}`));
+    } else {
+      validItems.push(repaired);
     }
-    if (["theorem", "lemma", "proposition", "corollary"].includes(normalised.type) && /\bDefinition\b[\s\S]*\bTheorem\b/.test(statement)) {
-      warnings.push("Over-merged card: theorem statement contains earlier definition text.");
-    }
+  }
 
-    const extractionWarning = normalised.extractionWarning ?? warnings[0];
-    return extractionWarning ? { ...normalised, extractionWarning, classificationConfidence: "low" } : normalised;
-  });
+  return { validItems, invalidItems, warnings };
 }
 
 export function buildSuspiciousItems(items: RevisionItem[]) {
@@ -63,6 +77,34 @@ export function buildSuspiciousItems(items: RevisionItem[]) {
     ) ?? [];
     return issues.map((issue) => ({ itemId: item.id, issue }));
   });
+}
+
+function collectHardValidationWarnings(item: RevisionItem): string[] {
+  const warnings: string[] = [];
+  const statement = item.statement;
+
+  if (countLabelledItems(statement) > 1) warnings.push("Over-merged card: statement contains multiple major labels.");
+  if (item.type === "definition" && /\b(Theorem|Proof|Remark|Definition|Lemma|Proposition|Corollary)\b/.test(statement)) {
+    warnings.push("Over-merged card: definition statement contains another major label.");
+  }
+  if (["theorem", "lemma", "proposition", "corollary"].includes(item.type) && /\bDefinition\b[\s\S]*\bTheorem\b/.test(statement)) {
+    warnings.push("Over-merged card: theorem statement contains a preceding definition.");
+  }
+  if (item.type === "definition" && statement.length > 800) warnings.push("Definition is unusually long and may include unrelated text.");
+  if (item.questionPrompt.length > 180) warnings.push("Question prompt is unusually long.");
+  if (item.title.length > 120) warnings.push("Title is unusually long.");
+  if (!item.sourceLocation?.trim()) warnings.push("Source location is missing.");
+  if (containsSubsectionHeadingAfterItem(statement)) warnings.push("Statement appears to include unrelated section text.");
+  if (item.extractionWarning?.includes("Over-merged") || item.extractionWarning?.includes("multiple major label")) {
+    warnings.push(item.extractionWarning);
+  }
+
+  return Array.from(new Set(warnings));
+}
+
+function containsSubsectionHeadingAfterItem(statement: string) {
+  return /(?:^|\s)(?:Chapter|Section)\s+\d+(?:\.\d+)*\b/i.test(statement) ||
+    /(?:^|\s)\d+(?:\.\d+)*\s+[A-Z][A-Za-z][A-Za-z\s,&-]{5,90}(?:\n|$)/.test(statement);
 }
 
 export function validateRevisionItemsPayload(payload: unknown): { items: RevisionItem[]; errors: string[] } {
