@@ -16,7 +16,7 @@ import { extractRevisionItems, generateManualExtractionPrompt, loadLlmPipelineSe
 import { getPrimaryCardPreview, hasLowLatexQuality } from "@/lib/card-render";
 import { normalizeMathNotation } from "@/lib/revision-item-utils";
 import { buildSegmentationDebug, segmentRevisionCandidates } from "@/lib/segmentation";
-import { resetStudyStateStorage } from "@/lib/storage";
+import { clearDebugData, loadStorageSettings, persistRevisionCandidates, resetStudyStateStorage } from "@/lib/storage";
 import { validateRevisionItemsPayload, withValidation } from "@/lib/validation";
 import type { CuratedDeckResult, ExtractionVerificationReport, ParsedDocument, RevisionItem, StudyFile } from "@/lib/types";
 import { useStudyStore } from "@/hooks/use-study-store";
@@ -28,7 +28,7 @@ export default function ExtractPage() {
       title="Extraction UI error"
       description="The extraction page caught a runtime error. Parsed files remain in local data unless you reset them."
       onResetLocalData={() => {
-        resetStudyStateStorage();
+        void resetStudyStateStorage();
         window.location.reload();
       }}
     >
@@ -106,6 +106,13 @@ function ExtractPageContent() {
       }
 
       const result = await extractRevisionItems({ notesDocuments, guidanceDocuments, pastPaperDocuments, problemSheetDocuments, solutionDocuments, sourceFile });
+      try {
+        const storageSettings = loadStorageSettings();
+        if (storageSettings.persistDebugData) await persistRevisionCandidates(allDocuments);
+        else await clearDebugData();
+      } catch (error) {
+        setRuntimeErrors((current) => [...current, renderStorageError(error)]);
+      }
       store.setRevisionItems(result.items, result.rejectedItems, {
         embeddedItems: result.embeddedItems,
         courseMap: result.courseMap,
@@ -168,6 +175,16 @@ function ExtractPageContent() {
     const prompt = generateManualExtractionPrompt({ notesText, guidanceText, sourceFile });
     await navigator.clipboard.writeText(prompt);
     setStatus("Manual extraction prompt copied. Paste it into ChatGPT/Codex with your notes.");
+  }
+
+  async function downloadActiveCards() {
+    const blob = new Blob([await store.exportActiveCardsJson()], { type: "application/json" });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = "rivision-active-cards.json";
+    a.click();
+    URL.revokeObjectURL(url);
   }
 
   function onManualFileUpload(file: File | null) {
@@ -284,9 +301,26 @@ function ExtractPageContent() {
             <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
               <div className="flex flex-wrap items-center justify-between gap-3">
                 <p className="font-medium">Runtime error</p>
-                <Button size="sm" variant="destructive" onClick={() => { resetStudyStateStorage(); window.location.reload(); }}>Reset local data</Button>
+                <div className="flex flex-wrap gap-2">
+                  <Button size="sm" variant="outline" onClick={() => void downloadActiveCards()}>Export cards</Button>
+                  <Button size="sm" variant="outline" onClick={() => { void store.clearDebugData(); }}>Clear cache</Button>
+                  <Button size="sm" variant="outline" onClick={() => void runExtraction()} disabled={extracting}>Clear cache and retry</Button>
+                  <Button size="sm" variant="destructive" onClick={() => { void resetStudyStateStorage(); window.location.reload(); }}>Reset local data</Button>
+                </div>
               </div>
               {runtimeErrors.map((error, index) => <pre key={`${error}-${index}`} className="mt-2 whitespace-pre-wrap text-xs">{error}</pre>)}
+            </div>
+          ) : null}
+          {store.storageError ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+              <p className="font-medium">Local storage is full. Large data should be stored in IndexedDB. Please clear cache or migrate storage.</p>
+              <pre className="mt-2 whitespace-pre-wrap text-xs">{store.storageError}</pre>
+              <div className="mt-3 flex flex-wrap gap-2">
+                <Button size="sm" variant="outline" onClick={() => void store.migrateLocalStorage()}>Migrate to IndexedDB</Button>
+                <Button size="sm" variant="outline" onClick={() => void store.clearDebugData()}>Clear debug/cache</Button>
+                <Button size="sm" variant="outline" onClick={() => void downloadActiveCards()}>Export cards</Button>
+                <Button size="sm" variant="destructive" onClick={() => { store.resetAll(); window.location.reload(); }}>Reset all local data</Button>
+              </div>
             </div>
           ) : null}
           {guidanceFailed ? (
@@ -940,6 +974,11 @@ function renderErrorMessage(error: unknown) {
   } catch {
     return "Unknown extraction error.";
   }
+}
+
+function renderStorageError(error: unknown) {
+  const message = error instanceof Error ? error.message : "Could not write candidates to IndexedDB.";
+  return `Storage warning: ${message}\nThe extraction result is still available in memory. Export JSON before resetting local data.`;
 }
 
 function toLegacyParsedDocument(sourceFile: string, fullText: string): ParsedDocument {

@@ -2,7 +2,18 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createMockRevisionItems } from "@/lib/mock-data";
-import { emptyStudyState, loadStudyState, resetStudyStateStorage, saveStudyState, type StudyState } from "@/lib/storage";
+import {
+  clearDebugData,
+  clearParsedTextKeepCards,
+  clearUploadedFilesKeepCards,
+  emptyStudyState,
+  exportActiveCardsJson,
+  loadStudyState,
+  migrateLocalStorageStudyStateToIndexedDB,
+  resetStudyStateStorage,
+  saveStudyState,
+  type StudyState,
+} from "@/lib/storage";
 import type { AssessmentMap, CourseKnowledgeMap, CourseMap, CourseStructureMap, CurationReport, EmbeddedRevisionItem, ExamPriorityMap, GuidanceFile, RejectedRevisionItem, RevisionItem, RevisionPack, ReviewRating, ReviewSession, StudyFile } from "@/lib/types";
 import { applyReviewRating } from "@/lib/srs";
 import { withValidation } from "@/lib/validation";
@@ -10,18 +21,46 @@ import { withValidation } from "@/lib/validation";
 export function useStudyStore() {
   const [state, setState] = useState<StudyState>(emptyStudyState);
   const [ready, setReady] = useState(false);
+  const [storageError, setStorageError] = useState("");
 
   useEffect(() => {
+    let cancelled = false;
     const timeout = window.setTimeout(() => {
-      const loaded = loadStudyState();
-      setState({ ...loaded, revisionItems: loaded.revisionItems.map(withValidation) });
-      setReady(true);
+      loadStudyState()
+        .then((loaded) => {
+          if (cancelled) return;
+          setState({ ...loaded, revisionItems: loaded.revisionItems.map(withValidation) });
+          setStorageError("");
+        })
+        .catch((error) => {
+          if (cancelled) return;
+          setStorageError(error instanceof Error ? error.message : "Could not load local study data.");
+        })
+        .finally(() => {
+          if (!cancelled) setReady(true);
+        });
     }, 0);
 
-    return () => window.clearTimeout(timeout);
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timeout);
+    };
   }, []);
 
-  useEffect(() => { if (ready) saveStudyState(state); }, [ready, state]);
+  useEffect(() => {
+    if (!ready) return;
+    let cancelled = false;
+    saveStudyState(state)
+      .then(() => {
+        if (!cancelled) setStorageError("");
+      })
+      .catch((error) => {
+        if (!cancelled) setStorageError(error instanceof Error ? error.message : "Could not save local study data.");
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [ready, state]);
 
   const actions = useMemo(() => ({
     addNotesFiles(files: StudyFile[]) { setState((current) => ({ ...current, notesFiles: [...current.notesFiles, ...files] })); },
@@ -142,10 +181,36 @@ export function useStudyStore() {
     },
     seedMockData() { setState((current) => ({ ...current, revisionItems: createMockRevisionItems().map(withValidation) })); },
     resetAll() {
-      resetStudyStateStorage();
+      void resetStudyStateStorage();
       setState(emptyStudyState);
+    },
+    async migrateLocalStorage() {
+      const migrated = await migrateLocalStorageStudyStateToIndexedDB();
+      if (migrated) setState({ ...migrated, revisionItems: migrated.revisionItems.map(withValidation) });
+      setStorageError("");
+    },
+    async clearDebugData() {
+      await clearDebugData();
+      setStorageError("");
+    },
+    async clearParsedTextKeepCards() {
+      await clearParsedTextKeepCards();
+      setState((current) => ({
+        ...current,
+        notesFiles: current.notesFiles.map((file) => ({ ...file, content: "", parsedDocument: undefined })),
+        guidanceFiles: current.guidanceFiles.map((file) => ({ ...file, content: "", parsedDocument: undefined })),
+      }));
+      setStorageError("");
+    },
+    async clearUploadedFilesKeepCards() {
+      await clearUploadedFilesKeepCards();
+      setState((current) => ({ ...current, notesFiles: [], guidanceFiles: [] }));
+      setStorageError("");
+    },
+    async exportActiveCardsJson() {
+      return exportActiveCardsJson();
     },
   }), []);
 
-  return { ...state, ready, ...actions };
+  return { ...state, ready, storageError, ...actions };
 }

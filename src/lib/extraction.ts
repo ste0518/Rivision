@@ -3,6 +3,7 @@ import { buildRevisionPack, emptyExamPriorityMap } from "@/lib/course-priority";
 import { defaultLlmPipelineSettings, type LlmPipelineSettings } from "@/lib/llm/provider";
 import { extractionSystemPrompt } from "@/lib/llm/prompts";
 import { normalizeCuratedRevisionResult } from "@/lib/normalization";
+import { safeSetLocalStorage } from "@/lib/storage";
 import type {
   CourseKnowledgeMap,
   CourseMap,
@@ -229,7 +230,7 @@ export function loadLlmPipelineSettings(): LlmPipelineSettings {
 
 export function saveLlmPipelineSettings(settings: LlmPipelineSettings) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(llmSettingsStorageKey, JSON.stringify(settings));
+  safeSetLocalStorage(llmSettingsStorageKey, settings);
 }
 
 async function deterministicCurate(
@@ -582,7 +583,7 @@ export function loadLlmPipelineSettings(): LlmPipelineSettings {
 
 export function saveLlmPipelineSettings(settings: LlmPipelineSettings) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(llmSettingsStorageKey, JSON.stringify(settings));
+  safeSetLocalStorage(llmSettingsStorageKey, settings);
 }
 
 function deterministicExtract(

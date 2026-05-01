@@ -13,6 +13,7 @@
     "@tailwindcss/postcss": "latest",
     "class-variance-authority": "latest",
     "clsx": "latest",
+    "dexie": "^4.4.2",
     "katex": "^0.16.45",
     "lucide-react": "latest",
     "mammoth": "^1.12.0",

@@ -31,6 +31,7 @@ export default function UploadPage() {
         size: file.size,
         uploadedAt: new Date().toISOString(),
         content: parsedDocument.fullText,
+        blob: file,
         parsedDocument: { ...parsedDocument, role },
       };
     }));

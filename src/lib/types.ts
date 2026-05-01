@@ -544,6 +544,7 @@ export type StudyFile = {
   size: number;
   uploadedAt: string;
   content: string;
+  blob?: Blob;
   parsedDocument?: ParsedDocument;
 };
 export type GuidanceFile = StudyFile & { kind: "guidance"; };

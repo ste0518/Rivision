@@ -10,14 +10,16 @@ import { PageHeader } from "@/components/page-header";
 import { getLlmExtractionPrompt, loadLlmPipelineSettings, saveLlmPipelineSettings } from "@/lib/extraction";
 import { defaultLlmPipelineSettings, type LlmPipelineSettings } from "@/lib/llm/provider";
 import { defaultRelevanceSettings, loadRelevanceSettings, saveRelevanceSettings, type RelevanceSettings } from "@/lib/relevance";
-import { exportRevisionItems, importRevisionItems } from "@/lib/storage";
+import { exportRevisionItems, importRevisionItems, loadStorageSettings, saveStorageSettings, type StorageSettings } from "@/lib/storage";
 import { useStudyStore } from "@/hooks/use-study-store";
+import Link from "next/link";
 
 export default function SettingsPage() {
   const store = useStudyStore();
   const [json, setJson] = useState("");
   const [llm, setLlm] = useState<LlmPipelineSettings>(() => loadLlmPipelineSettings() ?? defaultLlmPipelineSettings);
   const [relevance, setRelevance] = useState<RelevanceSettings>(() => loadRelevanceSettings() ?? defaultRelevanceSettings);
+  const [storageSettings, setStorageSettings] = useState<StorageSettings>(() => loadStorageSettings());
 
   return (
     <div>
@@ -79,15 +81,34 @@ export default function SettingsPage() {
         <Card>
           <CardHeader>
             <CardTitle>JSON import/export</CardTitle>
-            <CardDescription>Use this to reuse manually corrected cards.</CardDescription>
+            <CardDescription>Use this to reuse manually corrected cards. Full project exports and safer reset options live in Storage manager.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <Textarea className="min-h-48" value={json} onChange={(e) => setJson(e.target.value)} placeholder="Paste or generate RevisionItem[] JSON" />
             <div className="flex flex-wrap gap-2">
               <Button variant="outline" onClick={() => setJson(exportRevisionItems(store.revisionItems))}>Generate export JSON</Button>
               <Button onClick={() => { store.setRevisionItems(importRevisionItems(json)); setJson(""); }} disabled={!json.trim()}>Import JSON</Button>
-              <Button variant="destructive" onClick={store.resetAll}>Reset local data</Button>
+              <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50" href="/settings/storage">Open storage manager</Link>
             </div>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Debug persistence</CardTitle>
+            <CardDescription>Debug views stay in memory by default so large prompts, previews, and diagnostics do not fill browser storage.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <label className="flex items-center gap-2 text-sm font-medium">
+              <input
+                type="checkbox"
+                checked={storageSettings.persistDebugData}
+                onChange={(event) => setStorageSettings((current) => ({ ...current, persistDebugData: event.target.checked }))}
+              />
+              Persist debug data
+            </label>
+            <p className="text-xs text-slate-500">Default is off. When off, extraction diagnostics are rendered from memory and not written to persistent localStorage.</p>
+            <Button onClick={() => saveStorageSettings(storageSettings)}>Save storage settings</Button>
           </CardContent>
         </Card>
 

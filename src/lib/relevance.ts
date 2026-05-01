@@ -1,4 +1,5 @@
 import type { ParsedDocument, RejectedRevisionItem, RejectionCategory, RevisionItem, StandaloneValue } from "@/lib/types";
+import { safeSetLocalStorage } from "@/lib/storage";
 import { createId } from "@/lib/utils";
 
 type RelevanceDecision = {
@@ -30,7 +31,7 @@ export function loadRelevanceSettings(): RelevanceSettings {
 
 export function saveRelevanceSettings(settings: RelevanceSettings) {
   if (typeof window === "undefined") return;
-  window.localStorage.setItem(relevanceSettingsKey, JSON.stringify(settings));
+  safeSetLocalStorage(relevanceSettingsKey, settings);
 }
 
 export function filterRevisionItemsByRelevance(
