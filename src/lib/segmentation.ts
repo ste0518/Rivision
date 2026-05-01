@@ -69,11 +69,12 @@ export function segmentRevisionDocument(document: ParsedDocument): CandidateRevi
   const markers = collectMarkers(text);
   const labelledMarkers = markers.filter((marker) => marker.kind === "label" && marker.type);
 
-  if (labelledMarkers.length === 0) return segmentUnlabelledDocument(document, text);
+  if (labelledMarkers.length === 0) return [...segmentUnlabelledDocument(document, text), ...segmentConceptualDistinctions(document, text)];
 
-  return labelledMarkers
+  const labelledCandidates = labelledMarkers
     .map((marker) => buildCandidateFromMarker(document, text, markers, marker))
     .filter((candidate): candidate is CandidateRevisionBlock => Boolean(candidate));
+  return [...labelledCandidates, ...segmentConceptualDistinctions(document, text)];
 }
 
 export function attachProofsToPreviousTheorem(candidates: CandidateRevisionBlock[]): CandidateRevisionBlock[] {
@@ -363,6 +364,45 @@ function segmentUnlabelledDocument(document: ParsedDocument, text: string): Cand
       endOffset: chunk.endOffset,
       extractionWarning: chunk.rawText.length > 1200 ? "Unlabelled candidate is longer than 1200 characters." : undefined,
     }));
+}
+
+function segmentConceptualDistinctions(document: ParsedDocument, text: string): CandidateRevisionBlock[] {
+  const candidates: CandidateRevisionBlock[] = [];
+  const comparisonRegex = /(?:strict|weak|intrinsic|isotropy|stationarity|covariance|semivariogram|variogram|CAR|SAR|point process|random field|first-order|second-order)[^.!?]{0,180}\b(?:versus|vs\.?|compared with|different from|difference between|whereas|while|not necessarily|implies|equivalent to|if and only if)\b[^.!?]{10,220}[.!?]/gi;
+
+  for (const match of text.matchAll(comparisonRegex)) {
+    const rawText = clean(match[0]);
+    const startOffset = match.index ?? 0;
+    if (rawText.length < 50 || rawText.length > 500) continue;
+    candidates.push({
+      id: createId("candidate"),
+      label: "Other",
+      type: "other",
+      title: inferConceptualDistinctionTitle(rawText),
+      rawText,
+      statement: rawText,
+      sourceFile: document.sourceFile,
+      sourceLocation: inferConceptualDistinctionTitle(rawText),
+      pageNumber: pageNumberAtOffset(text, startOffset),
+      section: sectionAtOffset(document, startOffset),
+      startOffset,
+      endOffset: startOffset + rawText.length,
+    });
+  }
+
+  return candidates;
+}
+
+function inferConceptualDistinctionTitle(statement: string) {
+  const lower = statement.toLowerCase();
+  if (lower.includes("strict") && lower.includes("weak") && lower.includes("stationar")) return "Strict vs weak stationarity";
+  if (lower.includes("weak") && lower.includes("intrinsic") && lower.includes("stationar")) return "Weak vs intrinsic stationarity";
+  if (lower.includes("isotropy") && lower.includes("stationar")) return "Isotropy vs stationarity";
+  if (lower.includes("covariance") && (lower.includes("semivariogram") || lower.includes("variogram"))) return "Covariance vs semivariogram";
+  if (lower.includes("car") && lower.includes("sar")) return "CAR vs SAR";
+  if (lower.includes("point process") && lower.includes("random field")) return "Point process vs random field";
+  if (lower.includes("first-order") && lower.includes("second-order")) return "First-order vs second-order properties";
+  return "Conceptual distinction";
 }
 
 function collectLooseLabelMatches(text: string) {

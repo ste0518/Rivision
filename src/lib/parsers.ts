@@ -41,7 +41,7 @@ export async function parsePdfFile(file: File): Promise<ParsedDocument> {
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
       const page = await pdf.getPage(pageNumber);
       const textContent = await page.getTextContent();
-      const text = reconstructPdfPageText(textContent.items);
+      const text = repairObviousTextExtractionIssues(reconstructPdfPageText(textContent.items));
       pages.push({ pageNumber, text, charCount: text.length });
     }
 
@@ -222,7 +222,7 @@ function finalizeParsedDocument(input: {
 }): ParsedDocument {
   const warnings = input.warnings ?? [];
   const errors = input.errors ?? [];
-  const fullText = input.fullText ?? "";
+  const fullText = repairObviousTextExtractionIssues(input.fullText ?? "");
   const sections = detectSections(fullText);
   const charCount = fullText.length;
   const success = errors.length === 0 && charCount > 0;
@@ -242,6 +242,18 @@ function finalizeParsedDocument(input: {
       extractionQuality,
     },
   } satisfies ParsedDocument;
+}
+
+function repairObviousTextExtractionIssues(text: string) {
+  return text
+    .replace(/\uFB00/g, "ff")
+    .replace(/\uFB01/g, "fi")
+    .replace(/\uFB02/g, "fl")
+    .replace(/\u2010|\u2011|\u2012|\u2013|\u2014/g, "-")
+    .replace(/([A-Za-z])-\n([a-z])/g, "$1$2")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{4,}/g, "\n\n\n")
+    .trim();
 }
 
 function computeExtractionQuality(charCount: number, warnings: string[], errors: string[]): ParsedDocument["diagnostics"]["extractionQuality"] {

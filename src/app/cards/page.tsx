@@ -27,7 +27,7 @@ export default function CardsPage() {
   const [editing, setEditing] = useState<RevisionItem | undefined>();
   const [adding, setAdding] = useState(false);
   const [importText, setImportText] = useState("");
-  const [filters, setFilters] = useState({ type: "all", cardPurpose: "all", importance: "all", curation: "kept", lowLatexOnly: false, section: "", tag: "", source: "", showRejected: false, showDeleted: false });
+  const [filters, setFilters] = useState({ type: "all", cardPurpose: "all", importance: "all", curation: "kept", standaloneValue: "all", lowLatexOnly: false, section: "", tag: "", source: "", showRejected: false, showDeleted: false });
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedDeletedIds, setSelectedDeletedIds] = useState<string[]>([]);
   const [undo, setUndo] = useState<UndoState>(null);
@@ -113,6 +113,12 @@ export default function CardsPage() {
             <option value="kept">Kept</option>
             <option value="needs_review">Needs review</option>
             <option value="reject">Rejected (from cards list)</option>
+          </Select>
+          <Select value={filters.standaloneValue} onChange={(event) => setFilters({ ...filters, standaloneValue: event.target.value })}>
+            <option value="all">All standalone values</option>
+            <option value="high">High standalone value</option>
+            <option value="medium">Medium standalone value</option>
+            <option value="low">Low standalone value</option>
           </Select>
           <Input placeholder="Section" value={filters.section} onChange={(event) => setFilters({ ...filters, section: event.target.value })} />
           <Input placeholder="Tag" value={filters.tag} onChange={(event) => setFilters({ ...filters, tag: event.target.value })} />
@@ -216,7 +222,10 @@ export default function CardsPage() {
                   <p className="text-xs text-slate-500">{item.type} · {item.rejectionCategory} · {item.sourceLocation || item.originalItem?.sourceLocation || "source unknown"}</p>
                   <p className="mt-1 text-slate-600">{item.rejectionReason}</p>
                 </div>
-                <Button size="sm" variant="outline" onClick={() => store.restoreRejectedItem(item.id)} disabled={!item.originalItem}>Restore</Button>
+                <div className="flex gap-2">
+                  <Button size="sm" variant="outline" onClick={() => store.restoreRejectedItem(item.id)} disabled={!item.originalItem}>Restore</Button>
+                  <Button size="sm" variant="destructive" onClick={() => store.permanentlyDeleteRejectedItem(item.id)}>Permanently delete</Button>
+                </div>
               </div>
             ))}
           </CardContent>
@@ -285,11 +294,12 @@ export default function CardsPage() {
   );
 }
 
-function matchesFilters(item: RevisionItem, filters: { type: string; cardPurpose: string; importance: string; curation: string; lowLatexOnly: boolean; section: string; tag: string; source: string }) {
+function matchesFilters(item: RevisionItem, filters: { type: string; cardPurpose: string; importance: string; curation: string; standaloneValue: string; lowLatexOnly: boolean; section: string; tag: string; source: string }) {
   return (filters.type === "all" || item.type === filters.type) &&
     (filters.cardPurpose === "all" || item.cardPurpose === filters.cardPurpose) &&
     (filters.importance === "all" || item.importance === filters.importance) &&
     (filters.curation === "all" || (item.curationDecision ?? "keep") === filters.curation) &&
+    (filters.standaloneValue === "all" || item.standaloneValue === filters.standaloneValue) &&
     (!filters.lowLatexOnly || hasLowLatexQuality(item)) &&
     (!filters.section || item.section?.toLowerCase().includes(filters.section.toLowerCase())) &&
     (!filters.tag || item.tags.some((tag) => tag.toLowerCase().includes(filters.tag.toLowerCase()))) &&

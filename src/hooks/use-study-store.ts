@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createMockRevisionItems } from "@/lib/mock-data";
 import { emptyStudyState, loadStudyState, saveStudyState, type StudyState } from "@/lib/storage";
-import type { CourseKnowledgeMap, CurationReport, GuidanceFile, RejectedRevisionItem, RevisionItem, ReviewRating, ReviewSession, StudyFile } from "@/lib/types";
+import type { CourseKnowledgeMap, CourseStructureMap, CurationReport, EmbeddedRevisionItem, GuidanceFile, RejectedRevisionItem, RevisionItem, ReviewRating, ReviewSession, StudyFile } from "@/lib/types";
 import { applyReviewRating } from "@/lib/srs";
 import { withValidation } from "@/lib/validation";
 
@@ -28,11 +28,13 @@ export function useStudyStore() {
     addGuidanceFiles(files: GuidanceFile[]) { setState((current) => ({ ...current, guidanceFiles: [...current.guidanceFiles, ...files] })); },
     removeNotesFile(id: string) { setState((current) => ({ ...current, notesFiles: current.notesFiles.filter((file) => file.id !== id) })); },
     removeGuidanceFile(id: string) { setState((current) => ({ ...current, guidanceFiles: current.guidanceFiles.filter((file) => file.id !== id) })); },
-    setRevisionItems(items: RevisionItem[], rejectedItems?: RejectedRevisionItem[], curation?: { courseKnowledgeMap?: CourseKnowledgeMap; curationReport?: CurationReport }) {
+    setRevisionItems(items: RevisionItem[], rejectedItems?: RejectedRevisionItem[], curation?: { embeddedItems?: EmbeddedRevisionItem[]; courseStructureMap?: CourseStructureMap; courseKnowledgeMap?: CourseKnowledgeMap; curationReport?: CurationReport }) {
       setState((current) => ({
         ...current,
         revisionItems: items.map(withValidation),
         rejectedItems: rejectedItems ?? current.rejectedItems,
+        embeddedItems: curation?.embeddedItems ?? current.embeddedItems,
+        courseStructureMap: curation?.courseStructureMap ?? current.courseStructureMap,
         courseKnowledgeMap: curation?.courseKnowledgeMap ?? current.courseKnowledgeMap,
         curationReport: curation?.curationReport ?? current.curationReport,
       }));
@@ -57,6 +59,32 @@ export function useStudyStore() {
           revisionItems: [withValidation({ ...rejected.originalItem, isDeleted: false, deletedAt: undefined, updatedAt: new Date().toISOString() }), ...current.revisionItems],
         };
       });
+    },
+    rejectRevisionItem(id: string, reason = "Rejected during manual review.") {
+      setState((current) => {
+        const item = current.revisionItems.find((candidate) => candidate.id === id);
+        if (!item) return current;
+        const rejected: RejectedRevisionItem = {
+          id: `rejected_${id}`,
+          originalCandidateId: item.relevanceScore?.candidateId,
+          originalItem: withValidation({ ...item, curationDecision: "reject", curationReason: reason }),
+          title: item.displayTitle || item.title,
+          type: item.type,
+          rawText: item.originalRawText || item.statement,
+          rejectionCategory: "low_value",
+          rejectionReason: reason,
+          confidence: "medium",
+          sourceLocation: item.sourceLocation,
+        };
+        return {
+          ...current,
+          revisionItems: current.revisionItems.filter((candidate) => candidate.id !== id),
+          rejectedItems: [rejected, ...current.rejectedItems],
+        };
+      });
+    },
+    permanentlyDeleteRejectedItem(id: string) {
+      setState((current) => ({ ...current, rejectedItems: current.rejectedItems.filter((item) => item.id !== id) }));
     },
     deleteRevisionItem(id: string) {
       const deletedAt = new Date().toISOString();

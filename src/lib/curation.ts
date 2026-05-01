@@ -13,9 +13,12 @@ import type {
   CandidateRelevanceScore,
   CandidateRevisionBlock,
   CourseKnowledgeMap,
+  CourseSection,
+  CourseStructureMap,
   CourseTopic,
   CuratedDeckResult,
   CurationReport,
+  EmbeddedRevisionItem,
   ParsedDocument,
   RejectedRevisionItem,
   RejectionCategory,
@@ -81,6 +84,7 @@ export async function curateRevisionDeck({
   const guidanceText = renderDocuments(guidanceDocuments);
   const notesText = renderDocuments(parsedNotes);
   const courseKnowledgeMap = buildCourseKnowledgeMap(guidanceText, notesText);
+  const courseStructureMap = buildCourseStructureMap(parsedNotes, candidateBlocks, courseKnowledgeMap);
   const timestamp = new Date().toISOString();
 
   const scored = candidateBlocks.map((candidate) => {
@@ -97,6 +101,7 @@ export async function curateRevisionDeck({
   const rejectedItems: RejectedRevisionItem[] = [];
   const seenKept = new Map<string, RevisionItem>();
   const embeddedCandidates: ScoredCandidate[] = [];
+  const embeddedItems: EmbeddedRevisionItem[] = [];
 
   for (const entry of scored) {
     const duplicateOf = seenKept.get(duplicateKey(entry.item));
@@ -126,7 +131,13 @@ export async function curateRevisionDeck({
       parent.embeddedFormulas = Array.from(new Set([...(parent.embeddedFormulas ?? []), entry.candidate.statement ?? entry.candidate.rawText]));
       parent.updatedAt = timestamp;
     }
-    rejectedItems.push(toRejectedItem({ ...entry, item }, rejectionCategoryFor(entry), parent ? `${entry.score.reason} Embedded into "${parent.cardFront}".` : entry.score.reason, "medium"));
+    embeddedItems.push({
+      id: createId("embedded"),
+      parentItemId: parent?.id ?? item.parentItemId ?? "",
+      content: entry.candidate.statement ?? entry.candidate.rawText,
+      reason: parent ? `${entry.score.reason} Embedded into "${parent.cardFront}".` : entry.score.reason,
+      sourceLocation: entry.item.sourceLocation,
+    });
   }
 
   const keptWithProofCards = addRequiredProofCards(keptItems, timestamp);
@@ -154,11 +165,14 @@ export async function curateRevisionDeck({
       ),
     ),
   ];
-  const curationReport = buildCurationReport(candidateBlocks, [...qualityGate.keptItems, ...qualityGate.needsReviewItems], gatedRejectedItems);
+  const curationReport = buildCurationReport(candidateBlocks, qualityGate.keptItems, qualityGate.needsReviewItems, gatedRejectedItems, embeddedItems, courseStructureMap);
 
   return {
-    keptItems: [...qualityGate.keptItems, ...qualityGate.needsReviewItems],
+    keptItems: qualityGate.keptItems,
+    needsReviewItems: qualityGate.needsReviewItems,
     rejectedItems: gatedRejectedItems,
+    embeddedItems,
+    courseStructureMap,
     courseKnowledgeMap,
     curationReport,
   };
@@ -352,6 +366,10 @@ export function scoreRevisionCandidate(candidate: CandidateRevisionBlock, item: 
     return score(candidate.id, 1, 1, centrality, guidanceSupport, 1, "reject", "Background example is not clearly examinable.", evidence);
   }
 
+  if (item.cardPurpose === "conceptual_distinction" && centrality >= 3) {
+    return score(candidate.id, Math.max(examRelevance, 4) as 4 | 5, Math.max(standalone, 3) as 3 | 4 | 5, Math.max(centrality, 4) as 4 | 5, guidanceSupport, 1, "keep", "Conceptual distinction has active-recall value even though it is not explicitly labelled.", evidence);
+  }
+
   if (centrality >= 4 && standalone >= 3) {
     return score(candidate.id, examRelevance, standalone, centrality, guidanceSupport, 1, "needs_review", "Conceptually central but not clearly required; send for manual review.", evidence);
   }
@@ -370,6 +388,7 @@ function applyScoreToItem(item: RevisionItem, score: CandidateRelevanceScore, gu
     classificationConfidence: scoreConfidence(score),
     guidanceReason: score.evidence.length ? score.evidence.join(" ") : "No explicit guidance match found.",
     standaloneValue: score.standaloneFlashcardValue >= 4 ? "high" : score.standaloneFlashcardValue >= 3 ? "medium" : "low",
+    latexQuality: score.latexQuality,
     relevanceReason: score.reason,
     relevanceScore: score,
     taskPrompt: defaultTaskPrompt(item.type, item.cardPurpose, proofRequired),
@@ -414,6 +433,7 @@ function buildCourseKnowledgeMap(guidanceText: string, notesText: string): Cours
     .filter((topic) => combined.includes(topic))
     .map((topic) => ({
       name: capitaliseWords(topic),
+      relatedItems: [],
       importance: guidance.includes(topic) ? "core" : "supporting",
       evidence: evidenceSentences(topic, guidanceText || notesText),
       likelyExamUse: likelyExamUse(topic),
@@ -443,6 +463,52 @@ function buildCourseKnowledgeMap(guidanceText: string, notesText: string): Cours
       proofOptionalWhen: ["Guidance says statement only, proof not required, without proof, or formula given."],
       guidanceEvidence: evidenceSentences("proof", guidanceText),
     },
+  };
+}
+
+function buildCourseStructureMap(
+  parsedNotes: ParsedDocument[],
+  candidates: CandidateRevisionBlock[],
+  courseKnowledgeMap: CourseKnowledgeMap,
+): CourseStructureMap {
+  const sections: CourseSection[] = parsedNotes.flatMap((document) => {
+    if (!document.sections?.length) {
+      return [{
+        sectionNumber: undefined,
+        title: document.sourceFile,
+        sourceFile: document.sourceFile,
+        pageStart: document.pages?.[0]?.pageNumber,
+        pageEnd: document.pages?.at(-1)?.pageNumber,
+        summary: document.fullText.slice(0, 240).replace(/\s+/g, " ").trim(),
+        likelyImportance: "unknown" as const,
+      }];
+    }
+
+    return document.sections.map((section) => {
+      const relatedTopic = courseKnowledgeMap.coreTopics.find((topic) => section.text.toLowerCase().includes(topic.name.toLowerCase()));
+      return {
+        sectionNumber: section.sectionNumber,
+        title: section.sectionTitle,
+        sourceFile: document.sourceFile,
+        pageStart: pageNumberAtOffset(document.fullText, section.startOffset),
+        pageEnd: pageNumberAtOffset(document.fullText, section.endOffset),
+        summary: section.text.slice(0, 240).replace(/\s+/g, " ").trim(),
+        likelyImportance: relatedTopic?.importance ?? "unknown",
+      };
+    });
+  });
+
+  const topics = courseKnowledgeMap.coreTopics.map((topic) => ({
+    ...topic,
+    relatedItems: candidates
+      .filter((candidate) => candidate.rawText.toLowerCase().includes(topic.name.toLowerCase()))
+      .map((candidate) => candidate.id),
+  }));
+
+  return {
+    sections,
+    topics,
+    detectedItems: candidates,
   };
 }
 
@@ -492,12 +558,20 @@ function score(
   reason: string,
   evidence: string[],
 ): CandidateRelevanceScore {
+  const decision = keepDecision;
+  const formulaImportance = keepDecision === "keep" && reason.toLowerCase().includes("formula") ? Math.max(examRelevance, conceptualCentrality) : 0;
+  const proofRequirement = reason.toLowerCase().includes("proof is explicitly required") ? 5 : reason.toLowerCase().includes("proof") ? Math.min(guidanceSupport, 2) : 0;
   return {
     candidateId,
     examRelevance: asScore(examRelevance),
     standaloneFlashcardValue: asScore(standaloneFlashcardValue),
     conceptualCentrality: asScore(conceptualCentrality),
     guidanceSupport: asScore(guidanceSupport),
+    formulaImportance: asScore(formulaImportance),
+    proofRequirement: asScore(proofRequirement),
+    parseQuality: "medium",
+    latexQuality: "medium",
+    decision,
     redundancyRisk: asScore(redundancyRisk),
     keepDecision,
     reason,
@@ -586,6 +660,7 @@ function toRejectedItem(entry: ScoredCandidate, rejectionCategory: RejectionCate
     },
     title: entry.item.displayTitle || entry.item.title,
     type: entry.item.type,
+    rawText: entry.candidate.rawText,
     rejectionCategory,
     rejectionReason,
     confidence,
@@ -603,20 +678,33 @@ function findParentItem(candidate: CandidateRevisionBlock, items: RevisionItem[]
   return parents.at(-1);
 }
 
-function buildCurationReport(candidates: CandidateRevisionBlock[], keptItems: RevisionItem[], rejectedItems: RejectedRevisionItem[]): CurationReport {
+function buildCurationReport(
+  candidates: CandidateRevisionBlock[],
+  keptItems: RevisionItem[],
+  needsReviewItems: RevisionItem[],
+  rejectedItems: RejectedRevisionItem[],
+  embeddedItems: EmbeddedRevisionItem[],
+  courseStructureMap: CourseStructureMap,
+): CurationReport {
   const formulaCandidates = candidates.filter((candidate) => candidate.type === "formula").length;
   const formulaKeptCount = keptItems.filter((item) => item.type === "formula" && item.curationStatus !== "needs_review").length;
   const formulaRejectedCount = rejectedItems.filter((item) => item.type === "formula").length;
-  const needsReviewCount = keptItems.filter((item) => item.curationStatus === "needs_review").length;
   return {
     totalCandidates: candidates.length,
-    keptCount: keptItems.length - needsReviewCount,
+    keptCount: keptItems.length,
+    needsReviewCount: needsReviewItems.length,
     rejectedCount: rejectedItems.length,
+    embeddedCount: embeddedItems.length,
     formulaCandidates,
     formulaKeptCount,
     formulaRejectedCount,
+    mainTopics: courseStructureMap.topics.slice(0, 12).map((topic) => topic.name),
+    weakParsingWarnings: courseStructureMap.sections
+      .filter((section) => section.summary.length < 80)
+      .map((section) => `Short or weakly parsed section: ${section.title}`),
     notes: [
-      `${needsReviewCount} borderline item(s) were kept out of normal review for manual checking.`,
+      `${needsReviewItems.length} borderline item(s) were kept out of normal review for manual checking.`,
+      `${embeddedItems.length} supporting formula/detail item(s) were embedded into parent cards.`,
       "Low-value formulas are rejected or embedded instead of becoming normal review cards.",
       "Proof cards are created only when guidance indicates proof or derivation is required.",
     ],
@@ -784,6 +872,15 @@ function renderDocuments(documents: ParsedDocument[]) {
 
 function splitSentences(value: string) {
   return value.replace(/\s+/g, " ").split(/(?<=[.!?])\s+/).map((sentence) => sentence.trim()).filter(Boolean);
+}
+
+function pageNumberAtOffset(text: string, offset: number) {
+  let pageNumber: number | undefined;
+  for (const match of text.matchAll(/\[Page\s+(\d+)\]/gi)) {
+    if ((match.index ?? 0) > offset) break;
+    pageNumber = Number(match[1]);
+  }
+  return pageNumber;
 }
 
 function countMathOperators(value: string) {

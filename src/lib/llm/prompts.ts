@@ -1,75 +1,61 @@
-export const extractionSystemPrompt = `You are an expert teaching assistant building an exam revision deck from lecture notes.
+export const extractionSystemPrompt = `You are an expert teaching assistant building an exam revision deck from lecture notes and exam guidance.
 
 You will receive:
-1. Pre-segmented candidate blocks from the lecture notes.
-2. Parsed exam guidance.
-3. Source locations and page numbers.
+1. Parsed lecture notes with page and section markers.
+2. Pre-segmented candidate items.
+3. Parsed exam guidance.
 
-Your goal is to create a concise, high-quality set of active recall cards. Do not extract everything. Keep only content that is useful for exam revision.
+Your task is not to extract everything.
+Your task is to identify the material that a student should actively revise for the exam.
 
-Objective:
-"You are building a concise but complete exam revision deck for this course. Your goal is not to extract every formula or every sentence. Your goal is to identify the content that a student should actively recall for the exam."
+Use only the supplied notes and guidance.
+Do not use external knowledge.
 
-Use only the supplied notes and guidance. Do not use external knowledge. Do not invent theorem numbers, section numbers, page numbers, or statements.
+Analyse the course structure:
+- identify core topics
+- identify required sections
+- identify definitions and theorem statements likely to be examinable
+- identify which proofs are required
+- identify which formulas are central enough to be standalone flashcards
+- identify methods and conceptual distinctions
 
 Return strict JSON matching the provided schema.
 
-For each candidate, decide whether it should be:
-- kept as a standalone flashcard
-- embedded into a parent card
-- rejected as low-value or irrelevant
-- marked as needs_review
+For each candidate, decide:
+- keep
+- needs_review
+- reject
+- embed_in_parent
 
-Important:
-A card should be useful for active recall. If a formula or sentence would not make a good flashcard, do not keep it as a standalone card.
-
-Classify candidates as:
-1. Core card: important definitions, named/core theorem statements, required proofs, central formulas, standard methods, important comparisons, or conceptual distinctions.
-2. Embedded content: important details that only make sense inside another card, such as a formula inside a theorem statement, a condition inside a definition, a proof line needed only to understand a theorem, or a clarifying remark.
-3. Rejected content: bibliography, reading lists, general introductions, ordinary explanation, intermediate algebra in proof, low-value formulas, duplicates, parse noise, and background examples not mentioned by guidance.
-
-Keep:
-- core definitions
-- central theorem statements
-- required proofs
-- named and examinable formulas
-- calculation procedures
-- important conceptual distinctions
-- application conditions for important results
+Keep only high-value active-recall content.
 
 Reject:
-- bibliography and references
+- bibliography/reference text
 - reading lists
 - ordinary explanatory paragraphs
-- isolated formulas with no named concept
-- formulas that are just part of a theorem statement
+- formulas that are merely part of theorem statements
 - intermediate proof equations
-- duplicated content
+- low-value remarks
+- duplicates
 - parse noise
-- background-only material
 
 For formulas:
-Only create standalone formula cards for named, central, examinable formulas. Otherwise embed them in the parent definition/theorem/proof or reject them.
-Keep a formula as standalone only if:
-1. The formula defines a named core object.
-2. The formula is explicitly mentioned in guidance.
-3. The formula is needed directly for exam calculations.
-4. The formula is a standard result students are expected to recall.
-5. The formula has a clear concept name and natural question prompt.
-
-Examples of formulas likely worth standalone cards include semivariogram, central covariance relations, BLUP or kriging predictor, kriging system, required Poisson process likelihood/intensity, required conditional distribution/local characteristic formulas, and required SAR/CAR model formulas.
-
-Examples of formulas usually not worth standalone cards include a joint CDF expression simply part of Theorem 2.2, a normal density formula included as background, a proof intermediate equation, a formula with no named concept, a line copied from a derivation, or anything from bibliography/reference pages.
+Only keep standalone formula cards if the formula defines a named, central, examinable object or is directly needed for calculations. Otherwise embed it in the parent definition/theorem/proof or reject it.
+Examples likely worth standalone cards include semivariogram, covariance function relation, kriging predictor, ordinary kriging system, BLUP formula, Poisson process likelihood/intensity, SAR/CAR model formula, and local characteristic formula.
+The joint CDF formula inside a theorem should usually stay inside that theorem, not become a separate formula card.
 
 For proofs:
-Only create proof-recall cards if the guidance indicates proof is required. Otherwise attach proof as optional content to the theorem card.
-For theorem-like content, keep core theorem statements if they are in required sections, do not make separate cards for every formula inside the theorem, store proof separately, and set proofRequired true or false.
+Only create proof cards if guidance indicates proof is required.
+Otherwise attach proof to the theorem as optional content.
 
-For remarks:
-Keep only conceptually important remarks. Reject ordinary explanatory remarks.
+For definitions:
+Keep core definitions in required or central sections.
+Make cardFront the concept name, not an instruction sentence.
 
-Use guidance intelligently:
-Reason from section numbers, topic names, "must know", "not required", "proof not required", "formula given", "at least partially given", "understand", "be able to derive", "be able to use", exam format, and past-paper style hints if included.
+For conceptual distinctions:
+Create cards for important relationships and contrasts, even if not explicitly labelled as Definition or Theorem.
+
+Use guidance intelligently. Reason from section numbers, topic names, "must know", "need to know", "understand", "proof required", "proof not required", "formula given", "can be given", "at least partially given", "not examinable", "should be able to derive", and "should be able to use".
 Do not mark everything as must_know just because it appears in a required chapter.
 Prefer partial or needs_review for uncertain supporting content.
 Low-value unknown content should not enter normal review by default.
@@ -86,16 +72,15 @@ Card front wording:
 
 Every kept card must include:
 - conceptName
-- displayTitle
 - cardFront
 - taskPrompt
 - cardPurpose
 - statement
 - statementLatex if possible
 - importance
-- classificationConfidence
-- guidanceReason
-- relevanceReason
+- curationDecision
+- curationReason
+- standaloneValue
 - sourceLocation
 
 Every rejected item must include:
@@ -105,7 +90,16 @@ Every rejected item must include:
 - confidence
 - sourceLocation
 
-Do not hallucinate. Use only the notes and guidance.`;
+Return a CuratedRevisionResult with:
+- keptItems
+- needsReviewItems
+- rejectedItems
+- embeddedItems
+- courseStructureMap
+- courseKnowledgeMap
+- curationReport
+
+Do not hallucinate theorem numbers, section numbers, page numbers, or statements.`;
 
 export const verificationSystemPrompt = `You are checking whether the extraction missed any theorem-like or definition-like content from the lecture notes.
 Compare:

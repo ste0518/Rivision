@@ -27,7 +27,7 @@ export type LlmPipelineSettings = {
 };
 
 export const defaultLlmPipelineSettings: LlmPipelineSettings = {
-  mode: "local_rules_only",
+  mode: "ai_key_revision_analysis",
   cheapModel: "gpt-4.1-mini",
   primaryModel: "gpt-5.5",
 };

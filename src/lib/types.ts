@@ -14,7 +14,7 @@ export type RevisionItemType =
   | "other";
 export type RevisionImportance = "must_know" | "partial" | "not_required" | "unknown";
 export type ClassificationConfidence = "high" | "medium" | "low";
-export type ExtractionPipelineMode = "local_rules_only" | "manual_json_import" | "openai_api" | "cheap_scan_then_verify";
+export type ExtractionPipelineMode = "ai_key_revision_analysis" | "local_rules_only" | "manual_json_import" | "openai_api" | "cheap_scan_then_verify";
 export type StandaloneValue = "high" | "medium" | "low";
 export type CardPurpose =
   | "definition_recall"
@@ -25,9 +25,10 @@ export type CardPurpose =
   | "conceptual_distinction"
   | "application_condition"
   | "calculation_template"
+  | "background_context"
   | "needs_review";
 export type CurationStatus = "kept" | "needs_review";
-export type CurationDecision = "keep" | "needs_review" | "reject";
+export type CurationDecision = "keep" | "needs_review" | "reject" | "embed_in_parent";
 export type RejectionCategory =
   | "bibliography_or_reference"
   | "ordinary_explanatory_text"
@@ -115,11 +116,18 @@ export interface CandidateRelevanceScore {
   standaloneFlashcardValue: 0 | 1 | 2 | 3 | 4 | 5;
   conceptualCentrality: 0 | 1 | 2 | 3 | 4 | 5;
   guidanceSupport: 0 | 1 | 2 | 3 | 4 | 5;
+  formulaImportance: 0 | 1 | 2 | 3 | 4 | 5;
+  proofRequirement: 0 | 1 | 2 | 3 | 4 | 5;
+  parseQuality: "high" | "medium" | "low";
+  latexQuality: "high" | "medium" | "low";
+  decision: CurationDecision;
   redundancyRisk: 0 | 1 | 2 | 3 | 4 | 5;
   keepDecision: "keep" | "embed_in_parent" | "reject" | "needs_review";
   reason: string;
   evidence: string[];
 }
+
+export type CandidateScore = Omit<CandidateRelevanceScore, "redundancyRisk" | "keepDecision">;
 
 export interface FormulaPolicySummary {
   standaloneFormulaRule: string;
@@ -138,6 +146,7 @@ export interface ProofPolicySummary {
 export interface CourseTopic {
   name: string;
   section?: string;
+  relatedItems: string[];
   importance: "core" | "supporting" | "background" | "unknown";
   evidence: string[];
   likelyExamUse:
@@ -148,6 +157,22 @@ export interface CourseTopic {
     | "derivation"
     | "conceptual_explanation"
     | "not_likely";
+}
+
+export interface CourseSection {
+  sectionNumber?: string;
+  title: string;
+  sourceFile: string;
+  pageStart?: number;
+  pageEnd?: number;
+  summary: string;
+  likelyImportance: "core" | "supporting" | "background" | "unknown";
+}
+
+export interface CourseStructureMap {
+  sections: CourseSection[];
+  topics: CourseTopic[];
+  detectedItems: RevisionCandidate[];
 }
 
 export interface RequiredSection {
@@ -174,10 +199,14 @@ export interface CourseKnowledgeMap {
 export interface CurationReport {
   totalCandidates: number;
   keptCount: number;
+  needsReviewCount: number;
   rejectedCount: number;
+  embeddedCount: number;
   formulaCandidates: number;
   formulaKeptCount: number;
   formulaRejectedCount: number;
+  mainTopics: string[];
+  weakParsingWarnings: string[];
   notes: string[];
 }
 
@@ -228,6 +257,7 @@ export type RevisionItem = {
   curationReason?: string;
   parentItemId?: string;
   embeddedFormulas?: string[];
+  latexQuality?: "high" | "medium" | "low";
   relevanceReason?: string;
   relevanceScore?: CandidateRelevanceScore;
   deletedAt?: string;
@@ -252,18 +282,32 @@ export interface RejectedRevisionItem {
   originalItem?: RevisionItem;
   title: string;
   type: RevisionItemType;
+  rawText?: string;
   rejectionReason: string;
   rejectionCategory: RejectionCategory;
   confidence: ClassificationConfidence;
   sourceLocation?: string;
 }
 
-export interface CuratedDeckResult {
+export interface EmbeddedRevisionItem {
+  id: string;
+  parentItemId: string;
+  content: string;
+  reason: string;
+  sourceLocation?: string;
+}
+
+export interface CuratedRevisionResult {
   keptItems: RevisionItem[];
+  needsReviewItems: RevisionItem[];
   rejectedItems: RejectedRevisionItem[];
+  embeddedItems: EmbeddedRevisionItem[];
+  courseStructureMap: CourseStructureMap;
   courseKnowledgeMap: CourseKnowledgeMap;
   curationReport: CurationReport;
 }
+
+export type CuratedDeckResult = CuratedRevisionResult;
 
 export type ReviewSession = { id: string; itemId: string; rating: ReviewRating; reviewedAt: string; };
 export type ExtractionVerificationReport = {
@@ -313,5 +357,6 @@ export const cardPurposes: CardPurpose[] = [
   "conceptual_distinction",
   "application_condition",
   "calculation_template",
+  "background_context",
   "needs_review",
 ];

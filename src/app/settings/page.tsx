@@ -26,12 +26,13 @@ export default function SettingsPage() {
         <Card>
           <CardHeader>
             <CardTitle>Extraction mode</CardTitle>
-            <CardDescription>Choose local rules, manual JSON import, or OpenAI API extraction.</CardDescription>
+            <CardDescription>Choose AI key revision analysis, local rules, manual JSON import, or OpenAI API extraction.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <label className="space-y-1 text-sm font-medium">
               Pipeline mode
               <Select value={llm.mode} onChange={(event) => setLlm((current) => ({ ...current, mode: event.target.value as LlmPipelineSettings["mode"] }))}>
+                <option value="ai_key_revision_analysis">AI key revision analysis</option>
                 <option value="local_rules_only">Local rules only</option>
                 <option value="manual_json_import">Manual JSON import</option>
                 <option value="openai_api">OpenAI API extraction</option>
@@ -39,7 +40,7 @@ export default function SettingsPage() {
               </Select>
             </label>
 
-            {(llm.mode === "openai_api" || llm.mode === "cheap_scan_then_verify") ? (
+            {(llm.mode === "ai_key_revision_analysis" || llm.mode === "openai_api" || llm.mode === "cheap_scan_then_verify") ? (
               <>
                 <label className="space-y-1 text-sm font-medium">
                   Primary model

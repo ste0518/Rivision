@@ -1,6 +1,7 @@
 "use client";
 
 import { useMemo, useState } from "react";
+import type { ReactNode } from "react";
 import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -12,6 +13,7 @@ import { PageHeader } from "@/components/page-header";
 import { MathMarkdown } from "@/components/MathMarkdown";
 import { extractRevisionItems, generateManualExtractionPrompt, loadLlmPipelineSettings } from "@/lib/extraction";
 import { getPrimaryCardPreview, hasLowLatexQuality } from "@/lib/card-render";
+import { normalizeMathNotation } from "@/lib/revision-item-utils";
 import { buildSegmentationDebug, segmentRevisionCandidates } from "@/lib/segmentation";
 import { validateRevisionItemsPayload, withValidation } from "@/lib/validation";
 import type { CuratedDeckResult, ExtractionVerificationReport, ParsedDocument, RevisionItem } from "@/lib/types";
@@ -26,6 +28,7 @@ export default function ExtractPage() {
   const [manualJson, setManualJson] = useState("");
   const [manualErrors, setManualErrors] = useState<string[]>([]);
   const [apiError, setApiError] = useState<string>("");
+  const [activeTab, setActiveTab] = useState<"kept" | "needs_review" | "rejected" | "embedded" | "course_map">("kept");
 
   const settings = loadLlmPipelineSettings();
   const notesDocuments = useMemo(() => store.notesFiles.map((file) => file.parsedDocument ?? toLegacyParsedDocument(file.name, file.content)), [store.notesFiles]);
@@ -39,6 +42,13 @@ export default function ExtractPage() {
   const candidateSegmentationWarning = segmentationDebug.some((document) => document.warnings.length > 0);
   const needsReviewItems = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && ((item.curationDecision ?? "keep") !== "keep" || needsRepair(item))), [store.revisionItems]);
   const normalItems = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && (item.curationDecision ?? "keep") === "keep" && item.standaloneValue !== "low" && !needsRepair(item)), [store.revisionItems]);
+  const parsedPageCount = useMemo(() => allDocuments.reduce((total, doc) => total + (doc.pages?.length ?? 0), 0), [allDocuments]);
+  const topCourseTopics = useMemo(
+    () => store.curationReport?.mainTopics?.length
+      ? store.curationReport.mainTopics
+      : store.courseStructureMap?.topics.slice(0, 8).map((topic) => topic.name) ?? [],
+    [store.courseStructureMap, store.curationReport],
+  );
   const failedDocuments = useMemo(
     () => allDocuments.filter((doc) => !doc.diagnostics.success || doc.diagnostics.extractionQuality === "failed" || !doc.fullText.trim()),
     [allDocuments],
@@ -67,18 +77,23 @@ export default function ExtractPage() {
     }
 
     const result = await extractRevisionItems({ notesDocuments, guidanceDocuments, sourceFile });
-    store.setRevisionItems(result.items, result.rejectedItems, { courseKnowledgeMap: result.courseKnowledgeMap, curationReport: result.curationReport });
+    store.setRevisionItems(result.items, result.rejectedItems, {
+      embeddedItems: result.embeddedItems,
+      courseStructureMap: result.courseStructureMap,
+      courseKnowledgeMap: result.courseKnowledgeMap,
+      curationReport: result.curationReport,
+    });
     setVerification(result.verification);
     if (result.error) setApiError(result.error);
 
-    if (settings.mode === "openai_api" || settings.mode === "cheap_scan_then_verify") {
+    if (settings.mode === "ai_key_revision_analysis" || settings.mode === "openai_api" || settings.mode === "cheap_scan_then_verify") {
       if (result.items.length === 0) {
-        setStatus("OpenAI extraction returned no kept items. Check parsing diagnostics and rejected low-relevance items.");
+        setStatus("AI key revision analysis returned no kept items. Check parsing diagnostics and rejected low-relevance items.");
       } else {
-        setStatus(`Deck curation complete via OpenAI pipeline with ${result.curationReport.keptCount} kept, ${result.items.filter((item) => item.curationStatus === "needs_review").length} needing review, and ${result.rejectedItems.length} rejected item(s).`);
+        setStatus(`AI key revision analysis complete with ${result.curationReport.keptCount} kept, ${result.curationReport.needsReviewCount} needing review, ${result.curationReport.embeddedCount} embedded, and ${result.rejectedItems.length} rejected item(s).`);
       }
     } else {
-      setStatus(`Deck curation complete via local deterministic rules with ${result.curationReport.keptCount} kept, ${result.items.filter((item) => item.curationStatus === "needs_review").length} needing review, and ${result.rejectedItems.length} rejected item(s).`);
+      setStatus(`Deck curation complete via local deterministic rules with ${result.curationReport.keptCount} kept, ${result.curationReport.needsReviewCount} needing review, ${result.curationReport.embeddedCount} embedded, and ${result.rejectedItems.length} rejected item(s).`);
     }
 
     setExtracting(false);
@@ -91,7 +106,16 @@ export default function ExtractPage() {
       const result = validateRevisionItemsPayload(manualDeck ? manualDeck.keptItems : parsed);
       setManualErrors(result.errors);
       if (result.errors.length > 0) return;
-      store.setRevisionItems(result.items.map(withValidation), manualDeck?.rejectedItems ?? [], manualDeck ? { courseKnowledgeMap: manualDeck.courseKnowledgeMap, curationReport: manualDeck.curationReport } : undefined);
+      store.setRevisionItems(
+        manualDeck ? [...manualDeck.keptItems, ...manualDeck.needsReviewItems].map(withValidation) : result.items.map(withValidation),
+        manualDeck?.rejectedItems ?? [],
+        manualDeck ? {
+          embeddedItems: manualDeck.embeddedItems,
+          courseStructureMap: manualDeck.courseStructureMap,
+          courseKnowledgeMap: manualDeck.courseKnowledgeMap,
+          curationReport: manualDeck.curationReport,
+        } : undefined,
+      );
       setStatus(`Imported ${result.items.length} card(s) from manual JSON.`);
     } catch {
       setManualErrors(["JSON parse error. Please provide valid JSON array."]);
@@ -137,6 +161,28 @@ export default function ExtractPage() {
     store.upsertRevisionItem(withValidation(item));
   }
 
+  function keepNeedsReviewItem(item: RevisionItem) {
+    store.upsertRevisionItem({
+      ...item,
+      curationDecision: "keep",
+      curationStatus: "kept",
+      cardPurpose: item.cardPurpose === "needs_review" ? fallbackPurpose(item) : item.cardPurpose,
+      standaloneValue: item.standaloneValue === "low" ? "medium" : item.standaloneValue,
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
+  function fixItemMath(item: RevisionItem) {
+    store.upsertRevisionItem({
+      ...item,
+      statementLatex: normalizeMathNotation(item.statement || ""),
+      answerLatex: normalizeMathNotation(item.answer || ""),
+      proofLatex: item.proof ? normalizeMathNotation(item.proof) : undefined,
+      latexQuality: "medium",
+      updatedAt: new Date().toISOString(),
+    });
+  }
+
   return (
     <div>
       <PageHeader
@@ -154,7 +200,7 @@ export default function ExtractPage() {
         <CardContent className="space-y-4">
           <div className="flex flex-wrap gap-2">
             <Button size="lg" onClick={runExtraction} disabled={extracting}>
-              {extracting ? "Extracting..." : "Run extraction"}
+              {extracting ? "Analysing..." : "Run AI key revision analysis"}
             </Button>
             <Button variant="outline" onClick={handlePromptCopy}>Generate manual ChatGPT prompt</Button>
           </div>
@@ -165,8 +211,8 @@ export default function ExtractPage() {
               Guidance could not be parsed, so importance classification may be unreliable.
             </p>
           ) : null}
-          {(settings.mode === "openai_api" || settings.mode === "cheap_scan_then_verify") ? (
-            <p className="text-sm text-slate-500">If OPENAI_API_KEY is missing, the app will not crash. Switch to local rules or manual JSON import in <Link className="underline" href="/settings">Settings</Link>.</p>
+          {(settings.mode === "ai_key_revision_analysis" || settings.mode === "openai_api" || settings.mode === "cheap_scan_then_verify") ? (
+            <p className="text-sm text-slate-500">If OPENAI_API_KEY is missing, the app falls back to local heuristic filtering. You can change modes in <Link className="underline" href="/settings">Settings</Link>.</p>
           ) : (
             <p className="text-sm text-slate-500">No paid API key required in this mode.</p>
           )}
@@ -176,14 +222,127 @@ export default function ExtractPage() {
       {store.curationReport ? (
         <Card className="mt-6">
           <CardHeader>
-            <CardTitle>Curation report</CardTitle>
+            <CardTitle>AI Revision Analysis Summary</CardTitle>
             <CardDescription>
-              {store.curationReport.totalCandidates} candidate(s) scored · {store.curationReport.keptCount} kept · {needsReviewItems.length} need review · {store.curationReport.rejectedCount} rejected
+              {parsedPageCount || "Unknown"} parsed page(s) · {store.curationReport.totalCandidates} candidate(s) · {store.curationReport.keptCount} kept · {store.curationReport.needsReviewCount} need review · {store.curationReport.rejectedCount} rejected
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-slate-600">
-            <p>Formulas: {store.curationReport.formulaKeptCount} kept / {store.curationReport.formulaRejectedCount} rejected from {store.curationReport.formulaCandidates} candidate(s).</p>
+            <p><strong>Top course topics:</strong> {topCourseTopics.length ? topCourseTopics.join(", ") : "None detected yet."}</p>
+            <p><strong>Formula policy:</strong> {store.courseKnowledgeMap?.formulaPolicy.standaloneFormulaRule ?? "Only named, central, examinable formulas become standalone cards."} {store.curationReport.formulaKeptCount} kept / {store.curationReport.formulaRejectedCount} rejected from {store.curationReport.formulaCandidates} formula candidate(s).</p>
+            <p><strong>Proof policy:</strong> {store.courseKnowledgeMap?.proofPolicy.proofCardRule ?? "Create proof cards only when proof is required."}</p>
+            {store.curationReport.embeddedCount > 0 ? <p><strong>Embedded content:</strong> {store.curationReport.embeddedCount} supporting item(s) were attached to parent cards instead of entering review.</p> : null}
+            {store.curationReport.weakParsingWarnings.length > 0 ? (
+              <div className="rounded border border-amber-200 bg-amber-50 p-2 text-amber-800">
+                {store.curationReport.weakParsingWarnings.map((warning) => <p key={warning}>{warning}</p>)}
+              </div>
+            ) : null}
             {store.curationReport.notes.map((note) => <p key={note}>{note}</p>)}
+          </CardContent>
+        </Card>
+      ) : null}
+
+      {store.curationReport ? (
+        <Card className="mt-6">
+          <CardHeader>
+            <CardTitle>AI key revision analysis</CardTitle>
+            <CardDescription>Structured revision pack grouped by final curation decision.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-4">
+            <div className="flex flex-wrap gap-2">
+              <TabButton active={activeTab === "kept"} onClick={() => setActiveTab("kept")}>Kept cards ({normalItems.length})</TabButton>
+              <TabButton active={activeTab === "needs_review"} onClick={() => setActiveTab("needs_review")}>Needs review ({needsReviewItems.length})</TabButton>
+              <TabButton active={activeTab === "rejected"} onClick={() => setActiveTab("rejected")}>Rejected ({store.rejectedItems.length})</TabButton>
+              <TabButton active={activeTab === "embedded"} onClick={() => setActiveTab("embedded")}>Embedded content ({store.embeddedItems.length})</TabButton>
+              <TabButton active={activeTab === "course_map"} onClick={() => setActiveTab("course_map")}>Course map</TabButton>
+            </div>
+
+            {activeTab === "kept" ? (
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {normalItems.length === 0 ? <p className="text-sm text-slate-500">No kept active cards yet.</p> : null}
+                {normalItems.map((item) => <KeptCard key={item.id} item={item} />)}
+              </div>
+            ) : null}
+
+            {activeTab === "needs_review" ? (
+              <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+                {needsReviewItems.length === 0 ? <p className="text-sm text-slate-500">No uncertain items.</p> : null}
+                {needsReviewItems.map((item) => (
+                  <ExtractedCard
+                    key={item.id}
+                    item={item}
+                    onImportanceChange={(importance) => store.upsertRevisionItem({ ...item, importance, updatedAt: new Date().toISOString() })}
+                    onAccept={() => keepNeedsReviewItem(item)}
+                    onReject={() => store.rejectRevisionItem(item.id, "Rejected during AI analysis review.")}
+                    onFixMath={() => fixItemMath(item)}
+                  />
+                ))}
+              </div>
+            ) : null}
+
+            {activeTab === "rejected" ? (
+              <div className="space-y-3">
+                {store.rejectedItems.length === 0 ? <p className="text-sm text-slate-500">No rejected content.</p> : null}
+                {store.rejectedItems.map((rejected) => (
+                  <div key={rejected.id} className="rounded-lg border bg-white p-3 text-sm">
+                    <div className="flex flex-wrap items-center justify-between gap-3">
+                      <div>
+                        <p className="font-medium">{rejected.title}</p>
+                        <p className="text-xs text-slate-500">{rejected.type} · {rejected.rejectionCategory} · confidence {rejected.confidence} · {rejected.sourceLocation || rejected.originalItem?.sourceLocation || "source unknown"}</p>
+                      </div>
+                      <div className="flex flex-wrap gap-2">
+                        <Button size="sm" variant="outline" onClick={() => store.restoreRejectedItem(rejected.id)} disabled={!rejected.originalItem}>Restore</Button>
+                        <Button size="sm" variant="destructive" onClick={() => store.permanentlyDeleteRejectedItem(rejected.id)}>Permanently delete</Button>
+                      </div>
+                    </div>
+                    <p className="mt-2 text-slate-700">{rejected.rejectionReason}</p>
+                    {rejected.rawText ? <p className="mt-2 line-clamp-3 text-xs text-slate-500">{rejected.rawText}</p> : null}
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {activeTab === "embedded" ? (
+              <div className="space-y-3">
+                {store.embeddedItems.length === 0 ? <p className="text-sm text-slate-500">No embedded content.</p> : null}
+                {store.embeddedItems.map((embedded) => (
+                  <div key={embedded.id} className="rounded-lg border bg-white p-3 text-sm">
+                    <p className="font-medium">{embedded.sourceLocation || "Embedded support content"}</p>
+                    <p className="text-xs text-slate-500">Parent card: {embedded.parentItemId || "not found"}</p>
+                    <p className="mt-2 text-slate-700">{embedded.reason}</p>
+                    <MathMarkdown content={previewText(embedded.content)} className="mt-2 bg-transparent p-0 text-sm text-slate-600" />
+                  </div>
+                ))}
+              </div>
+            ) : null}
+
+            {activeTab === "course_map" ? (
+              <div className="space-y-4">
+                <div>
+                  <p className="mb-2 font-medium">Major topics</p>
+                  <div className="flex flex-wrap gap-2">
+                    {(store.courseStructureMap?.topics ?? []).map((topic) => (
+                      <Badge key={topic.name} variant={topic.importance === "core" ? "must_know" : topic.importance === "supporting" ? "partial" : "outline"}>
+                        {topic.name} · {topic.likelyExamUse}
+                      </Badge>
+                    ))}
+                  </div>
+                </div>
+                <div className="space-y-2">
+                  <p className="font-medium">Sections</p>
+                  {(store.courseStructureMap?.sections ?? []).map((section) => (
+                    <div key={`${section.sourceFile}-${section.title}-${section.pageStart ?? ""}`} className="rounded-lg border p-3 text-sm">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <p className="font-medium">{section.sectionNumber ? `${section.sectionNumber} ` : ""}{section.title}</p>
+                        <Badge variant={section.likelyImportance === "core" ? "must_know" : section.likelyImportance === "supporting" ? "partial" : "outline"}>{section.likelyImportance}</Badge>
+                      </div>
+                      <p className="mt-1 text-xs text-slate-500">{section.sourceFile}{section.pageStart ? ` · page ${section.pageStart}${section.pageEnd && section.pageEnd !== section.pageStart ? `-${section.pageEnd}` : ""}` : ""}</p>
+                      <p className="mt-2 text-slate-600">{section.summary || "No summary available."}</p>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            ) : null}
           </CardContent>
         </Card>
       ) : null}
@@ -298,7 +457,9 @@ export default function ExtractPage() {
                 key={item.id}
                 item={item}
                 onImportanceChange={(importance) => store.upsertRevisionItem({ ...item, importance, updatedAt: new Date().toISOString() })}
-                onAccept={() => store.upsertRevisionItem({ ...item, curationStatus: "kept", updatedAt: new Date().toISOString() })}
+                onAccept={() => keepNeedsReviewItem(item)}
+                onReject={() => store.rejectRevisionItem(item.id, "Rejected during AI analysis review.")}
+                onFixMath={() => fixItemMath(item)}
               />
             ))}
           </CardContent>
@@ -321,7 +482,10 @@ export default function ExtractPage() {
                       {rejected.type} · {rejected.rejectionCategory} · confidence {rejected.confidence} · {rejected.sourceLocation || rejected.originalItem?.sourceLocation || "source unknown"}
                     </p>
                   </div>
-                  <Button size="sm" variant="outline" onClick={() => store.restoreRejectedItem(rejected.id)} disabled={!rejected.originalItem}>Restore as card</Button>
+                  <div className="flex flex-wrap gap-2">
+                    <Button size="sm" variant="outline" onClick={() => store.restoreRejectedItem(rejected.id)} disabled={!rejected.originalItem}>Restore as card</Button>
+                    <Button size="sm" variant="destructive" onClick={() => store.permanentlyDeleteRejectedItem(rejected.id)}>Permanently delete</Button>
+                  </div>
                 </div>
                 <p className="mt-2 text-slate-700">{rejected.rejectionReason}</p>
                 {rejected.originalItem ? <MathMarkdown content={previewText(rejected.originalItem.statementLatex || rejected.originalItem.statement)} className="mt-2 bg-transparent p-0 text-sm text-slate-500" /> : null}
@@ -425,7 +589,51 @@ export default function ExtractPage() {
   );
 }
 
-function ExtractedCard({ item, onImportanceChange, onAccept }: { item: RevisionItem; onImportanceChange: (importance: RevisionItem["importance"]) => void; onAccept?: () => void }) {
+function TabButton({ active, onClick, children }: { active: boolean; onClick: () => void; children: ReactNode }) {
+  return (
+    <Button type="button" variant={active ? "default" : "outline"} onClick={onClick}>
+      {children}
+    </Button>
+  );
+}
+
+function KeptCard({ item }: { item: RevisionItem }) {
+  return (
+    <Card>
+      <CardHeader>
+        <div className="flex items-center justify-between gap-3">
+          <CardTitle className="text-base">{item.cardFront}</CardTitle>
+          <Badge variant={item.importance}>{item.importance}</Badge>
+        </div>
+        <CardDescription>{item.displayTitle || item.title}</CardDescription>
+      </CardHeader>
+      <CardContent>
+        <div className="mb-2 flex flex-wrap gap-2">
+          <Badge variant="outline">{item.cardPurpose}</Badge>
+          <Badge variant="outline">standalone {item.standaloneValue ?? "unknown"}</Badge>
+          {item.latexQuality ? <Badge variant={item.latexQuality === "low" ? "unknown" : "outline"}>LaTeX {item.latexQuality}</Badge> : null}
+        </div>
+        <MathMarkdown content={previewText(getPrimaryCardPreview(item))} className="bg-transparent p-0 text-sm text-slate-600" />
+        <p className="mt-2 text-xs text-slate-500">{item.sourceLocation || "source unknown"}</p>
+        {item.curationReason ? <p className="mt-2 text-xs text-slate-500">{item.curationReason}</p> : null}
+      </CardContent>
+    </Card>
+  );
+}
+
+function ExtractedCard({
+  item,
+  onImportanceChange,
+  onAccept,
+  onReject,
+  onFixMath,
+}: {
+  item: RevisionItem;
+  onImportanceChange: (importance: RevisionItem["importance"]) => void;
+  onAccept?: () => void;
+  onReject?: () => void;
+  onFixMath?: () => void;
+}) {
   return (
     <Card>
       <CardHeader>
@@ -447,6 +655,9 @@ function ExtractedCard({ item, onImportanceChange, onAccept }: { item: RevisionI
             <option value="unknown">unknown</option>
           </Select>
           {onAccept ? <Button size="sm" variant="outline" onClick={onAccept}>Keep in review</Button> : null}
+          {onReject ? <Button size="sm" variant="outline" onClick={onReject}>Reject</Button> : null}
+          <Link className="inline-flex h-8 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50" href="/cards">Edit</Link>
+          {onFixMath ? <Button size="sm" variant="outline" onClick={onFixMath}>Fix math</Button> : null}
         </div>
       </CardContent>
     </Card>
@@ -469,6 +680,15 @@ function needsRepair(item: RevisionItem) {
 
 function previewText(value: string) {
   return value.length > 200 ? `${value.slice(0, 200)}...` : value;
+}
+
+function fallbackPurpose(item: RevisionItem): RevisionItem["cardPurpose"] {
+  if (item.type === "definition") return "definition_recall";
+  if (item.type === "formula") return "formula_recall";
+  if (item.type === "proof") return "proof_recall";
+  if (item.type === "algorithm") return "method_steps";
+  if (item.type === "theorem" || item.type === "lemma" || item.type === "proposition" || item.type === "corollary") return "theorem_statement";
+  return "background_context";
 }
 
 function isCuratedDeckResult(value: unknown): value is CuratedDeckResult {

@@ -1,15 +1,17 @@
-import type { CourseKnowledgeMap, CurationReport, GuidanceFile, RejectedRevisionItem, RevisionItem, ReviewSession, StudyFile } from "@/lib/types";
+import type { CourseKnowledgeMap, CourseStructureMap, CurationReport, EmbeddedRevisionItem, GuidanceFile, RejectedRevisionItem, RevisionItem, ReviewSession, StudyFile } from "@/lib/types";
 
 export type StudyState = {
   notesFiles: StudyFile[];
   guidanceFiles: GuidanceFile[];
   revisionItems: RevisionItem[];
   rejectedItems: RejectedRevisionItem[];
+  embeddedItems: EmbeddedRevisionItem[];
   reviewSessions: ReviewSession[];
+  courseStructureMap?: CourseStructureMap;
   courseKnowledgeMap?: CourseKnowledgeMap;
   curationReport?: CurationReport;
 };
-export const emptyStudyState: StudyState = { notesFiles: [], guidanceFiles: [], revisionItems: [], rejectedItems: [], reviewSessions: [] };
+export const emptyStudyState: StudyState = { notesFiles: [], guidanceFiles: [], revisionItems: [], rejectedItems: [], embeddedItems: [], reviewSessions: [] };
 const storageKey = "rivision.studyState.v1";
 export function loadStudyState(): StudyState {
   if (typeof window === "undefined") return emptyStudyState;

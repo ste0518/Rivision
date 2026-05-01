@@ -4,8 +4,10 @@ import { extractionSystemPrompt } from "@/lib/llm/prompts";
 import { attachProofsToPreviousTheorem, segmentRevisionCandidates } from "@/lib/segmentation";
 import type {
   CourseKnowledgeMap,
+  CourseStructureMap,
   CurationReport,
   CuratedDeckResult,
+  EmbeddedRevisionItem,
   ExtractionPipelineMode,
   ExtractionVerificationReport,
   ParsedDocument,
@@ -22,8 +24,11 @@ export type ExtractRevisionItemsInput = {
 
 export type ExtractRevisionItemsResult = {
   items: RevisionItem[];
+  needsReviewItems: RevisionItem[];
   rejectedItems: RejectedRevisionItem[];
+  embeddedItems: EmbeddedRevisionItem[];
   verification: ExtractionVerificationReport;
+  courseStructureMap: CourseStructureMap;
   courseKnowledgeMap: CourseKnowledgeMap;
   curationReport: CurationReport;
   error?: string;
@@ -43,49 +48,71 @@ export async function extractRevisionItems({
   const hasRealInput = Boolean(notesText.trim() || guidanceText.trim());
   const settings = loadLlmPipelineSettings();
   const safeMode = settings.mode as ExtractionPipelineMode;
+  let fallbackWarning: string | undefined;
 
-  if (settings.mode === "openai_api" || settings.mode === "cheap_scan_then_verify") {
+  if (settings.mode === "ai_key_revision_analysis" || settings.mode === "openai_api" || settings.mode === "cheap_scan_then_verify") {
     const llmResult = await extractViaApi({ notesDocuments, guidanceDocuments, sourceFile, settings });
-    if (llmResult.items.length > 0 || llmResult.rejectedItems.length > 0 || llmResult.verification || llmResult.error) {
-      const { items, rejectedItems } = postProcessRevisionItems(llmResult.items, llmResult.rejectedItems);
+    if (llmResult.items.length > 0 || llmResult.needsReviewItems.length > 0 || llmResult.rejectedItems.length > 0 || llmResult.verification) {
+      const processed = postProcessRevisionItems(llmResult.items, llmResult.needsReviewItems, llmResult.rejectedItems);
       return {
-        items,
-        rejectedItems,
+        items: [...processed.items, ...processed.needsReviewItems],
+        needsReviewItems: processed.needsReviewItems,
+        rejectedItems: processed.rejectedItems,
+        embeddedItems: llmResult.embeddedItems ?? [],
+        courseStructureMap: llmResult.courseStructureMap ?? emptyCourseStructureMap(),
         courseKnowledgeMap: llmResult.courseKnowledgeMap ?? emptyCourseKnowledgeMap(),
-        curationReport: llmResult.curationReport ?? emptyCurationReport(0, items.length, rejectedItems.length),
-        verification: mergeSuspiciousItems(llmResult.verification ?? emptyVerificationReport("Verification unavailable."), items),
+        curationReport: llmResult.curationReport ?? emptyCurationReport(0, processed.items.length, processed.needsReviewItems.length, processed.rejectedItems.length, llmResult.embeddedItems?.length ?? 0),
+        verification: mergeSuspiciousItems(llmResult.verification ?? emptyVerificationReport("Verification unavailable."), [...processed.items, ...processed.needsReviewItems]),
         error: llmResult.error,
       };
     }
+    fallbackWarning = llmResult.error
+      ? `AI key revision analysis requires an API key. Current result uses local heuristic filtering. (${llmResult.error})`
+      : undefined;
   }
 
   const curated = await deterministicCurate(notesDocuments, guidanceDocuments, notesText, safeMode);
-  if (curated.keptItems.length > 0 || curated.rejectedItems.length > 0) {
-    const { items, rejectedItems } = postProcessRevisionItems(curated.keptItems, curated.rejectedItems);
+  if (curated.keptItems.length > 0 || curated.needsReviewItems.length > 0 || curated.rejectedItems.length > 0 || curated.embeddedItems.length > 0) {
+    const processed = postProcessRevisionItems(curated.keptItems, curated.needsReviewItems, curated.rejectedItems);
+    const items = [...processed.items, ...processed.needsReviewItems];
     return {
       items,
-      rejectedItems,
+      needsReviewItems: processed.needsReviewItems,
+      rejectedItems: processed.rejectedItems,
+      embeddedItems: curated.embeddedItems,
+      courseStructureMap: curated.courseStructureMap,
       courseKnowledgeMap: curated.courseKnowledgeMap,
-      curationReport: curated.curationReport,
+      curationReport: {
+        ...curated.curationReport,
+        notes: fallbackWarning ? [fallbackWarning, ...curated.curationReport.notes] : curated.curationReport.notes,
+      },
       verification: mergeSuspiciousItems(emptyVerificationReport("Local deterministic extraction mode does not run LLM verification."), items),
+      error: fallbackWarning,
     };
   }
 
   if (hasRealInput) {
     return {
       items: [],
+      needsReviewItems: [],
       rejectedItems: [],
+      embeddedItems: [],
+      courseStructureMap: emptyCourseStructureMap(),
       courseKnowledgeMap: emptyCourseKnowledgeMap(),
-      curationReport: emptyCurationReport(0, 0, 0),
+      curationReport: emptyCurationReport(0, 0, 0, 0, 0),
       verification: emptyVerificationReport("No extractable items detected from parsed content."),
+      error: fallbackWarning,
     };
   }
 
   return {
     items: [],
+    needsReviewItems: [],
     rejectedItems: [],
+    embeddedItems: [],
+    courseStructureMap: emptyCourseStructureMap(),
     courseKnowledgeMap: emptyCourseKnowledgeMap(),
-    curationReport: emptyCurationReport(0, 0, 0),
+    curationReport: emptyCurationReport(0, 0, 0, 0, 0),
     verification: emptyVerificationReport("Demo mode: upload notes and guidance to build a revision deck."),
   };
 }
@@ -93,7 +120,7 @@ export async function extractRevisionItems({
 export function generateManualExtractionPrompt(input: { notesText: string; guidanceText: string; sourceFile: string }) {
   return `${extractionSystemPrompt}
 
-Return STRICT JSON ONLY as a CuratedDeckResult object with keptItems, rejectedItems, courseKnowledgeMap, and curationReport.
+Return STRICT JSON ONLY as a CuratedRevisionResult object with keptItems, needsReviewItems, rejectedItems, embeddedItems, courseStructureMap, courseKnowledgeMap, and curationReport.
 
 Every kept RevisionItem must include id, type, title, conceptName, displayTitle, cardFront, taskPrompt, cardPurpose, statement, sourceFile, tags, importance, questionPrompt, answer, createdAt, and updatedAt.
 
@@ -113,7 +140,7 @@ async function extractViaApi(input: {
   guidanceDocuments: ParsedDocument[];
   sourceFile: string;
   settings: LlmPipelineSettings;
-}): Promise<Partial<ExtractRevisionItemsResult> & { items: RevisionItem[]; rejectedItems: RejectedRevisionItem[] }> {
+}): Promise<Partial<ExtractRevisionItemsResult> & { items: RevisionItem[]; needsReviewItems: RevisionItem[]; rejectedItems: RejectedRevisionItem[]; embeddedItems: EmbeddedRevisionItem[] }> {
   try {
     const response = await fetch("/api/extract", {
       method: "POST",
@@ -124,8 +151,11 @@ async function extractViaApi(input: {
     if (!response.ok) {
       return {
         items: payload.items ?? [],
+        needsReviewItems: payload.needsReviewItems ?? [],
         rejectedItems: payload.rejectedItems ?? [],
+        embeddedItems: payload.embeddedItems ?? [],
         verification: payload.verification,
+        courseStructureMap: payload.courseStructureMap,
         courseKnowledgeMap: payload.courseKnowledgeMap,
         curationReport: payload.curationReport,
         error: payload.error ?? "LLM curation failed.",
@@ -133,13 +163,16 @@ async function extractViaApi(input: {
     }
     return {
       items: payload.items ?? [],
+      needsReviewItems: payload.needsReviewItems ?? [],
       rejectedItems: payload.rejectedItems ?? [],
+      embeddedItems: payload.embeddedItems ?? [],
       verification: payload.verification,
+      courseStructureMap: payload.courseStructureMap,
       courseKnowledgeMap: payload.courseKnowledgeMap,
       curationReport: payload.curationReport,
     };
   } catch {
-    return { items: [], rejectedItems: [], error: "Network error while contacting extraction API." };
+    return { items: [], needsReviewItems: [], rejectedItems: [], embeddedItems: [], error: "Network error while contacting extraction API." };
   }
 }
 
@@ -167,16 +200,18 @@ async function deterministicCurate(
   notesText: string,
   mode: ExtractionPipelineMode,
 ): Promise<CuratedDeckResult> {
-  if (mode !== "local_rules_only") return emptyCuratedDeck();
+  if (mode !== "local_rules_only" && mode !== "ai_key_revision_analysis" && mode !== "openai_api" && mode !== "cheap_scan_then_verify") return emptyCuratedDeck();
   if (!notesText.trim() || notesText.includes("[PDF placeholder]") || notesText.includes("[DOCX placeholder]")) return emptyCuratedDeck();
   const candidates = attachProofsToPreviousTheorem(segmentRevisionCandidates(notesDocuments));
   return curateRevisionDeck({ candidates, guidanceDocuments, parsedNotes: notesDocuments });
 }
 
-function postProcessRevisionItems(items: RevisionItem[], rejectedItems: RejectedRevisionItem[]) {
+function postProcessRevisionItems(items: RevisionItem[], needsReviewItems: RevisionItem[], rejectedItems: RejectedRevisionItem[]) {
   const validation = validateAndRepairRevisionItems(items);
+  const needsReviewValidation = validateAndRepairRevisionItems(needsReviewItems.map((item) => ({ ...item, curationDecision: "needs_review", curationStatus: "needs_review" })));
   return {
     items: [...validation.validItems, ...validation.invalidItems].map(withValidation),
+    needsReviewItems: [...needsReviewValidation.validItems, ...needsReviewValidation.invalidItems].map(withValidation),
     rejectedItems: rejectedItems.map((item) => ({
       ...item,
       originalItem: item.originalItem ? withValidation(item.originalItem) : undefined,
@@ -209,9 +244,20 @@ function emptyVerificationReport(notes: string): ExtractionVerificationReport {
 function emptyCuratedDeck(): CuratedDeckResult {
   return {
     keptItems: [],
+    needsReviewItems: [],
     rejectedItems: [],
+    embeddedItems: [],
+    courseStructureMap: emptyCourseStructureMap(),
     courseKnowledgeMap: emptyCourseKnowledgeMap(),
-    curationReport: emptyCurationReport(0, 0, 0),
+    curationReport: emptyCurationReport(0, 0, 0, 0, 0),
+  };
+}
+
+function emptyCourseStructureMap(): CourseStructureMap {
+  return {
+    sections: [],
+    topics: [],
+    detectedItems: [],
   };
 }
 
@@ -234,14 +280,18 @@ function emptyCourseKnowledgeMap(): CourseKnowledgeMap {
   };
 }
 
-function emptyCurationReport(totalCandidates: number, keptCount: number, rejectedCount: number): CurationReport {
+function emptyCurationReport(totalCandidates: number, keptCount: number, needsReviewCount: number, rejectedCount: number, embeddedCount: number): CurationReport {
   return {
     totalCandidates,
     keptCount,
+    needsReviewCount,
     rejectedCount,
+    embeddedCount,
     formulaCandidates: 0,
     formulaKeptCount: 0,
     formulaRejectedCount: 0,
+    mainTopics: [],
+    weakParsingWarnings: [],
     notes: [],
   };
 }
