@@ -14,14 +14,24 @@ import { Textarea } from "@/components/ui/textarea";
 import { CardForm } from "@/components/card-form";
 import { PageHeader } from "@/components/page-header";
 import { MathMarkdown } from "@/components/MathMarkdown";
-import { getPrimaryCardPreview, hasGenericConceptName, hasLowLatexQuality } from "@/lib/card-render";
+import { hasGenericConceptName, hasLowLatexQuality } from "@/lib/card-render";
 import { normalizeMathNotation } from "@/lib/revision-item-utils";
-import { exportRevisionItems, importRevisionItems } from "@/lib/storage";
+import { exportRevisionItems, importRevisionItems, isDeveloperUiEnabled } from "@/lib/storage";
 import { cardPurposes, importances, revisionItemTypes, revisionPackCategories, type RevisionItem } from "@/lib/types";
 import { useStudyStore } from "@/hooks/use-study-store";
 
-type StatusTab = "kept" | "needs_review" | "rejected" | "deleted" | "low_math";
-type CategoryTab = "all" | "concepts" | "formulas" | "algorithms" | "proofs" | "worked_examples";
+type StatusTab = "kept" | "checking" | "needs_review" | "rejected" | "deleted" | "low_math";
+type CategoryTab =
+  | "all"
+  | "must_know"
+  | "definitions"
+  | "formulas"
+  | "proofs"
+  | "methods"
+  | "worked_examples"
+  | "needs_checking"
+  | "concepts"
+  | "algorithms";
 
 type UndoState = { message: string; itemIds: string[]; action: "delete" | "restore" } | null;
 
@@ -35,7 +45,7 @@ export default function CardsPage() {
     if (typeof window === "undefined") return "kept";
     const params = new URLSearchParams(window.location.search);
     const tab = params.get("tab") as StatusTab | null;
-    if (tab && ["kept", "needs_review", "rejected", "deleted", "low_math"].includes(tab)) return tab;
+    if (tab && ["kept", "checking", "needs_review", "rejected", "deleted", "low_math"].includes(tab)) return tab;
     if (params.get("curation") === "needs_review") return "needs_review";
     return "kept";
   });
@@ -58,6 +68,16 @@ export default function CardsPage() {
   const [undo, setUndo] = useState<UndoState>(null);
   const [mathStatus, setMathStatus] = useState("");
   const [apiOk, setApiOk] = useState<boolean | null>(null);
+  const [developer, setDeveloper] = useState(false);
+
+  useEffect(() => {
+    function syncDev() {
+      setDeveloper(isDeveloperUiEnabled());
+    }
+    syncDev();
+    window.addEventListener("rivision-settings", syncDev);
+    return () => window.removeEventListener("rivision-settings", syncDev);
+  }, []);
 
   useEffect(() => {
     let cancelled = false;
@@ -81,6 +101,10 @@ export default function CardsPage() {
     switch (statusTab) {
       case "kept":
         return activeCards.filter((item) => (item.curationDecision ?? "keep") === "keep");
+      case "checking":
+        return activeCards.filter(
+          (item) => (item.curationDecision ?? "keep") === "needs_review" || hasLowLatexQuality(item),
+        );
       case "needs_review":
         return activeCards.filter((item) => (item.curationDecision ?? "keep") === "needs_review");
       case "low_math":
@@ -185,17 +209,26 @@ export default function CardsPage() {
 
   const allVisibleSelected = filtered.length > 0 && filtered.every((item) => selectedIds.includes(item.id));
 
-  const tabButtons = [
-    { value: "kept" as const, label: `Kept (${activeCards.filter((i) => (i.curationDecision ?? "keep") === "keep").length})` },
-    { value: "needs_review" as const, label: `Needs review (${activeCards.filter((i) => (i.curationDecision ?? "keep") === "needs_review").length})` },
-    { value: "low_math" as const, label: `Low math (${activeCards.filter(hasLowLatexQuality).length})` },
-    { value: "rejected" as const, label: `Rejected (${store.rejectedItems.length})` },
-    { value: "deleted" as const, label: `Deleted (${deletedCards.length})` },
-  ];
+  const tabButtons = developer
+    ? [
+        { value: "kept" as const, label: `Kept (${activeCards.filter((i) => (i.curationDecision ?? "keep") === "keep").length})` },
+        { value: "checking" as const, label: `Needs checking (${activeCards.filter((i) => (i.curationDecision ?? "keep") === "needs_review" || hasLowLatexQuality(i)).length})` },
+        { value: "needs_review" as const, label: `Needs review (${activeCards.filter((i) => (i.curationDecision ?? "keep") === "needs_review").length})` },
+        { value: "low_math" as const, label: `Low math (${activeCards.filter(hasLowLatexQuality).length})` },
+        { value: "rejected" as const, label: `Rejected (${store.rejectedItems.length})` },
+        { value: "deleted" as const, label: `Deleted (${deletedCards.length})` },
+      ]
+    : [
+        { value: "kept" as const, label: `Active (${activeCards.filter((i) => (i.curationDecision ?? "keep") === "keep").length})` },
+        {
+          value: "checking" as const,
+          label: `Needs checking (${activeCards.filter((i) => (i.curationDecision ?? "keep") === "needs_review" || hasLowLatexQuality(i)).length})`,
+        },
+      ];
 
   return (
     <div>
-      <PageHeader title="Cards" description="Edit flashcards with simple filters. Use bulk actions only when you have rows selected." />
+      <PageHeader title="Cards" description="Browse and edit active recall cards by topic. Advanced filters stay under “Advanced filters”." />
 
       {undo ? <UndoBanner message={undo.message} onUndo={handleUndo} onDismiss={() => setUndo(null)} /> : null}
 
@@ -224,37 +257,57 @@ export default function CardsPage() {
             <span className="text-sm text-slate-600">Category:</span>
             <Select value={categoryTab} onChange={(event) => setCategoryTab(event.target.value as CategoryTab)} className="max-w-xs">
               <option value="all">All</option>
-              <option value="concepts">Concepts</option>
+              <option value="must_know">Must know</option>
+              <option value="definitions">Definitions</option>
               <option value="formulas">Formulas</option>
-              <option value="algorithms">Algorithms</option>
               <option value="proofs">Proofs</option>
+              <option value="methods">Methods</option>
               <option value="worked_examples">Worked examples</option>
+              <option value="needs_checking">Needs checking</option>
             </Select>
           </div>
 
           <button type="button" className="text-sm font-medium text-blue-700 underline" onClick={() => setMoreFilters((current) => !current)}>
-            {moreFilters ? "Hide" : "More"} filters
+            {moreFilters ? "Hide" : "Advanced filters"}
           </button>
 
           {moreFilters ? (
             <div className="grid gap-3 rounded-lg border border-slate-200 bg-slate-50 p-4 md:grid-cols-3 lg:grid-cols-4">
-              <Select value={filters.type} onChange={(event) => setFilters({ ...filters, type: event.target.value })}>
-                <option value="all">All types</option>
-                {revisionItemTypes.map((type) => <option key={type}>{type}</option>)}
-              </Select>
-              <Select value={filters.cardPurpose} onChange={(event) => setFilters({ ...filters, cardPurpose: event.target.value })}>
-                <option value="all">All purposes</option>
-                {cardPurposes.map((purpose) => <option key={purpose}>{purpose}</option>)}
-              </Select>
-              <Select value={filters.packCategory} onChange={(event) => setFilters({ ...filters, packCategory: event.target.value })}>
-                <option value="all">All pack categories</option>
-                {revisionPackCategories.map((category) => (
-                  <option key={category} value={category}>{category}</option>
-                ))}
-              </Select>
+              {developer ? (
+                <>
+                  <Select value={filters.type} onChange={(event) => setFilters({ ...filters, type: event.target.value })}>
+                    <option value="all">All types</option>
+                    {revisionItemTypes.map((type) => (
+                      <option key={type}>{type}</option>
+                    ))}
+                  </Select>
+                  <Select value={filters.cardPurpose} onChange={(event) => setFilters({ ...filters, cardPurpose: event.target.value })}>
+                    <option value="all">All purposes</option>
+                    {cardPurposes.map((purpose) => (
+                      <option key={purpose}>{purpose}</option>
+                    ))}
+                  </Select>
+                  <Select value={filters.packCategory} onChange={(event) => setFilters({ ...filters, packCategory: event.target.value })}>
+                    <option value="all">All pack categories</option>
+                    {revisionPackCategories.map((category) => (
+                      <option key={category} value={category}>
+                        {category}
+                      </option>
+                    ))}
+                  </Select>
+                  <Select value={filters.standaloneValue} onChange={(event) => setFilters({ ...filters, standaloneValue: event.target.value })}>
+                    <option value="all">All standalone value</option>
+                    <option value="high">High</option>
+                    <option value="medium">Medium</option>
+                    <option value="low">Low</option>
+                  </Select>
+                </>
+              ) : null}
               <Select value={filters.importance} onChange={(event) => setFilters({ ...filters, importance: event.target.value })}>
                 <option value="all">All importance</option>
-                {importances.map((importance) => <option key={importance}>{importance}</option>)}
+                {importances.map((importance) => (
+                  <option key={importance}>{importance}</option>
+                ))}
               </Select>
               <Select value={filters.priority} onChange={(event) => setFilters({ ...filters, priority: event.target.value })}>
                 <option value="all">All priorities</option>
@@ -263,12 +316,6 @@ export default function CardsPage() {
                 <option value="medium">Medium</option>
                 <option value="low">Low</option>
                 <option value="unknown">Unknown</option>
-              </Select>
-              <Select value={filters.standaloneValue} onChange={(event) => setFilters({ ...filters, standaloneValue: event.target.value })}>
-                <option value="all">All standalone</option>
-                <option value="high">High</option>
-                <option value="medium">Medium</option>
-                <option value="low">Low</option>
               </Select>
               <Input placeholder="Section" value={filters.section} onChange={(event) => setFilters({ ...filters, section: event.target.value })} />
               <Input placeholder="Tag" value={filters.tag} onChange={(event) => setFilters({ ...filters, tag: event.target.value })} />
@@ -346,10 +393,12 @@ export default function CardsPage() {
                       aria-label="Select all visible cards"
                     />
                   </TableHead>
-                  <TableHead>Card</TableHead>
+                  <TableHead>Question</TableHead>
+                  <TableHead>Answer preview</TableHead>
                   <TableHead>Category</TableHead>
-                  <TableHead>Priority</TableHead>
+                  <TableHead>Importance</TableHead>
                   <TableHead>Source</TableHead>
+                  <TableHead>Review</TableHead>
                   <TableHead />
                 </TableRow>
               </TableHeader>
@@ -365,14 +414,15 @@ export default function CardsPage() {
                       />
                     </TableCell>
                     <TableCell>
-                      <div className="space-y-2 max-w-md">
+                      <div className="max-w-md">
                         <MathMarkdown content={item.cardFront} className="bg-transparent p-0 font-medium text-slate-950" />
-                        <p className="line-clamp-2 text-xs text-slate-500">{previewSnippet(getPrimaryCardPreview(item))}</p>
                       </div>
                     </TableCell>
+                    <TableCell className="max-w-md text-sm text-slate-700">{previewSnippet(item.answer || item.statement)}</TableCell>
                     <TableCell className="text-sm">{prettyCategory(item)}</TableCell>
-                    <TableCell className="text-sm">{item.priorityScore ?? "—"}</TableCell>
+                    <TableCell className="text-sm">{item.importance}</TableCell>
                     <TableCell className="text-sm text-slate-600">{item.sourceLocation || item.sourceFile || "—"}</TableCell>
+                    <TableCell className="text-sm">{item.latestRating ?? "—"}</TableCell>
                     <TableCell>
                       <div className="flex flex-wrap gap-1">
                         {item.curationDecision === "needs_review" ? <Badge variant="unknown">Needs review</Badge> : null}
@@ -436,13 +486,29 @@ function prettyCategory(item: RevisionItem) {
 
 function matchesCategory(item: RevisionItem, category: CategoryTab) {
   if (category === "all") return true;
+  if (category === "must_know") return item.importance === "must_know";
+  if (category === "definitions") {
+    return item.revisionPackCategory === "mustKnowDefinitions" || item.type === "definition";
+  }
+  if (category === "formulas") {
+    return item.revisionPackCategory === "formulasToKnow" || item.cardPurpose === "formula_recall" || item.type === "formula";
+  }
+  if (category === "proofs") {
+    return item.revisionPackCategory === "proofsToKnow" || item.cardPurpose === "proof_recall" || item.type === "proof";
+  }
+  if (category === "methods") {
+    return item.cardPurpose === "method_steps" || item.revisionPackCategory === "methodsAndTemplates" || item.type === "algorithm";
+  }
+  if (category === "worked_examples") {
+    return item.revisionPackCategory === "workedExamplePatterns" || item.cardPurpose === "worked_example_pattern";
+  }
+  if (category === "needs_checking") {
+    return (item.curationDecision ?? "keep") === "needs_review" || hasLowLatexQuality(item);
+  }
   if (category === "concepts") {
     return ["mustKnowDefinitions", "conceptualDistinctions", "modelsToKnow", "theoremStatements"].includes(item.revisionPackCategory ?? "") || item.type === "definition";
   }
-  if (category === "formulas") return item.revisionPackCategory === "formulasToKnow" || item.cardPurpose === "formula_recall";
   if (category === "algorithms") return item.type === "algorithm" || item.cardPurpose === "method_steps";
-  if (category === "proofs") return item.revisionPackCategory === "proofsToKnow" || item.cardPurpose === "proof_recall" || item.type === "proof";
-  if (category === "worked_examples") return item.revisionPackCategory === "workedExamplePatterns" || item.cardPurpose === "worked_example_pattern";
   return true;
 }
 

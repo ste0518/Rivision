@@ -1,256 +1,240 @@
 "use client";
 
-import { useEffect, useMemo, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { CardForm } from "@/components/card-form";
+import { Textarea } from "@/components/ui/textarea";
+import { Tabs } from "@/components/ui/tabs";
 import { MathMarkdown } from "@/components/MathMarkdown";
 import { PageHeader } from "@/components/page-header";
-import { hasLowLatexQuality } from "@/lib/card-render";
-import { normalizeMathNotation } from "@/lib/revision-item-utils";
-import type { RevisionItem } from "@/lib/types";
+import { isDeveloperUiEnabled } from "@/lib/storage";
+import { cardFromDefinition, cardFromFormula, cardFromProof, mockExplainNote } from "@/lib/pack-to-card";
+import { createId } from "@/lib/utils";
+import type { GeneratedDefinitionItem, GeneratedFormulaItem, GeneratedProofItem, GeneratedRevisionPack } from "@/lib/student-revision-schema";
 import { useStudyStore } from "@/hooks/use-study-store";
-
-type SectionId = "core" | "formulas" | "algorithms" | "proofs" | "worked" | "exercises" | "needs_review" | "low_math";
-
-type Section = {
-  id: SectionId;
-  title: string;
-  match: (item: RevisionItem) => boolean;
-};
-
-const sections: Section[] = [
-  {
-    id: "core",
-    title: "Core concepts",
-    match: (item) =>
-      ["mustKnowDefinitions", "modelsToKnow", "conceptualDistinctions", "theoremStatements"].includes(item.revisionPackCategory ?? "") ||
-      (item.type === "definition" && (item.curationDecision ?? "keep") === "keep"),
-  },
-  {
-    id: "formulas",
-    title: "Key formulas",
-    match: (item) => item.revisionPackCategory === "formulasToKnow" || item.cardPurpose === "formula_recall",
-  },
-  {
-    id: "algorithms",
-    title: "Algorithms",
-    match: (item) => item.type === "algorithm" || item.cardPurpose === "method_steps",
-  },
-  {
-    id: "proofs",
-    title: "Proofs",
-    match: (item) => item.revisionPackCategory === "proofsToKnow" || item.cardPurpose === "proof_recall" || item.type === "proof",
-  },
-  {
-    id: "worked",
-    title: "Worked examples",
-    match: (item) => item.revisionPackCategory === "workedExamplePatterns" || item.cardPurpose === "worked_example_pattern",
-  },
-  {
-    id: "exercises",
-    title: "Exercises",
-    match: (item) => item.cardPurpose === "calculation_template" && item.revisionPackCategory !== "workedExamplePatterns",
-  },
-  {
-    id: "low_math",
-    title: "Low math quality",
-    match: (item) => hasLowLatexQuality(item),
-  },
-  {
-    id: "needs_review",
-    title: "Needs review",
-    match: (item) => (item.curationDecision ?? "keep") === "needs_review",
-  },
-];
 
 export default function PackPage() {
   const store = useStudyStore();
-  const [editing, setEditing] = useState<RevisionItem | undefined>();
-  const [mathStatus, setMathStatus] = useState("");
-  const [apiOk, setApiOk] = useState<boolean | null>(null);
+  const pack = store.studentRevisionPack;
+  const [toast, setToast] = useState("");
+  const [editingFormula, setEditingFormula] = useState<GeneratedFormulaItem | null>(null);
+  const [editLatex, setEditLatex] = useState("");
 
-  useEffect(() => {
-    let cancelled = false;
-    fetch("/api/settings-status")
-      .then((res) => res.json() as Promise<{ openaiConfigured?: boolean }>)
-      .then((json) => {
-        if (!cancelled) setApiOk(Boolean(json.openaiConfigured));
-      })
-      .catch(() => {
-        if (!cancelled) setApiOk(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, []);
+  const activeCards = store.revisionItems.filter((item) => !item.isDeleted).length;
 
-  const activeCards = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted), [store.revisionItems]);
-  const title =
-    store.courseMap?.courseTitle ||
-    store.revisionPack?.topTopics?.[0]?.topicName ||
-    inferPackTitle(activeCards);
-
-  const lowMathCount = useMemo(() => activeCards.filter(hasLowLatexQuality).length, [activeCards]);
-  const needsReviewOnlyCount = useMemo(
-    () => activeCards.filter((item) => (item.curationDecision ?? "keep") === "needs_review").length,
-    [activeCards],
-  );
-
-  const sectionBuckets = useMemo(() => {
-    const placed = new Set<string>();
-    const buckets: Partial<Record<SectionId, RevisionItem[]>> = {};
-    for (const section of sections) {
-      const list: RevisionItem[] = [];
-      for (const item of activeCards) {
-        if (placed.has(item.id)) continue;
-        if (section.match(item)) {
-          placed.add(item.id);
-          list.push(item);
-        }
-      }
-      buckets[section.id] = list;
-    }
-    return buckets;
-  }, [activeCards]);
-
-  function fixMath(item: RevisionItem) {
-    store.upsertRevisionItem({
-      ...item,
-      statementLatex: normalizeMathNotation(item.statement, item.mathNormalizationProfile ?? "auto", item.cardFront),
-      answerLatex: normalizeMathNotation(item.answer, item.mathNormalizationProfile ?? "auto", item.cardFront),
-      proofLatex: item.proof ? normalizeMathNotation(item.proof, item.mathNormalizationProfile ?? "auto", item.cardFront) : undefined,
-      latexQuality: "medium",
-      updatedAt: new Date().toISOString(),
-    });
-  }
-
-  async function aiCleanMath(item: RevisionItem) {
-    if (!apiOk) return;
-    setMathStatus("");
-    const response = await fetch("/api/ai-clean-math", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: `${item.statement}\n\n${item.answer}\n\n${item.proof ?? ""}`.trim() }),
-    });
-    const payload = (await response.json()) as { markdown?: string; error?: string; issues?: string[]; latexQuality?: RevisionItem["latexQuality"] };
-    if (!response.ok || !payload.markdown) {
-      setMathStatus(payload.error || "AI math cleanup failed.");
-      return;
-    }
-    store.upsertRevisionItem({
-      ...item,
-      answerLatex: payload.markdown,
-      latexQuality: payload.latexQuality ?? (payload.issues?.length ? "low" : "high"),
-      warnings: [...(item.warnings ?? []), ...(payload.issues ?? [])],
-      updatedAt: new Date().toISOString(),
-    });
-    setMathStatus(payload.issues?.length ? "AI cleaned math, but KaTeX still reported issues." : "AI cleaned math.");
-  }
-
-  return (
-    <div>
-      <PageHeader
-        title="Study pack"
-        description="Your course summary and card checklist. Triage “Needs review” and “Low math quality” before normal revision."
-      />
-
-      <Card className="mb-6">
-        <CardHeader>
-          <CardTitle className="text-xl">{title}</CardTitle>
-          <CardDescription>
-            {activeCards.length} card{activeCards.length === 1 ? "" : "s"} total
-            {store.curationReport ? ` · pack completeness about ${store.curationReport.packCompletenessScore ?? 0}%` : ""}
-          </CardDescription>
-        </CardHeader>
-        <CardContent className="grid gap-3 text-sm md:grid-cols-4 lg:grid-cols-7">
-          <PackStat label="Cards" value={activeCards.length} />
-          <PackStat label="Needs review" value={needsReviewOnlyCount} warning={needsReviewOnlyCount > 0} />
-          <PackStat label="Low math quality" value={lowMathCount} warning={lowMathCount > 0} />
-          <PackStat label="Kept" value={activeCards.filter((item) => (item.curationDecision ?? "keep") === "keep").length} />
-          <PackStat label="Rejected (total)" value={store.rejectedItems.length + activeCards.filter((i) => i.curationDecision === "reject").length} />
-        </CardContent>
-        <CardContent className="flex flex-wrap gap-2 border-t pt-4">
-          <Link className="inline-flex h-10 items-center justify-center rounded-md bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-800" href="/review">
-            Start reviewing
-          </Link>
-          <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50" href="/cards">
-            Edit deck
-          </Link>
-          <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50" href="/cards?tab=needs_review">
-            Review issues
-          </Link>
-          {lowMathCount > 0 ? (
-            <Link
-              className="inline-flex h-10 items-center justify-center rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-950 hover:bg-amber-100"
-              href="/cards?tab=low_math"
-            >
-              Fix math issues ({lowMathCount})
-            </Link>
-          ) : null}
-        </CardContent>
-      </Card>
-
-      {mathStatus ? <p className="mb-4 text-sm text-slate-600">{mathStatus}</p> : null}
-      {apiOk === false ? <p className="mb-4 text-xs text-slate-500">AI math cleanup is unavailable without a server API key. Local “Fix math” still works.</p> : null}
-
-      <div className="space-y-8">
-        {sections.map((section) => {
-          const cards = sectionBuckets[section.id] ?? [];
-          if (cards.length === 0) return null;
-          return (
-            <Card key={section.id}>
-              <CardHeader>
-                <CardTitle>{section.title}</CardTitle>
-                <CardDescription>{cards.length} card(s)</CardDescription>
-              </CardHeader>
-              <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {cards.map((item) => (
-                  <CompactPackCard
-                    key={item.id}
-                    item={item}
-                    showAiClean={Boolean(apiOk)}
-                    onEdit={() => setEditing(item)}
-                    onDelete={() => store.deleteRevisionItem(item.id)}
-                    onFixMath={() => fixMath(item)}
-                    onAiCleanMath={() => void aiCleanMath(item)}
-                  />
-                ))}
-              </CardContent>
-            </Card>
-          );
-        })}
-      </div>
-
-      {activeCards.length === 0 ? (
-        <Card className="mt-6 border-dashed">
-          <CardContent className="py-8 text-center text-sm text-slate-600">
-            No cards yet.{" "}
-            <Link className="font-medium text-blue-700 underline" href="/upload">
-              Upload notes
-            </Link>{" "}
-            and{" "}
-            <Link className="font-medium text-blue-700 underline" href="/extract">
-              run analysis
-            </Link>
-            .
+  if (!pack) {
+    return (
+      <div className="space-y-6">
+        <PageHeader title="Study pack" description="Your exam overview, definitions, formulas, proofs, and cram sheet — generated locally." />
+        <Card className="border-dashed">
+          <CardContent className="space-y-3 py-10 text-center text-slate-600">
+            <p>No study pack yet. Upload materials and choose <strong>Generate revision pack</strong> on the Upload page.</p>
+            <div className="flex flex-wrap justify-center gap-2">
+              <Link className="inline-flex h-10 items-center justify-center rounded-md bg-blue-700 px-4 text-sm font-medium text-white" href="/upload">
+                Upload &amp; generate
+              </Link>
+              {activeCards > 0 ? (
+                <p className="w-full text-sm text-slate-500">You have {activeCards} card(s) from a previous run; generate again to refresh the structured pack view.</p>
+              ) : null}
+            </div>
           </CardContent>
         </Card>
-      ) : null}
+        {isDeveloperUiEnabled() ? (
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Developer</CardTitle>
+              <CardDescription>Card-bundle revisionPack snapshot (internal).</CardDescription>
+            </CardHeader>
+            <CardContent className="text-xs text-slate-500">
+              <pre className="max-h-48 overflow-auto rounded-lg bg-slate-950 p-3 text-slate-100">{JSON.stringify(store.revisionPack ?? {}, null, 2).slice(0, 2000)}</pre>
+            </CardContent>
+          </Card>
+        ) : null}
+      </div>
+    );
+  }
 
-      {editing ? (
-        <Dialog open onOpenChange={(open) => { if (!open) setEditing(undefined); }}>
+  function showToast(msg: string) {
+    setToast(msg);
+    window.setTimeout(() => setToast(""), 3500);
+  }
+
+  const tabs = [
+    {
+      value: "overview",
+      label: "Exam overview",
+      content: <OverviewSection overview={pack.examOverview} />,
+    },
+    {
+      value: "map",
+      label: "Course map",
+      content: <CourseMapSection topics={pack.courseMap} />,
+    },
+    {
+      value: "definitions",
+      label: "Definitions",
+      content: (
+        <DefinitionSection
+          items={pack.definitions}
+          onMakeCard={(d) => {
+            store.upsertRevisionItem(cardFromDefinition(d));
+            showToast("Card added for active recall.");
+          }}
+          onExplain={(d) => showToast(mockExplainNote(d.term))}
+          onPractice={(d) => {
+            store.appendPracticeQuestions([
+              {
+                id: createId("pq"),
+                question: `Recall: ${d.term}`,
+                expectedAnswer: d.definition,
+                topic: d.term,
+                difficulty: "easy",
+                sourceBasis: d.source,
+                hints: ["Close the book", "Say aloud first"],
+              },
+            ]);
+            showToast("Practice question added — open Practice to try it.");
+          }}
+        />
+      ),
+    },
+    {
+      value: "formulas",
+      label: "Formulas",
+      content: (
+        <FormulaSection
+          items={pack.formulas}
+          onMakeCard={(f) => {
+            store.upsertRevisionItem(cardFromFormula(f));
+            showToast("Formula card added.");
+          }}
+          onExplain={(f) => showToast(mockExplainNote(f.name))}
+          onPractice={(f) => {
+            store.appendPracticeQuestions([
+              {
+                id: createId("pq"),
+                question: `Use ${f.name} in a short exam-style prompt.`,
+                expectedAnswer: f.whenToUse,
+                topic: f.name,
+                difficulty: "medium",
+                sourceBasis: f.source,
+                hints: ["State formula", "Check conditions"],
+              },
+            ]);
+            showToast("Practice prompt saved.");
+          }}
+          onMarkOk={(id) => store.patchStudentPackFormulaMathStatus(id, "ok")}
+          onEdit={(f) => {
+            setEditingFormula(f);
+            setEditLatex(f.latex);
+          }}
+        />
+      ),
+    },
+    {
+      value: "proofs",
+      label: "Proofs",
+      content: (
+        <ProofSection
+          items={pack.proofs}
+          onMakeCard={(p) => {
+            store.upsertRevisionItem(cardFromProof(p));
+            showToast("Proof card added.");
+          }}
+          onExplain={(p) => showToast(mockExplainNote(p.name))}
+          onPractice={(p) => {
+            store.appendPracticeQuestions([
+              {
+                id: createId("pq"),
+                question: `Outline the proof of: ${p.statement.slice(0, 120)}`,
+                expectedAnswer: p.proofSkeleton,
+                topic: p.name,
+                difficulty: "hard",
+                sourceBasis: p.source ?? "study pack",
+                hints: ["State assumptions", "Main lemmas"],
+              },
+            ]);
+            showToast("Proof drill saved.");
+          }}
+        />
+      ),
+    },
+    {
+      value: "methods",
+      label: "Methods",
+      content: <MethodSection methods={pack.methods} />,
+    },
+    {
+      value: "patterns",
+      label: "Past paper patterns",
+      content: <PatternsSection patterns={pack.pastPaperPatterns} />,
+    },
+    {
+      value: "mistakes",
+      label: "Common mistakes",
+      content: <MistakesSection mistakes={pack.commonMistakes} />,
+    },
+    {
+      value: "cram",
+      label: "Cram sheet",
+      content: <CramSection cram={pack.cramSheet} />,
+    },
+  ];
+
+  return (
+    <div className="space-y-6">
+      <PageHeader
+        title="Study pack"
+        description="Structured revision built from your uploads. Everything stays on your device."
+      />
+
+      {toast ? <p className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-sm text-blue-950">{toast}</p> : null}
+
+      <Card>
+        <CardHeader className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
+          <div>
+            <CardTitle className="text-xl">{pack.examOverview.courseName ?? "Your course"}</CardTitle>
+            <CardDescription>
+              Generated {new Date(pack.generatedAt).toLocaleString()}
+              {activeCards ? ` · ${activeCards} active recall card(s)` : ""}
+            </CardDescription>
+          </div>
+          <div className="flex flex-wrap gap-2">
+            <Link className="inline-flex h-10 items-center justify-center rounded-md bg-blue-700 px-4 text-sm font-medium text-white" href="/review">
+              Review cards
+            </Link>
+            <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm" href="/quiz">
+              Practice
+            </Link>
+          </div>
+        </CardHeader>
+      </Card>
+
+      <Tabs tabs={tabs} defaultValue="overview" />
+
+      {editingFormula ? (
+        <Dialog open onOpenChange={(o) => { if (!o) setEditingFormula(null); }}>
           <DialogContent>
-            <h2 className="mb-4 text-xl font-semibold">Edit card</h2>
-            <CardForm
-              item={editing}
-              onCancel={() => setEditing(undefined)}
-              onSave={(item) => { store.upsertRevisionItem(item); setEditing(undefined); }}
-              onDelete={() => { store.deleteRevisionItem(editing.id); setEditing(undefined); }}
-            />
+            <h2 className="text-lg font-semibold">Edit formula</h2>
+            <p className="text-sm text-slate-500">Use LaTeX with \\( ... \\) or $ ... $.</p>
+            <Textarea className="min-h-32 font-mono text-sm" value={editLatex} onChange={(e) => setEditLatex(e.target.value)} />
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setEditingFormula(null)}>Cancel</Button>
+              <Button
+                type="button"
+                onClick={() => {
+                  if (editingFormula) {
+                    store.updateStudentPackFormulaLatex(editingFormula.id, editLatex);
+                    setEditingFormula(null);
+                    showToast("Formula updated and re-checked.");
+                  }
+                }}
+              >
+                Save
+              </Button>
+            </div>
           </DialogContent>
         </Dialog>
       ) : null}
@@ -258,76 +242,265 @@ export default function PackPage() {
   );
 }
 
-function CompactPackCard({
-  item,
-  onEdit,
-  onDelete,
-  onFixMath,
-  onAiCleanMath,
-  showAiClean,
+function OverviewSection({ overview }: { overview: GeneratedRevisionPack["examOverview"] }) {
+  return (
+    <div className="space-y-4">
+      <p className="text-slate-700">{overview.summary}</p>
+      <div>
+        <h3 className="font-medium text-slate-900">Likely exam structure</h3>
+        <p className="mt-1 text-sm text-slate-600">{overview.likelyExamStructure}</p>
+      </div>
+      <div>
+        <h3 className="font-medium text-slate-900">High-priority topics</h3>
+        <ul className="mt-2 list-inside list-disc text-sm text-slate-800">
+          {overview.highPriorityTopics.map((t) => (
+            <li key={t}>{t}</li>
+          ))}
+        </ul>
+      </div>
+    </div>
+  );
+}
+
+function CourseMapSection({ topics }: { topics: GeneratedRevisionPack["courseMap"] }) {
+  return (
+    <div className="grid gap-3 md:grid-cols-2">
+      {topics.map((t) => (
+        <Card key={t.id}>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">{t.title}</CardTitle>
+            <CardDescription>Importance: {t.importance}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm text-slate-600">
+            <p><span className="font-medium text-slate-800">Sources:</span> {t.sourceFileNames.join(", ")}</p>
+            <p><span className="font-medium text-slate-800">Why:</span> {t.evidenceReason}</p>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function DefinitionSection({
+  items,
+  onMakeCard,
+  onExplain,
+  onPractice,
 }: {
-  item: RevisionItem;
-  onEdit: () => void;
-  onDelete: () => void;
-  onFixMath: () => void;
-  onAiCleanMath: () => void;
-  showAiClean: boolean;
+  items: GeneratedDefinitionItem[];
+  onMakeCard: (d: GeneratedDefinitionItem) => void;
+  onExplain: (d: GeneratedDefinitionItem) => void;
+  onPractice: (d: GeneratedDefinitionItem) => void;
 }) {
-  const preview = (item.answer ?? item.statement ?? "").replace(/\s+/g, " ").trim().slice(0, 140);
-
   return (
-    <div className="rounded-lg border bg-white p-3">
-      <div className="flex items-start justify-between gap-3">
-        <div className="min-w-0">
-          <MathMarkdown content={item.cardFront} className="bg-transparent p-0 text-base font-semibold text-slate-950" />
-          {preview ? <p className="mt-1 line-clamp-2 text-xs text-slate-500">{preview}{preview.length >= 140 ? "…" : ""}</p> : null}
+    <div className="grid gap-3 md:grid-cols-2">
+      {items.map((d) => (
+        <div className="rounded-lg border border-slate-200 p-4" key={d.id}>
+          <p className="font-semibold text-slate-950">{d.term}</p>
+          <p className="mt-2 text-sm text-slate-700">{d.definition}</p>
+          <p className="mt-2 text-xs text-slate-500">Source: {d.source} · {d.importance}</p>
+          <div className="mt-3 flex flex-wrap gap-2">
+            <Button size="sm" type="button" variant="outline" onClick={() => onMakeCard(d)}>Make card</Button>
+            <Button size="sm" type="button" variant="outline" onClick={() => onExplain(d)}>Explain</Button>
+            <Button size="sm" type="button" variant="outline" onClick={() => onPractice(d)}>Generate practice question</Button>
+          </div>
         </div>
-        <Badge variant={item.importance}>{item.importance}</Badge>
-      </div>
-      <div className="mt-3 flex flex-wrap gap-1">
-        <Badge variant="outline">{labelForCategory(item)}</Badge>
-        <Badge variant="outline">priority {item.priorityScore ?? "—"}</Badge>
-        <Badge variant="outline">{item.pageNumber != null ? `p. ${item.pageNumber}` : "page ?"}</Badge>
-        {hasLowLatexQuality(item) ? <Badge variant="unknown">Math</Badge> : null}
-      </div>
-      <div className="mt-3 flex flex-wrap gap-2">
-        <Link className="inline-flex h-8 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50" href={`/review?card=${item.id}`}>
-          Review
-        </Link>
-        <Button size="sm" variant="outline" type="button" onClick={onEdit}>
-          Edit
-        </Button>
-        <Button size="sm" variant="outline" type="button" onClick={onFixMath}>
-          Fix math
-        </Button>
-        {showAiClean ? (
-          <Button size="sm" variant="outline" type="button" onClick={onAiCleanMath}>
-            AI clean math
-          </Button>
-        ) : null}
-        <Button size="sm" variant="destructive" type="button" onClick={onDelete}>
-          Delete
-        </Button>
-      </div>
+      ))}
     </div>
   );
 }
 
-function PackStat({ label, value, warning }: { label: string; value: number; warning?: boolean }) {
+function FormulaSection({
+  items,
+  onMakeCard,
+  onExplain,
+  onPractice,
+  onMarkOk,
+  onEdit,
+}: {
+  items: GeneratedFormulaItem[];
+  onMakeCard: (f: GeneratedFormulaItem) => void;
+  onExplain: (f: GeneratedFormulaItem) => void;
+  onPractice: (f: GeneratedFormulaItem) => void;
+  onMarkOk: (id: string) => void;
+  onEdit: (f: GeneratedFormulaItem) => void;
+}) {
   return (
-    <div className={`rounded-lg border p-3 ${warning && value > 0 ? "border-amber-200 bg-amber-50" : "bg-white"}`}>
-      <p className="text-2xl font-semibold">{value}</p>
-      <p className="text-slate-500">{label}</p>
+    <div className="grid gap-4 md:grid-cols-2">
+      {items.map((f) => (
+        <Card key={f.id}>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">{f.name}</CardTitle>
+            <CardDescription>{f.whenToUse}</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <MathMarkdown content={f.latex} className="rounded-lg bg-slate-50 p-3 text-base" />
+            <p className="text-xs text-slate-500">Source: {f.source}</p>
+            {f.mathStatus !== "ok" ? (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                This formula may need checking.
+                <div className="mt-2 flex flex-wrap gap-2">
+                  <Button size="sm" type="button" variant="outline" onClick={() => onEdit(f)}>Edit</Button>
+                  <Button size="sm" type="button" onClick={() => onMarkOk(f.id)}>Mark as OK</Button>
+                </div>
+              </div>
+            ) : null}
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" type="button" variant="outline" onClick={() => onMakeCard(f)}>Make card</Button>
+              <Button size="sm" type="button" variant="outline" onClick={() => onExplain(f)}>Explain</Button>
+              <Button size="sm" type="button" variant="outline" onClick={() => onPractice(f)}>Generate practice question</Button>
+            </div>
+          </CardContent>
+        </Card>
+      ))}
     </div>
   );
 }
 
-function labelForCategory(item: RevisionItem) {
-  const raw = item.revisionPackCategory ?? item.cardPurpose ?? item.type;
-  return String(raw).replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ");
+function ProofSection({
+  items,
+  onMakeCard,
+  onExplain,
+  onPractice,
+}: {
+  items: GeneratedProofItem[];
+  onMakeCard: (p: GeneratedProofItem) => void;
+  onExplain: (p: GeneratedProofItem) => void;
+  onPractice: (p: GeneratedProofItem) => void;
+}) {
+  return (
+    <div className="space-y-4">
+      {items.map((p) => (
+        <Card key={p.id}>
+          <CardHeader>
+            <CardTitle className="text-base">{p.name}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <div>
+              <p className="font-medium text-slate-800">Statement</p>
+              <p className="mt-1 text-slate-700">{p.statement}</p>
+            </div>
+            <div>
+              <p className="font-medium text-slate-800">Skeleton</p>
+              <p className="mt-1 text-slate-700">{p.proofSkeleton}</p>
+            </div>
+            <div>
+              <p className="font-medium text-slate-800">Common mistake</p>
+              <p className="mt-1 text-amber-900">{p.commonMistake}</p>
+            </div>
+            <div className="flex flex-wrap gap-2">
+              <Button size="sm" type="button" variant="outline" onClick={() => onMakeCard(p)}>Make card</Button>
+              <Button size="sm" type="button" variant="outline" onClick={() => onExplain(p)}>Explain</Button>
+              <Button size="sm" type="button" variant="outline" onClick={() => onPractice(p)}>Generate practice question</Button>
+            </div>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
 }
 
-function inferPackTitle(cards: RevisionItem[]) {
-  if (cards.some((item) => /monte carlo|importance sampling/i.test(`${item.cardFront} ${item.answer}`))) return "Monte Carlo Integration";
-  return "Revision pack";
+function MethodSection({ methods }: { methods: GeneratedRevisionPack["methods"] }) {
+  return (
+    <div className="space-y-4">
+      {methods.map((m) => (
+        <Card key={m.id}>
+          <CardHeader>
+            <CardTitle className="text-base">{m.problemType}</CardTitle>
+            <CardDescription>Trigger words: {m.triggerWords.join(", ")}</CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ol className="list-inside list-decimal space-y-1 text-sm text-slate-700">
+              {m.steps.map((s) => (
+                <li key={s}>{s}</li>
+              ))}
+            </ol>
+            <p className="mt-3 text-xs text-slate-500">Related practice: {m.relatedPracticeType}</p>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function PatternsSection({ patterns }: { patterns: GeneratedRevisionPack["pastPaperPatterns"] }) {
+  return (
+    <div className="space-y-4">
+      {patterns.map((p) => (
+        <Card key={p.id}>
+          <CardHeader>
+            <CardTitle className="text-base">{p.title}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm text-slate-700">
+            <p><span className="font-medium">Evidence:</span> {p.evidence}</p>
+            <p><span className="font-medium">Likely style:</span> {p.likelyExamStyle}</p>
+            <p><span className="font-medium">Try:</span> {p.suggestedPracticeQuestion}</p>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function MistakesSection({ mistakes }: { mistakes: GeneratedRevisionPack["commonMistakes"] }) {
+  return (
+    <div className="space-y-3">
+      {mistakes.map((m) => (
+        <Card key={m.id}>
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">{m.mistake}</CardTitle>
+          </CardHeader>
+          <CardContent className="space-y-2 text-sm text-slate-700">
+            <p><span className="font-medium">Why:</span> {m.whyItHappens}</p>
+            <p><span className="font-medium">Fix:</span> {m.howToAvoid}</p>
+          </CardContent>
+        </Card>
+      ))}
+    </div>
+  );
+}
+
+function CramSection({ cram }: { cram: GeneratedRevisionPack["cramSheet"] }) {
+  return (
+    <div className="grid gap-6 lg:grid-cols-2">
+      <Card>
+        <CardHeader><CardTitle className="text-base">Definitions</CardTitle></CardHeader>
+        <CardContent>
+          <ul className="list-inside list-disc space-y-1 text-sm text-slate-800">
+            {cram.definitionBullets.map((b) => (
+              <li key={b}>{b}</li>
+            ))}
+          </ul>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader><CardTitle className="text-base">Formulas</CardTitle></CardHeader>
+        <CardContent className="space-y-2 text-sm">
+          {cram.formulaBullets.map((b) => (
+            <MathMarkdown key={b} content={b} className="rounded border border-slate-100 bg-slate-50 p-2" />
+          ))}
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader><CardTitle className="text-base">Proof skeletons</CardTitle></CardHeader>
+        <CardContent>
+          <ul className="list-inside list-disc space-y-1 text-sm">
+            {cram.proofSkeletonBullets.map((b) => (
+              <li key={b}>{b}</li>
+            ))}
+          </ul>
+        </CardContent>
+      </Card>
+      <Card>
+        <CardHeader><CardTitle className="text-base">Traps</CardTitle></CardHeader>
+        <CardContent>
+          <ul className="list-inside list-disc space-y-1 text-sm text-amber-950">
+            {cram.trapBullets.map((b) => (
+              <li key={b}>{b}</li>
+            ))}
+          </ul>
+        </CardContent>
+      </Card>
+    </div>
+  );
 }

@@ -2,6 +2,7 @@ import Dexie, { type Table } from "dexie";
 import { inferStudyFileRole } from "@/lib/course-files";
 import { migrateStoredCards, normalizeCuratedRevisionResult } from "@/lib/normalization";
 import { segmentRevisionCandidates } from "@/lib/segmentation";
+import type { GeneratedPracticeQuestion, GeneratedRevisionPack } from "@/lib/student-revision-schema";
 import type {
   AssessmentMap,
   CourseKnowledgeMap,
@@ -35,6 +36,10 @@ export type StudyState = {
   assessmentMap?: AssessmentMap;
   examPriorityMap?: ExamPriorityMap;
   revisionPack?: RevisionPack;
+  /** Structured exam-focused study pack (local/heuristic); distinct from card-bundle `revisionPack`. */
+  studentRevisionPack?: GeneratedRevisionPack;
+  practiceQuestions?: GeneratedPracticeQuestion[];
+  practiceAttempts?: Array<{ questionId: string; attemptedAt: string }>;
   curationReport?: CurationReport;
 };
 
@@ -114,6 +119,9 @@ type StoredRevisionPack = {
   courseType?: RevisionPack["courseType"];
   topPriorityTopics?: RevisionPack["topPriorityTopics"];
   topTopics?: RevisionPack["topTopics"];
+  studentRevisionPack?: GeneratedRevisionPack;
+  practiceQuestions?: GeneratedPracticeQuestion[];
+  practiceAttempts?: Array<{ questionId: string; attemptedAt: string }>;
 };
 
 export type LocalStorageKeyUsage = { key: string; bytes: number };
@@ -125,9 +133,18 @@ export type StorageUsageEstimate = {
   indexedDbCounts: Record<string, number>;
 };
 
+export type RevisionStyleSetting = "concise_exam" | "detailed_guide" | "flashcard_heavy" | "problem_heavy";
+export type AiStrictnessSetting = "conservative" | "balanced" | "broad";
+export type MathFormattingSetting = "auto_clean" | "flag_broken";
+
 export type StorageSettings = {
   persistDebugData: boolean;
   interfaceMode: "simple" | "advanced";
+  /** When true (or interfaceMode advanced), show extraction/debug tooling. */
+  developerMode: boolean;
+  revisionStyle: RevisionStyleSetting;
+  aiStrictness: AiStrictnessSetting;
+  mathFormatting: MathFormattingSetting;
 };
 
 type LocalStudyPointer = {
@@ -136,6 +153,10 @@ type LocalStudyPointer = {
   settings: StorageSettings;
   updatedAt: string;
 };
+
+export function mergeStorageSettings(partial?: Partial<StorageSettings>): StorageSettings {
+  return { ...defaultStorageSettings, ...partial };
+}
 
 type FullProjectExport = {
   schemaVersion: 2;
@@ -162,6 +183,8 @@ export const emptyStudyState: StudyState = {
   rejectedItems: [],
   embeddedItems: [],
   reviewSessions: [],
+  practiceQuestions: [],
+  practiceAttempts: [],
 };
 
 export const studyStateLocalStorageKey = "rivision.studyState.v1";
@@ -173,7 +196,14 @@ const evidenceLimit = 500;
 const debugPreviewLimit = 300;
 const localStorageValueLimitBytes = 100 * 1024;
 const appLocalStorageLimitBytes = 200 * 1024;
-const defaultStorageSettings: StorageSettings = { persistDebugData: false, interfaceMode: "simple" };
+const defaultStorageSettings: StorageSettings = {
+  persistDebugData: false,
+  interfaceMode: "simple",
+  developerMode: false,
+  revisionStyle: "concise_exam",
+  aiStrictness: "balanced",
+  mathFormatting: "auto_clean",
+};
 
 class RivisionDatabase extends Dexie {
   projects!: Table<StudyProject, string>;
@@ -237,7 +267,7 @@ export async function saveStudyState(state: StudyState): Promise<void> {
   const pointer = readLocalPointer();
   const activeProjectId = pointer?.activeProjectId ?? defaultProjectId;
   await saveStudyStateToIndexedDb(activeProjectId, state);
-  writeLocalPointer(activeProjectId, pointer?.settings ?? defaultStorageSettings);
+  writeLocalPointer(activeProjectId, mergeStorageSettings(pointer?.settings));
 }
 
 export async function migrateLocalStorageStudyStateToIndexedDB(): Promise<StudyState | undefined> {
@@ -362,12 +392,19 @@ export async function deleteCurrentProject(): Promise<void> {
 }
 
 export function loadStorageSettings(): StorageSettings {
-  return readLocalPointer()?.settings ?? defaultStorageSettings;
+  return mergeStorageSettings(readLocalPointer()?.settings);
 }
 
 export function saveStorageSettings(settings: StorageSettings): void {
   const activeProjectId = getActiveProjectId();
-  writeLocalPointer(activeProjectId, { ...defaultStorageSettings, ...settings });
+  writeLocalPointer(activeProjectId, mergeStorageSettings(settings));
+  if (isBrowser()) window.dispatchEvent(new CustomEvent("rivision-settings"));
+}
+
+/** UI that should stay hidden until the user opts into developer tools. */
+export function isDeveloperUiEnabled(): boolean {
+  const s = loadStorageSettings();
+  return Boolean(s.developerMode);
 }
 
 export async function persistRevisionCandidates(documents: ParsedDocument[]): Promise<void> {
@@ -517,6 +554,9 @@ async function loadProjectFromIndexedDb(projectId: string): Promise<StudyState> 
     assessmentMap: assessmentMap?.assessmentMap,
     examPriorityMap: normalizedCuration.examPriorityMap,
     revisionPack: normalizedCuration.revisionPack,
+    studentRevisionPack: revisionPack?.studentRevisionPack,
+    practiceQuestions: revisionPack?.practiceQuestions ?? [],
+    practiceAttempts: revisionPack?.practiceAttempts ?? [],
     curationReport: normalizedCuration.curationReport,
   };
 }
@@ -574,7 +614,7 @@ async function saveStudyStateToIndexedDb(projectId: string, state: StudyState, p
       });
       await db.assessmentMaps.put({ id: mapRecordId(projectId, "assessment"), projectId, assessmentMap: state.assessmentMap });
       await db.priorityMaps.put({ id: mapRecordId(projectId, "priority"), projectId, examPriorityMap: state.examPriorityMap });
-      await db.revisionPacks.put(toStoredRevisionPack(projectId, state.revisionPack));
+      await db.revisionPacks.put(toStoredRevisionPack(projectId, state));
     },
   );
 }
@@ -596,6 +636,9 @@ function normalizeStoredStudyState(parsed: Partial<StudyState>): StudyState {
     assessmentMap: parsed.assessmentMap,
     examPriorityMap: parsed.examPriorityMap ? normalizedCuration.examPriorityMap : undefined,
     revisionPack: parsed.revisionPack ? normalizedCuration.revisionPack : undefined,
+    studentRevisionPack: parsed.studentRevisionPack,
+    practiceQuestions: Array.isArray(parsed.practiceQuestions) ? parsed.practiceQuestions : [],
+    practiceAttempts: Array.isArray(parsed.practiceAttempts) ? parsed.practiceAttempts : [],
     curationReport: parsed.curationReport ? normalizedCuration.curationReport : undefined,
   };
 }
@@ -759,7 +802,8 @@ function compactCurationReport(report: CurationReport): CurationReport {
   };
 }
 
-function toStoredRevisionPack(projectId: string, revisionPack?: RevisionPack): StoredRevisionPack {
+function toStoredRevisionPack(projectId: string, state: StudyState): StoredRevisionPack {
+  const revisionPack = state.revisionPack;
   return {
     id: mapRecordId(projectId, "pack"),
     projectId,
@@ -767,6 +811,9 @@ function toStoredRevisionPack(projectId: string, revisionPack?: RevisionPack): S
     courseType: revisionPack?.courseType,
     topPriorityTopics: revisionPack?.topPriorityTopics,
     topTopics: revisionPack?.topTopics ?? [],
+    studentRevisionPack: state.studentRevisionPack,
+    practiceQuestions: state.practiceQuestions,
+    practiceAttempts: state.practiceAttempts,
   };
 }
 
@@ -820,6 +867,9 @@ function stateFromProjectImport(parsed: Partial<FullProjectExport> & Partial<Stu
     assessmentMap: parsed.assessmentMap,
     examPriorityMap: parsed.examPriorityMap,
     revisionPack: reconstructRevisionPack(parsed.revisionPack, revisionItems, parsed.rejectedItems ?? [], parsed.embeddedItems ?? []),
+    studentRevisionPack: parsed.revisionPack?.studentRevisionPack,
+    practiceQuestions: parsed.revisionPack?.practiceQuestions ?? [],
+    practiceAttempts: parsed.revisionPack?.practiceAttempts ?? [],
   };
 }
 
@@ -864,7 +914,7 @@ function parsePointer(raw: string | null): LocalStudyPointer | undefined {
     return {
       schemaVersion: 2,
       activeProjectId: parsed.activeProjectId,
-      settings: { ...defaultStorageSettings, ...(parsed.settings ?? {}) },
+      settings: mergeStorageSettings(parsed.settings as Partial<StorageSettings> | undefined),
       updatedAt: parsed.updatedAt ?? new Date().toISOString(),
     };
   } catch {
@@ -876,7 +926,7 @@ function writeLocalPointer(activeProjectId: string, settings: StorageSettings) {
   safeSetLocalStorage(studyStateLocalStorageKey, {
     schemaVersion: 2,
     activeProjectId,
-    settings: { ...defaultStorageSettings, ...settings },
+    settings: mergeStorageSettings(settings),
     updatedAt: new Date().toISOString(),
   } satisfies LocalStudyPointer);
 }

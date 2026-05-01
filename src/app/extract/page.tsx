@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -17,9 +17,10 @@ import { extractRevisionItems, generateManualExtractionPrompt, loadLlmPipelineSe
 import { getPrimaryCardPreview, hasLowLatexQuality } from "@/lib/card-render";
 import { normalizeMathNotation } from "@/lib/revision-item-utils";
 import { buildSegmentationDebug, segmentRevisionCandidates } from "@/lib/segmentation";
-import { clearDebugData, loadStorageSettings, persistRevisionCandidates, resetStudyStateStorage, saveStorageSettings } from "@/lib/storage";
+import { toRoleParsedDocument } from "@/lib/parsed-document-from-file";
+import { clearDebugData, isDeveloperUiEnabled, loadStorageSettings, persistRevisionCandidates, resetStudyStateStorage, saveStorageSettings } from "@/lib/storage";
 import { validateRevisionItemsPayload, withValidation } from "@/lib/validation";
-import type { CuratedDeckResult, ExtractionVerificationReport, ParsedDocument, RevisionItem, StudyFile } from "@/lib/types";
+import type { CuratedDeckResult, ExtractionVerificationReport, RevisionItem } from "@/lib/types";
 import { useStudyStore } from "@/hooks/use-study-store";
 import { createId } from "@/lib/utils";
 
@@ -39,6 +40,40 @@ export default function ExtractPage() {
 }
 
 function ExtractPageContent() {
+  const [dev, setDev] = useState(false);
+  useEffect(() => {
+    function sync() {
+      setDev(isDeveloperUiEnabled());
+    }
+    sync();
+    window.addEventListener("rivision-settings", sync);
+    return () => window.removeEventListener("rivision-settings", sync);
+  }, []);
+  if (!dev) {
+    return (
+      <div className="space-y-6">
+        <PageHeader title="Extraction" description="These tools are for development and debugging." />
+        <Card>
+          <CardContent className="space-y-3 pt-6 text-slate-600">
+            <p>Enable <strong>Developer mode</strong> in Settings to see raw candidates, curation, and pipeline details.</p>
+            <p className="text-sm">For normal study, use <Link className="font-medium text-blue-700 underline" href="/upload">Upload</Link> to build your pack, then open <Link className="font-medium text-blue-700 underline" href="/pack">Study pack</Link>.</p>
+            <div className="flex flex-wrap gap-2">
+              <Link className="inline-flex h-10 items-center justify-center rounded-md bg-blue-700 px-4 text-sm font-medium text-white hover:bg-blue-800" href="/settings">
+                Open settings
+              </Link>
+              <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-medium hover:bg-slate-50" href="/upload">
+                Upload materials
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+  return <ExtractPageInner />;
+}
+
+function ExtractPageInner() {
   const router = useRouter();
   const store = useStudyStore();
   const [extracting, setExtracting] = useState(false);
@@ -977,32 +1012,6 @@ function buildCurationDiagnostics(
   };
 }
 
-function toRoleParsedDocument(file: StudyFile): ParsedDocument {
-  return normaliseParsedDocument(file.parsedDocument ?? toLegacyParsedDocument(file.name, file.content), file.name, file.content, file.role);
-}
-
-function normaliseParsedDocument(document: ParsedDocument, sourceFile: string, fallbackText: string, role?: StudyFile["role"]): ParsedDocument {
-  const fullText = typeof document.fullText === "string" ? document.fullText : fallbackText || "";
-  const pages = Array.isArray(document.pages) ? document.pages : [];
-  return {
-    sourceFile: document.sourceFile || sourceFile || "Unknown source",
-    fileType: document.fileType || "unknown",
-    role: role ?? document.role,
-    fullText,
-    pages,
-    sections: Array.isArray(document.sections) ? document.sections : [],
-    diagnostics: {
-      success: document.diagnostics?.success ?? Boolean(fullText.trim()),
-      charCount: document.diagnostics?.charCount ?? fullText.length,
-      pageCount: document.diagnostics?.pageCount ?? (pages.length || undefined),
-      warnings: Array.isArray(document.diagnostics?.warnings) ? document.diagnostics.warnings : [],
-      errors: Array.isArray(document.diagnostics?.errors) ? document.diagnostics.errors : [],
-      likelyScannedPdf: document.diagnostics?.likelyScannedPdf,
-      extractionQuality: document.diagnostics?.extractionQuality ?? (fullText.trim() ? "medium" : "failed"),
-    },
-  };
-}
-
 function renderErrorMessage(error: unknown) {
   if (error instanceof Error) return `${error.message}${error.stack ? `\n${error.stack}` : ""}`;
   if (typeof error === "string") return error;
@@ -1018,17 +1027,3 @@ function renderStorageError(error: unknown) {
   return `Storage warning: ${message}\nThe extraction result is still available in memory. Export JSON before resetting local data.`;
 }
 
-function toLegacyParsedDocument(sourceFile: string, fullText: string): ParsedDocument {
-  return {
-    sourceFile,
-    fileType: "unknown",
-    fullText,
-    diagnostics: {
-      success: Boolean(fullText.trim()),
-      charCount: fullText.length,
-      warnings: ["Legacy file without diagnostics. Re-upload for full parser diagnostics."],
-      errors: [],
-      extractionQuality: fullText.trim() ? "medium" : "failed",
-    },
-  };
-}

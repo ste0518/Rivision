@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useState } from "react";
+import { mathStatusFromValidation, validateLatexSnippet } from "@/lib/latex-validate";
 import { createMockRevisionItems } from "@/lib/mock-data";
 import {
   clearDebugData,
@@ -14,6 +15,7 @@ import {
   saveStudyState,
   type StudyState,
 } from "@/lib/storage";
+import type { GeneratedPracticeQuestion, GeneratedRevisionPack, MathStatus } from "@/lib/student-revision-schema";
 import type { AssessmentMap, CourseKnowledgeMap, CourseMap, CourseStructureMap, CurationReport, EmbeddedRevisionItem, ExamPriorityMap, GuidanceFile, RejectedRevisionItem, RevisionItem, RevisionPack, ReviewRating, ReviewSession, StudyFile } from "@/lib/types";
 import { applyReviewRating } from "@/lib/srs";
 import { withValidation } from "@/lib/validation";
@@ -74,7 +76,7 @@ export function useStudyStore() {
     },
     removeNotesFile(id: string) { setState((current) => ({ ...current, notesFiles: current.notesFiles.filter((file) => file.id !== id) })); },
     removeGuidanceFile(id: string) { setState((current) => ({ ...current, guidanceFiles: current.guidanceFiles.filter((file) => file.id !== id) })); },
-    setRevisionItems(items: RevisionItem[], rejectedItems?: RejectedRevisionItem[], curation?: { embeddedItems?: EmbeddedRevisionItem[]; courseMap?: CourseMap; courseStructureMap?: CourseStructureMap; courseKnowledgeMap?: CourseKnowledgeMap; assessmentMap?: AssessmentMap; examPriorityMap?: ExamPriorityMap; revisionPack?: RevisionPack; curationReport?: CurationReport }) {
+    setRevisionItems(items: RevisionItem[], rejectedItems?: RejectedRevisionItem[], curation?: { embeddedItems?: EmbeddedRevisionItem[]; courseMap?: CourseMap; courseStructureMap?: CourseStructureMap; courseKnowledgeMap?: CourseKnowledgeMap; assessmentMap?: AssessmentMap; examPriorityMap?: ExamPriorityMap; revisionPack?: RevisionPack; curationReport?: CurationReport; studentRevisionPack?: GeneratedRevisionPack }) {
       setState((current) => ({
         ...current,
         revisionItems: items.map(withValidation),
@@ -87,7 +89,51 @@ export function useStudyStore() {
         examPriorityMap: curation?.examPriorityMap ?? current.examPriorityMap,
         revisionPack: curation?.revisionPack ?? current.revisionPack,
         curationReport: curation?.curationReport ?? current.curationReport,
+        studentRevisionPack: curation?.studentRevisionPack ?? current.studentRevisionPack,
       }));
+    },
+    setStudentRevisionPack(pack: GeneratedRevisionPack | undefined) {
+      setState((current) => ({ ...current, studentRevisionPack: pack }));
+    },
+    setPracticeQuestions(questions: GeneratedPracticeQuestion[]) {
+      setState((current) => ({ ...current, practiceQuestions: questions }));
+    },
+    appendPracticeQuestions(extra: GeneratedPracticeQuestion[]) {
+      setState((current) => ({ ...current, practiceQuestions: [...(current.practiceQuestions ?? []), ...extra] }));
+    },
+    recordPracticeAttempt(questionId: string) {
+      const attemptedAt = new Date().toISOString();
+      setState((current) => ({
+        ...current,
+        practiceAttempts: [...(current.practiceAttempts ?? []), { questionId, attemptedAt }],
+      }));
+    },
+    patchStudentPackFormulaMathStatus(formulaId: string, mathStatus: MathStatus) {
+      setState((current) => {
+        const pack = current.studentRevisionPack;
+        if (!pack) return current;
+        return {
+          ...current,
+          studentRevisionPack: {
+            ...pack,
+            formulas: pack.formulas.map((f) => (f.id === formulaId ? { ...f, mathStatus } : f)),
+          },
+        };
+      });
+    },
+    updateStudentPackFormulaLatex(formulaId: string, latex: string) {
+      setState((current) => {
+        const pack = current.studentRevisionPack;
+        if (!pack) return current;
+        const mathStatus = mathStatusFromValidation(validateLatexSnippet(latex));
+        return {
+          ...current,
+          studentRevisionPack: {
+            ...pack,
+            formulas: pack.formulas.map((f) => (f.id === formulaId ? { ...f, latex, mathStatus } : f)),
+          },
+        };
+      });
     },
     setRejectedItems(rejectedItems: RejectedRevisionItem[]) {
       setState((current) => ({ ...current, rejectedItems }));
