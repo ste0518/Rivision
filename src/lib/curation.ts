@@ -68,6 +68,16 @@ const centralFormulaTerms = [
   "local characteristic",
   "sar",
   "car",
+  "autocovariance",
+  "autocorrelation",
+  "stationarity condition",
+  "invertibility condition",
+  "backshift",
+  "arima",
+  "periodogram",
+  "spectral density",
+  "ljung-box",
+  "forecast",
 ];
 
 const centralTopicTerms = [
@@ -88,6 +98,24 @@ const centralTopicTerms = [
   "gaussian",
   "poisson",
   "conditional distribution",
+  "white noise",
+  "ma(q)",
+  "ar(p)",
+  "arma(p,q)",
+  "arch(p)",
+  "arima",
+  "general linear process",
+  "autocovariance sequence",
+  "autocorrelation sequence",
+  "toeplitz",
+  "roots outside the unit circle",
+  "periodogram",
+  "spectral representation theorem",
+  "integrated spectrum",
+  "direct spectral estimator",
+  "tapering",
+  "ljung-box",
+  "forecasting",
 ];
 
 export async function curateRevisionDeck({
@@ -280,7 +308,7 @@ export function createRevisionItemFromCandidate(candidate: CandidateRevisionBloc
   const statement = clean(proofSplit.statement);
   const proof = clean(candidate.proof ?? proofSplit.proof ?? "") || undefined;
   const theoremNumber = candidate.number ?? extractNumber(candidate.title ?? "");
-  const conceptName = extractConceptName(candidate, {
+  const conceptName = candidate.conceptName ?? extractConceptName(candidate, {
     type: candidate.type,
     title: candidate.title ?? "",
     theoremNumber,
@@ -289,21 +317,22 @@ export function createRevisionItemFromCandidate(candidate: CandidateRevisionBloc
   });
   const title = titleFromLabel(candidate.type, theoremNumber, titleSplit.title ?? conceptName, statement);
   const proofRequired = theoremLike(candidate.type) ? classifyProofRequired(guidanceText, title, statement, proof) : undefined;
-  const cardPurpose = inferCardPurpose(candidate.type, title, statement, proofRequired);
+  const cardPurpose = inferCardPurpose(candidate.type, title, statement, proofRequired, candidate.candidateKind);
 
   return {
     id: createId("card"),
     type: candidate.type,
+    candidateKind: candidate.candidateKind,
     title,
     conceptName,
     displayTitle: title,
     cardFront: conceptName || title,
     taskPrompt: defaultTaskPrompt(candidate.type, cardPurpose, proofRequired),
     statement,
-    statementLatex: convertCommonMathToLatex(statement),
+    statementLatex: convertCommonMathToLatex(statement, "auto", `${title} ${statement}`),
     originalRawText: candidate.rawText,
     proof,
-    proofLatex: proof ? convertCommonMathToLatex(proof) : undefined,
+    proofLatex: proof ? convertCommonMathToLatex(proof, "auto", `${title} ${proof}`) : undefined,
     proofRequired,
     sourceFile: candidate.sourceFile,
     sourceLocation: candidate.sourceLocation,
@@ -319,8 +348,8 @@ export function createRevisionItemFromCandidate(candidate: CandidateRevisionBloc
     extractionWarning: candidate.extractionWarning,
     questionPrompt: buildQuestionPrompt({ type: candidate.type, title, theoremNumber, statement, proofRequired }),
     answer: buildAnswer(candidate.type, statement),
-    answerLatex: convertCommonMathToLatex(buildAnswer(candidate.type, statement)),
-    standaloneValue: candidate.type === "formula" ? "low" : "medium",
+    answerLatex: convertCommonMathToLatex(buildAnswer(candidate.type, statement), "auto", `${title} ${statement}`),
+    standaloneValue: candidate.type === "formula" || candidate.candidateKind === "formula" ? "low" : "medium",
     curationDecision: "needs_review",
     curationReason: "Awaiting final deck quality gate.",
     relevanceReason: "Awaiting curation score.",
@@ -332,6 +361,7 @@ export function createRevisionItemFromCandidate(candidate: CandidateRevisionBloc
     createdAt: timestamp,
     updatedAt: timestamp,
     reviewCount: 0,
+    mathNormalizationProfile: "auto",
   };
 }
 
@@ -921,8 +951,12 @@ function titleFromLabel(type: RevisionItemType, number: string | undefined, expl
   return `${capitalise(type)}: ${firstWords}${statement.split(" ").length > 6 ? "..." : ""}`;
 }
 
-function inferCardPurpose(type: RevisionItemType, title: string, statement: string, proofRequired?: boolean): RevisionItem["cardPurpose"] {
+function inferCardPurpose(type: RevisionItemType, title: string, statement: string, proofRequired?: boolean, candidateKind?: RevisionItem["candidateKind"]): RevisionItem["cardPurpose"] {
   const lower = `${title} ${statement}`.toLowerCase();
+  if (candidateKind === "calculation_template" || candidateKind === "worked_example") return "calculation_template";
+  if (candidateKind === "test_statistic") return "application_condition";
+  if (candidateKind === "conceptual_distinction") return "conceptual_distinction";
+  if (candidateKind === "condition") return "application_condition";
   if (type === "proof" || proofRequired) return "proof_recall";
   if (type === "definition") {
     if (/\b(vs|versus|difference|distinction|strict|weak)\b/.test(lower) && /\bstationarity|stationary\b/.test(lower)) return "conceptual_distinction";

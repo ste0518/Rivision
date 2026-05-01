@@ -1,13 +1,16 @@
 import { createId } from "@/lib/utils";
-import type { CandidateRevisionBlock, ParsedDocument, RevisionCandidateLabel, RevisionItemType } from "@/lib/types";
+import type { CandidateRevisionBlock, ParsedDocument, RevisionCandidateKind, RevisionCandidateLabel, RevisionItemType } from "@/lib/types";
 
 type Marker = {
-  kind: "label" | "section";
+  kind: "label" | "section" | "heading";
   start: number;
   end: number;
   label: RevisionCandidateLabel;
   type?: RevisionItemType;
+  candidateKind?: RevisionCandidateKind;
   number?: string;
+  headingLevel?: number;
+  headingTitle?: string;
 };
 
 export const majorLabelWords = [
@@ -70,12 +73,19 @@ export function segmentRevisionDocument(document: ParsedDocument): CandidateRevi
   const markers = collectMarkers(text);
   const labelledMarkers = markers.filter((marker) => marker.kind === "label" && marker.type);
 
-  if (labelledMarkers.length === 0) return [...segmentUnlabelledDocument(document, text), ...segmentConceptualDistinctions(document, text)];
+  if (labelledMarkers.length === 0) {
+    return dedupeCandidates([
+      ...segmentUnlabelledDocument(document, text),
+      ...segmentHeadingBlocks(document, text, markers),
+      ...segmentConceptualDistinctions(document, text),
+    ]);
+  }
 
   const labelledCandidates = labelledMarkers
     .map((marker) => buildCandidateFromMarker(document, text, markers, marker))
     .filter((candidate): candidate is CandidateRevisionBlock => Boolean(candidate));
-  return [...labelledCandidates, ...segmentConceptualDistinctions(document, text)];
+  const headingCandidates = segmentHeadingBlocks(document, text, markers);
+  return dedupeCandidates([...labelledCandidates, ...headingCandidates, ...segmentConceptualDistinctions(document, text)]);
 }
 
 export function attachProofsToPreviousTheorem(candidates: CandidateRevisionBlock[]): CandidateRevisionBlock[] {
@@ -259,6 +269,7 @@ function collectMarkers(text: string) {
   }
 
   markers.push(...collectSectionMarkers(text));
+  markers.push(...collectHeadingMarkers(text));
   return markers.sort((a, b) => a.start - b.start || a.end - b.end);
 }
 
@@ -306,6 +317,47 @@ function collectSectionMarkers(text: string) {
   return markers;
 }
 
+function collectHeadingMarkers(text: string) {
+  const markers: Marker[] = [];
+  let offset = 0;
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    const leadingWhitespace = line.length - line.trimStart().length;
+    if (!trimmed) {
+      offset += line.length + 1;
+      continue;
+    }
+    const numericHeading = trimmed.match(/^(\d+(?:\.\d+){1,4})\s+([A-Z][A-Za-z0-9(),\- /]{3,120})$/);
+    const chapterHeading = trimmed.match(/^(?:Chapter|Section)\s+(\d+(?:\.\d+)*)\s*[:.-]?\s+(.{3,120})$/i);
+    const modelHeading = trimmed.match(/^\[(\d+)\]\s+(.{3,120})$/);
+    const workedExample = trimmed.match(/^(?:Worked\s+example|Example)\s*[:.-]\s+(.{3,140})$/i);
+    const summaryLike = /^(?:Summary(?:\s+and\s+examples)?|Properties\s+and\s+Notation)$/i.test(trimmed);
+    if (!numericHeading && !chapterHeading && !modelHeading && !workedExample && !summaryLike) {
+      offset += line.length + 1;
+      continue;
+    }
+    const headingTitle = (numericHeading?.[2] ?? chapterHeading?.[2] ?? modelHeading?.[2] ?? workedExample?.[1] ?? trimmed).replace(/\s+/g, " ").trim();
+    const headingLevel = numericHeading
+      ? numericHeading[1].split(".").length
+      : chapterHeading
+        ? chapterHeading[1].split(".").length
+        : 3;
+    markers.push({
+      kind: "heading",
+      start: offset + leadingWhitespace,
+      end: offset + line.length,
+      label: "Other",
+      headingLevel,
+      headingTitle,
+      candidateKind: inferHeadingCandidateKind(headingTitle),
+      type: inferTypeFromHeadingTitle(headingTitle),
+      number: numericHeading?.[1] ?? chapterHeading?.[1] ?? modelHeading?.[1],
+    });
+    offset += line.length + 1;
+  }
+  return markers;
+}
+
 function buildCandidateFromMarker(document: ParsedDocument, text: string, markers: Marker[], marker: Marker): CandidateRevisionBlock | undefined {
   if (!marker.type) return undefined;
   const next = markers.find((candidate) => candidate.start > marker.start);
@@ -323,6 +375,8 @@ function buildCandidateFromMarker(document: ParsedDocument, text: string, marker
     number: marker.number,
     title,
     statement,
+    candidateKind: marker.candidateKind ?? inferCandidateKind(marker.type, marker.label, statement, marker.headingTitle),
+    conceptName: inferCandidateConceptName(statement, marker.headingTitle),
     startOffset: marker.start,
     endOffset,
     sourceFile: document.sourceFile,
@@ -332,6 +386,91 @@ function buildCandidateFromMarker(document: ParsedDocument, text: string, marker
     rawText,
     extractionWarning,
   } satisfies CandidateRevisionBlock;
+}
+
+function segmentHeadingBlocks(document: ParsedDocument, text: string, markers: Marker[]): CandidateRevisionBlock[] {
+  const headingMarkers = markers.filter((marker) => marker.kind === "heading");
+  return headingMarkers.flatMap((heading, index) => {
+    const next = headingMarkers.slice(index + 1).find((candidate) => (candidate.headingLevel ?? 99) <= (heading.headingLevel ?? 99));
+    const endOffset = Math.min(next?.start ?? text.length, heading.start + 3800);
+    const rawText = text.slice(heading.start, endOffset).trim();
+    if (!rawText || rawText.length < 35) return [];
+    const subBlocks = splitLongHeadingBlock(rawText, heading);
+    return subBlocks.map((block, blockIndex) => {
+      const startOffset = heading.start + block.relativeStart;
+      const statement = clean(stripLeadingLabel(block.rawText));
+      const type = block.type ?? inferTypeFromHeadingTitle(block.title) ?? "other";
+      return {
+        id: createId("candidate"),
+        label: typeToLabel(type),
+        type,
+        candidateKind: block.candidateKind ?? inferHeadingCandidateKind(block.title),
+        conceptName: inferCandidateConceptName(statement, block.title),
+        number: heading.number ? `${heading.number}${subBlocks.length > 1 ? `.${blockIndex + 1}` : ""}` : undefined,
+        title: block.title,
+        statement,
+        startOffset,
+        endOffset: Math.min(startOffset + block.rawText.length, endOffset),
+        sourceFile: document.sourceFile,
+        sourceLocation: block.title,
+        pageNumber: pageNumberAtOffset(text, startOffset),
+        section: sectionAtOffset(document, startOffset),
+        rawText: block.rawText,
+        extractionWarning: buildCandidateWarning(block.rawText),
+      } satisfies CandidateRevisionBlock;
+    });
+  });
+}
+
+function splitLongHeadingBlock(rawText: string, heading: Marker) {
+  if (rawText.length < 1200) {
+    return [{
+      title: heading.headingTitle ?? "Heading block",
+      rawText,
+      relativeStart: 0,
+      type: heading.type,
+      candidateKind: heading.candidateKind,
+    }];
+  }
+  const lines = rawText.split("\n").map((line) => line.trim()).filter(Boolean);
+  const breaks: Array<{ index: number; title: string; type: RevisionItemType; candidateKind: RevisionCandidateKind }> = [];
+  let runningOffset = 0;
+  for (const line of lines) {
+    const isModel = /\b(?:MA\(\s*q\s*\)|AR\(\s*p\s*\)|ARMA\(\s*p\s*,\s*q\s*\)|ARCH\(\s*p\s*\)|ARIMA\(\s*p\s*,\s*d\s*,\s*q\s*\)|white noise|general linear process)\b/i.test(line);
+    const isCondition = /\b(?:stationarity|invertibility|roots outside the unit circle|condition)\b/i.test(line);
+    const isFormula = /[=][^=]|cov\{|var\{|E\{|\\Phi\(B\)|\\Theta\(B\)/.test(line);
+    const isWorked = /worked example|example/i.test(line);
+    if (isModel || isCondition || isFormula || isWorked) {
+      breaks.push({
+        index: runningOffset,
+        title: line.slice(0, 90),
+        type: isFormula ? "formula" : isWorked ? "example" : isCondition ? "property" : "definition",
+        candidateKind: isFormula ? "formula" : isWorked ? "calculation_template" : isCondition ? "condition" : "model_definition",
+      });
+    }
+    runningOffset += line.length + 1;
+  }
+  if (breaks.length < 2) {
+    return [{
+      title: heading.headingTitle ?? "Heading block",
+      rawText: rawText.slice(0, 1800),
+      relativeStart: 0,
+      type: heading.type,
+      candidateKind: heading.candidateKind,
+    }];
+  }
+  const uniqueBreaks = breaks.sort((a, b) => a.index - b.index).filter((value, idx, all) => idx === 0 || value.index - all[idx - 1].index > 120);
+  return uniqueBreaks.map((value, idx) => {
+    const start = value.index;
+    const end = uniqueBreaks[idx + 1]?.index ?? Math.min(rawText.length, start + 900);
+    return {
+      title: value.title,
+      rawText: rawText.slice(start, end).trim(),
+      relativeStart: start,
+      type: value.type,
+      candidateKind: value.candidateKind,
+    };
+  }).filter((block) => block.rawText.length > 30);
 }
 
 function buildCandidateWarning(rawText: string) {
@@ -411,6 +550,105 @@ function inferConceptualDistinctionTitle(statement: string) {
 function collectLooseLabelMatches(text: string) {
   const regex = new RegExp(`\\b(${majorLabelWords.join("|")})\\s*(\\d+(?:\\.\\d+)*)?\\s*(?:\\[[^\\]]+\\])?\\s*[\\.:]?`, "g");
   return collectRegexMatches(text, regex);
+}
+
+function inferHeadingCandidateKind(title: string): RevisionCandidateKind {
+  const lower = title.toLowerCase();
+  if (/\bworked example|example\b/.test(lower)) return "calculation_template";
+  if (/\bsummary|notation|table\b/.test(lower)) return "summary_table";
+  if (/\bljung-?box|test\b/.test(lower)) return "test_statistic";
+  if (/\b(?:ma\(|ar\(|arma|arch|arima|white noise|general linear process)\b/.test(lower)) return "model_definition";
+  if (/\bcondition|equivalence|iff|if and only if|roots outside\b/.test(lower)) return "condition";
+  if (/\bstationarity|autocovariance|autocorrelation|spectral density|periodogram|tapering|forecasting\b/.test(lower)) return "implicit_definition";
+  return "ordinary_text";
+}
+
+function inferTypeFromHeadingTitle(title: string): RevisionItemType | undefined {
+  const lower = title.toLowerCase();
+  if (/\bworked example|example\b/.test(lower)) return "example";
+  if (/\btheorem|representation theorem\b/.test(lower)) return "theorem";
+  if (/\bcondition|property|equivalence\b/.test(lower)) return "property";
+  if (/\bformula|equation|operator|periodogram|density\b/.test(lower)) return "formula";
+  if (/\bprocedure|method|diagnostic|test|forecasting\b/.test(lower)) return "algorithm";
+  if (/\b(?:ma\(|ar\(|arma|arch|arima|white noise|process)\b/.test(lower)) return "definition";
+  if (/\bstationarity|autocovariance|autocorrelation|spectrum\b/.test(lower)) return "definition";
+  return undefined;
+}
+
+function inferCandidateKind(type: RevisionItemType | undefined, label: RevisionCandidateLabel, statement: string, title?: string): RevisionCandidateKind {
+  if (label === "Definition") return "explicit_definition";
+  if (label === "Theorem" || label === "Lemma" || label === "Proposition" || label === "Corollary") return "theorem_statement";
+  if (label === "Property") return "property";
+  if (label === "Formula") return "formula";
+  if (label === "Algorithm") return "method";
+  if (label === "Example") return "worked_example";
+  const lower = `${title ?? ""} ${statement}`.toLowerCase();
+  if (/\bif and only if|condition|equivalent\b/.test(lower)) return "condition";
+  if (/\bworked example|example\b/.test(lower)) return "calculation_template";
+  if (/\bljung-?box|test statistic\b/.test(lower)) return "test_statistic";
+  if (/\b(?:ma\(|ar\(|arma|arch|arima|white noise)\b/.test(lower)) return "model_definition";
+  if (/\bstrict stationarity|weak stationarity|autocovariance|autocorrelation|spectral density|periodogram\b/.test(lower)) return "implicit_definition";
+  if (type === "other") return "ordinary_text";
+  return "ordinary_text";
+}
+
+function inferCandidateConceptName(statement: string, title?: string) {
+  const text = `${title ?? ""} ${statement}`.replace(/\s+/g, " ").trim();
+  const pairs: Array<[RegExp, string]> = [
+    [/\bcomplete\/strong\/strict stationarity|strict stationarity\b/i, "Strict stationarity"],
+    [/\bsecond-order\/weak\/covariance stationarity|weak stationarity|covariance stationarity\b/i, "Second-order stationarity"],
+    [/\bautocovariance sequence\b/i, "Autocovariance sequence"],
+    [/\bautocorrelation sequence\b/i, "Autocorrelation sequence"],
+    [/\bwhite noise process\b/i, "White noise process"],
+    [/\bma\(\s*q\s*\)\b/i, "MA(q) process"],
+    [/\bar\(\s*p\s*\)\b/i, "AR(p) process"],
+    [/\barma\(\s*p\s*,\s*q\s*\)\b/i, "ARMA(p,q) process"],
+    [/\barch\(\s*p\s*\)\b/i, "ARCH(p) model"],
+    [/\barima\(\s*p\s*,\s*d\s*,\s*q\s*\)\b/i, "ARIMA(p,d,q)"],
+    [/\bgeneral linear process\b/i, "General Linear Process"],
+    [/\bbackshift operator\b/i, "Backshift operator"],
+    [/\bseasonal differencing\b/i, "Seasonal differencing"],
+    [/\bdifferencing\b/i, "Differencing"],
+    [/\bstationarity condition\b/i, "Stationarity condition"],
+    [/\binvertibility condition\b/i, "Invertibility condition"],
+    [/\bspectral representation theorem\b/i, "Spectral representation theorem"],
+    [/\bintegrated spectrum\b/i, "Integrated spectrum"],
+    [/\bspectral density function\b/i, "Spectral density function"],
+    [/\bperiodogram\b/i, "Periodogram"],
+    [/\bdirect spectral estimator\b/i, "Direct spectral estimator"],
+    [/\btapering\b/i, "Tapering"],
+    [/\bljung-?box test\b/i, "Ljung-Box test"],
+    [/\bforecasting\b/i, "Forecasting"],
+  ];
+  const matched = pairs.find(([regex]) => regex.test(text));
+  if (matched) return matched[1];
+  return undefined;
+}
+
+function typeToLabel(type: RevisionItemType): RevisionCandidateLabel {
+  if (type === "definition") return "Definition";
+  if (type === "theorem") return "Theorem";
+  if (type === "lemma") return "Lemma";
+  if (type === "proposition") return "Proposition";
+  if (type === "corollary") return "Corollary";
+  if (type === "remark") return "Remark";
+  if (type === "example") return "Example";
+  if (type === "formula") return "Formula";
+  if (type === "assumption") return "Assumption";
+  if (type === "property") return "Property";
+  if (type === "algorithm") return "Algorithm";
+  if (type === "proof") return "Proof";
+  return "Other";
+}
+
+function dedupeCandidates(candidates: CandidateRevisionBlock[]) {
+  const seen = new Set<string>();
+  return candidates.filter((candidate) => {
+    const key = `${candidate.type}|${candidate.pageNumber ?? ""}|${(candidate.sourceLocation ?? "").toLowerCase()}|${(candidate.conceptName ?? candidate.title ?? "").toLowerCase()}|${clean(candidate.statement ?? "").toLowerCase().slice(0, 180)}`;
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
 }
 
 function collectRegexMatches(text: string, regex: RegExp) {

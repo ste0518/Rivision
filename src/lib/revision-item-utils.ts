@@ -1,6 +1,6 @@
 import { createId } from "@/lib/utils";
 import { inferTopic, splitShortLeadingTitle, stripLeadingLabel } from "@/lib/segmentation";
-import type { LatexQualityReport, RevisionCandidate, RevisionItem, RevisionItemType } from "@/lib/types";
+import type { LatexQualityReport, MathNormalizationProfile, RevisionCandidate, RevisionItem, RevisionItemType } from "@/lib/types";
 import { priorityLabelFromScore, revisionPackCategoryForItem } from "@/lib/course-priority";
 
 const labelledItemRegex = /\b(Definition|Theorem|Lemma|Proposition|Corollary|Proof|Remark|Example|Question|Assumption|Property|Algorithm|Formula)\s*(?:[A-Za-z]?\d+(?:\.\d+)*)?\b/g;
@@ -109,19 +109,20 @@ export function buildQuestionPrompt(item: Pick<RevisionItem, "type" | "title" | 
   return `Explain ${cleanTitle(item.title)}.`;
 }
 
-export function convertCommonMathToLatex(value: string) {
-  return normalizeExtractedMathText(value);
+export function convertCommonMathToLatex(value: string, profile: MathNormalizationProfile = "auto", context = "") {
+  return normalizeExtractedMathText(value, profile, context);
 }
 
-export function repairMathTextToLatex(value: string) {
-  return normalizeExtractedMathText(value);
+export function repairMathTextToLatex(value: string, profile: MathNormalizationProfile = "auto", context = "") {
+  return normalizeExtractedMathText(value, profile, context);
 }
 
-export function normalizeExtractedMathText(value: string): string {
-  return normalizeMathNotation(value);
+export function normalizeExtractedMathText(value: string, profile: MathNormalizationProfile = "auto", context = ""): string {
+  return normalizeMathNotation(value, profile, context);
 }
 
-export function normalizeMathNotation(value: string) {
+export function normalizeMathNotation(value: string, profile: MathNormalizationProfile = "auto", context = "") {
+  const resolvedProfile = resolveMathProfile(profile, `${context} ${value}`);
   let text = cleanPlainText(value);
 
   text = text
@@ -318,6 +319,9 @@ export function normalizeMathNotation(value: string) {
   text = replaceOutsideInlineMath(text, /\bK[′']\s*Σ\s*[-−]\s*1\b/g, () => "\\(K'\\Sigma^{-1}\\)", false);
   text = replaceOutsideInlineMath(text, /ρ\s*\(\s*t0\s*,\s*t0\s*\)/g, () => "\\(\\rho(t_0,t_0)\\)", false);
   text = text.replace(/\\\(\s*\\\(/g, "\\(").replace(/\\\)\s*\\\)/g, "\\)");
+  if (resolvedProfile === "time_series") {
+    text = normalizeTimeSeriesMath(text);
+  }
 
   return text;
 }
@@ -341,12 +345,52 @@ export function validateLatexQuality(item: RevisionItem): LatexQualityReport {
   if (/\brho\b|\bgamma\b/.test(target)) issues.push("Contains raw rho/gamma token.");
   if (/\bPn\s*i\s*=\s*1\b|\bsum_i\b/.test(target)) issues.push("Contains raw summation notation.");
   if (/\uFFFE/.test(target)) issues.push("Contains PDF extraction artefact.");
+  if (/\bXt\b|\bXt\+/.test(target)) issues.push("Contains raw Xt tokens.");
+  if (/\bsω\b|\bϑ\b|\bς\b|\bϖ\b|\bϱ\b|↑|↓|↖/.test(target)) issues.push("Contains unresolved time-series symbol artefacts.");
   if (/dis-\s*/i.test(target)) issues.push("Contains broken hyphenation.");
   const openCount = (target.match(/\\\(/g) ?? []).length;
   const closeCount = (target.match(/\\\)/g) ?? []).length;
   if (openCount !== closeCount) issues.push("Unmatched inline math delimiters.");
   const score: LatexQualityReport["score"] = issues.length >= 3 ? "low" : issues.length > 0 ? "medium" : "high";
   return { score, issues };
+}
+
+function resolveMathProfile(profile: MathNormalizationProfile, hint: string): Exclude<MathNormalizationProfile, "auto"> {
+  if (profile !== "auto") return profile;
+  const lower = hint.toLowerCase();
+  if (/\b(arima|arma|ar\(|ma\(|autocovariance|autocorrelation|periodogram|spectral density|ljung-box|stationarity)\b/.test(lower)) return "time_series";
+  if (/\b(semivariogram|kriging|spatial|random field|covariance function)\b/.test(lower)) return "spatial_statistics";
+  if (/\b(option|portfolio|volatility|black-scholes|martingale)\b/.test(lower)) return "financial_math";
+  return "generic";
+}
+
+function normalizeTimeSeriesMath(source: string) {
+  let text = source;
+  text = text
+    .replace(/￾/g, "")
+    .replace(/\b\{Xt\}/g, "\\(\\{X_t\\}\\)")
+    .replace(/\bXt\b/g, "\\(X_t\\)")
+    .replace(/\bXt\+ω\b/g, "\\(X_{t+\\omega}\\)")
+    .replace(/\bcov\{Xt,\s*Xt\+ω\}/gi, "\\(\\operatorname{cov}(X_t,X_{t+\\omega})\\)")
+    .replace(/\bE\{Xt\}/g, "\\(\\mathbb{E}\\{X_t\\}\\)")
+    .replace(/\bvar\{Xt\}/gi, "\\(\\operatorname{var}(X_t)\\)")
+    .replace(/\bMA\(q\)\b/g, "\\(\\operatorname{MA}(q)\\)")
+    .replace(/\bAR\(p\)\b/g, "\\(\\operatorname{AR}(p)\\)")
+    .replace(/\bARMA\(p,q\)\b/g, "\\(\\operatorname{ARMA}(p,q)\\)")
+    .replace(/\bARIMA\(p,d,q\)\b/g, "\\(\\operatorname{ARIMA}(p,d,q)\\)")
+    .replace(/\bρk\s*=\s*sk\/s0\b/g, "\\(\\rho_k=s_k/s_0\\)");
+
+  text = text.replace(/\bXt\s*=\s*εt\s*-\s*θ\s*εt-1\b/g, "\\(X_t=\\varepsilon_t-\\theta\\varepsilon_{t-1}\\)");
+  text = text.replace(/\bXt\s*=\s*φ\s*Xt-1\s*\+\s*εt\b/g, "\\(X_t=\\phi X_{t-1}+\\varepsilon_t\\)");
+  text = text.replace(/\bΦ\(B\)\s*Xt\s*=\s*Θ\(B\)\s*εt\b/g, "\\(\\Phi(B)X_t=\\Theta(B)\\varepsilon_t\\)");
+
+  if (/cov\{Xt,\s*Xt\+/.test(source) && /ω/.test(source) && !/\\tau/.test(text)) {
+    text = text.replace(/\bω\b/g, "\\omega");
+  }
+  if (/sω/.test(source) || /ϑω/.test(source)) {
+    text = text.replace(/sω/g, "s_\\omega").replace(/ϑω/g, "\\rho_\\omega");
+  }
+  return text;
 }
 
 function replaceOutsideInlineMath(

@@ -5,6 +5,7 @@ import { normalizeCuratedRevisionResult, normalizeRevisionItem } from "../src/li
 import { filterRevisionItemsByRelevance } from "../src/lib/relevance";
 import { convertCommonMathToLatex } from "../src/lib/revision-item-utils";
 import { spatialStatisticsFixtureDocument, spatialStatisticsGuidanceDocument } from "../src/lib/test-fixtures/spatial-statistics-ch2-excerpt";
+import { timeSeriesFixtureDocument } from "../src/lib/test-fixtures/time-series-notes-excerpt";
 import { validateAndRepairRevisionItems } from "../src/lib/validation";
 import type { ParsedDocument, RevisionItem } from "../src/lib/types";
 
@@ -269,6 +270,20 @@ async function run() {
   assert.equal(Array.isArray(migrated.tags), true);
   const normalizedDeck = normalizeCuratedRevisionResult({ keptItems: [migrated], curationReport: {} });
   assert.equal(normalizedDeck.keptItems.length, 1);
+
+  const timeSeriesCandidates = segmentRevisionCandidates([timeSeriesFixtureDocument]);
+  assert.ok(timeSeriesCandidates.length > 40, `expected > 40 candidates, got ${timeSeriesCandidates.length}`);
+  const timeSeriesExtraction = await extractRevisionItems({
+    notesDocuments: [timeSeriesFixtureDocument],
+    guidanceDocuments: [],
+    sourceFile: timeSeriesFixtureDocument.sourceFile,
+  });
+  assert.ok(timeSeriesExtraction.curationReport.totalCandidates > 40);
+  assert.ok(timeSeriesExtraction.curationReport.keptCount > 20);
+  const kept = timeSeriesExtraction.items.filter((item) => (item.curationDecision ?? "keep") === "keep");
+  assert.ok(kept.every((item) => !/^(Example|Worked example|Definition|Formula|Properties and Notation|Chapter \d+)/i.test(item.conceptName ?? "")));
+  assert.ok(kept.every((item) => !/[ϖςϱ↑↓↖]/.test(`${item.statementLatex ?? ""} ${item.answerLatex ?? ""}`)));
+  assert.ok(kept.some((item) => /MA\(q\)|AR\(p\)|ARMA\(p,q\)|ARCH\(p\)|ARIMA\(p,d,q\)|Ljung-Box|periodogram|spectral density|forecasting/i.test(`${item.conceptName ?? ""} ${item.title} ${item.statement}`)));
 
   console.log("Extraction regression passed.");
 }

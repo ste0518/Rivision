@@ -58,6 +58,28 @@ export type RejectionCategory =
   | "background_only"
   | "low_value"
   | "parse_noise";
+export type RevisionCandidateKind =
+  | "explicit_definition"
+  | "implicit_definition"
+  | "model_definition"
+  | "theorem_statement"
+  | "property"
+  | "condition"
+  | "formula"
+  | "method"
+  | "worked_example"
+  | "calculation_template"
+  | "conceptual_distinction"
+  | "test_statistic"
+  | "summary_table"
+  | "ordinary_text"
+  | "parse_noise";
+export type MathNormalizationProfile =
+  | "generic"
+  | "time_series"
+  | "spatial_statistics"
+  | "financial_math"
+  | "auto";
 export type Importance = RevisionImportance;
 export type ReviewRating = "again" | "hard" | "good" | "easy";
 
@@ -114,6 +136,8 @@ export type RevisionCandidateLabel =
 export type RevisionCandidate = {
   id: string;
   label: RevisionCandidateLabel;
+  candidateKind?: RevisionCandidateKind;
+  conceptName?: string;
   number?: string;
   title?: string;
   rawText: string;
@@ -309,6 +333,7 @@ export type GuidanceFile = StudyFile & { kind: "guidance"; };
 export type RevisionItem = {
   id: string;
   type: RevisionItemType;
+  candidateKind?: RevisionCandidateKind;
   title: string;
   conceptName?: string;
   displayTitle?: string;
@@ -355,6 +380,7 @@ export type RevisionItem = {
   createdAt: string;
   updatedAt: string;
   warnings?: string[];
+  mathNormalizationProfile?: MathNormalizationProfile;
   latestRating?: ReviewRating;
   reviewCount?: number;
   dueAt?: string;

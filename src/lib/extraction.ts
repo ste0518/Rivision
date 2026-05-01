@@ -86,7 +86,7 @@ export async function extractRevisionItems({
       };
     }
     fallbackWarning = llmResult.error
-      ? `AI key revision analysis requires an API key. Current result uses local heuristic filtering. (${llmResult.error})`
+      ? `Local heuristic mode is approximate. For AI reasoning over notes + past papers, configure OPENAI_API_KEY. (${llmResult.error})`
       : undefined;
   }
 

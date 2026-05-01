@@ -68,6 +68,7 @@ function ExtractPageContent() {
   const needsReviewItems = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && ((item.curationDecision ?? "keep") !== "keep" || needsRepair(item))), [store.revisionItems]);
   const normalItems = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && (item.curationDecision ?? "keep") === "keep" && item.standaloneValue !== "low" && !needsRepair(item)), [store.revisionItems]);
   const parsedPageCount = useMemo(() => allDocuments.reduce((total, doc) => total + (doc.pages?.length ?? 0), 0), [allDocuments]);
+  const likelyUnderExtraction = parsedPageCount > 50 && candidates.length < 30;
   const topCourseTopics = useMemo(
     () => store.curationReport?.mainTopics?.length
       ? store.curationReport.mainTopics
@@ -292,6 +293,11 @@ function ExtractPageContent() {
           ) : (
             <p className="text-sm text-slate-500">No paid API key required in this mode.</p>
           )}
+          {likelyUnderExtraction ? (
+            <p className="rounded border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
+              Candidate detection is likely under-extracting. Try AI mode or enable heading-based extraction.
+            </p>
+          ) : null}
         </CardContent>
       </Card>
 
