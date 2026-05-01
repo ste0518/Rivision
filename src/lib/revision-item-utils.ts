@@ -1,6 +1,7 @@
 import { createId } from "@/lib/utils";
 import { inferTopic, splitShortLeadingTitle, stripLeadingLabel } from "@/lib/segmentation";
 import type { LatexQualityReport, RevisionCandidate, RevisionItem, RevisionItemType } from "@/lib/types";
+import { priorityLabelFromScore, revisionPackCategoryForItem } from "@/lib/course-priority";
 
 const labelledItemRegex = /\b(Definition|Theorem|Lemma|Proposition|Corollary|Proof|Remark|Example|Question|Assumption|Property|Algorithm|Formula)\s*(?:[A-Za-z]?\d+(?:\.\d+)*)?\b/g;
 const proofMarkerRegex = /\bProof(?:\s+of\s+(?:Theorem|Lemma|Proposition|Corollary)\s*[A-Za-z]?\d*(?:\.\d+)*)?\s*[:.]/i;
@@ -9,10 +10,10 @@ export function normaliseRevisionItem(item: RevisionItem): RevisionItem {
   const now = new Date().toISOString();
   const originalRawText = item.originalRawText ?? item.statement;
   const correctedType = typeFromLabel(item.title) ?? typeFromLabel(item.originalRawText ?? "") ?? typeFromLabel(item.statement) ?? item.type;
-  const repairedStatement = repairSuspiciousStatementFromRaw(correctedType, item.statement, originalRawText);
+  const repairedStatement = cleanupStatementBoundary(correctedType, repairSuspiciousStatementFromRaw(correctedType, item.statement, originalRawText));
   const split = splitProofFromStatement(repairedStatement);
   const statementParts = splitShortLeadingTitle(split.statement);
-  const statement = clean(statementParts.statement);
+  const statement = clean(cleanupStatementBoundary(correctedType, statementParts.statement));
   const proof = cleanPlainText(item.proof ?? split.proof ?? "");
   const theoremNumber = item.theoremNumber ?? extractNumber(item.title) ?? extractNumber(item.originalRawText ?? "") ?? extractNumber(item.sourceLocation ?? "");
   const extractedConceptName = extractConceptName(undefined, { ...item, type: correctedType, theoremNumber, statement, titleTopic: statementParts.title });
@@ -56,6 +57,11 @@ export function normaliseRevisionItem(item: RevisionItem): RevisionItem {
     questionPrompt: buildQuestionPrompt({ ...item, type: correctedType, title, theoremNumber, statement, proofRequired }),
     answer,
     answerLatex,
+    priorityScore: item.priorityScore ?? 0,
+    priorityLabel: item.priorityLabel ?? priorityLabelFromScore(item.priorityScore ?? 0),
+    evidenceSignals: item.evidenceSignals ?? [],
+    whyThisCardMatters: item.whyThisCardMatters ?? item.relevanceReason ?? item.curationReason ?? "Needs priority evidence.",
+    revisionPackCategory: item.revisionPackCategory ?? revisionPackCategoryForItem({ ...item, type: correctedType, cardPurpose }),
     classificationConfidence: item.classificationConfidence ?? (extractionWarning ? "low" : "medium"),
     warnings: [
       ...(item.warnings ?? []),
@@ -104,10 +110,14 @@ export function buildQuestionPrompt(item: Pick<RevisionItem, "type" | "title" | 
 }
 
 export function convertCommonMathToLatex(value: string) {
-  return normalizeMathNotation(value);
+  return normalizeExtractedMathText(value);
 }
 
 export function repairMathTextToLatex(value: string) {
+  return normalizeExtractedMathText(value);
+}
+
+export function normalizeExtractedMathText(value: string): string {
   return normalizeMathNotation(value);
 }
 
@@ -115,10 +125,17 @@ export function normalizeMathNotation(value: string) {
   let text = cleanPlainText(value);
 
   text = text
+    .replace(/\uFFFE/g, "")
+    .replace(/\u0000/g, "")
+    .replace(/\bmulti\s*variate\b/gi, "multivariate")
+    .replace(/\bdis\s*tribution\b/gi, "distribution")
+    .replace(/\bsemi\s*variogram\b/gi, "semi-variogram")
     .replace(/\bnormal\s+distribution\b/gi, "normal distribution")
     .replace(/\bprobability\s+density\b/gi, "probability density")
     .replace(/\bGaus\s*sian\b/gi, "Gaussian")
-    .replace(/dis-\s*'\s*n\s*tribution/gi, "distribution");
+    .replace(/normal\s+dis-\s*['’]?\s*n\s*tribution/gi, "normal distribution")
+    .replace(/dis-\s*['’]?\s*n\s*tribution/gi, "distribution")
+    .replace(/\s+['’]\s*n\s+/g, " ");
 
   text = replaceOutsideInlineMath(
     text,
@@ -251,6 +268,12 @@ export function normalizeMathNotation(value: string) {
   );
   text = replaceOutsideInlineMath(
     text,
+    /\bT\s+of\s+R\s*d\b/gi,
+    () => "\\(T\\subseteq\\mathbb{R}^d\\)",
+    false,
+  );
+  text = replaceOutsideInlineMath(
+    text,
     /\bsubset T of R\s*\^?\s*d\b/gi,
     () => "subset \\(T\\subset\\mathbb{R}^d\\)",
     false,
@@ -269,6 +292,8 @@ export function normalizeMathNotation(value: string) {
   text = replaceOutsideInlineMath(text, /\bXj\b/g, () => "\\(X_j\\)", false);
   text = replaceOutsideInlineMath(text, /\bXt1\b/g, () => "\\(X_{t_1}\\)", false);
   text = replaceOutsideInlineMath(text, /\bXtn\b/g, () => "\\(X_{t_n}\\)", false);
+  text = replaceOutsideInlineMath(text, /\bXt\b/g, () => "\\(X_t\\)", false);
+  text = replaceOutsideInlineMath(text, /\bXs\b/g, () => "\\(X_s\\)", false);
   text = replaceOutsideInlineMath(text, /\bX1\b/g, () => "\\(X_1\\)", false);
   text = replaceOutsideInlineMath(text, /\bXn\b/g, () => "\\(X_n\\)", false);
   text = replaceOutsideInlineMath(text, /\bt1\b/g, () => "\\(t_1\\)", false);
@@ -278,6 +303,7 @@ export function normalizeMathNotation(value: string) {
   text = replaceOutsideInlineMath(text, /\bt\s+in\s+T\b/g, () => "\\(t\\in T\\)", false);
   text = replaceOutsideInlineMath(text, /\bt\s*∈\s*T\b/g, () => "\\(t\\in T\\)", false);
   text = replaceOutsideInlineMath(text, /\bT\s+subset\s+R\^?d\b/gi, () => "\\(T\\subset\\mathbb{R}^d\\)", false);
+  text = replaceOutsideInlineMath(text, /\bR\s*\+\b/g, () => "\\mathbb{R}_+");
   text = replaceOutsideInlineMath(text, /\bx\s+in\s+R\b/gi, () => "\\(x\\in\\mathbb{R}\\)", false);
   text = replaceOutsideInlineMath(text, /\bR\^([A-Za-z0-9]+)\b/g, (_match, power) => `\\mathbb{R}^${power}`);
   text = replaceOutsideInlineMath(text, /\bR\s+d\b/g, () => "\\mathbb{R}^d");
@@ -285,7 +311,12 @@ export function normalizeMathNotation(value: string) {
   text = replaceOutsideInlineMath(text, /\bsigma\^2\b/gi, () => "\\sigma^2");
   text = replaceOutsideInlineMath(text, /\bsigma\b/gi, () => "\\sigma");
   text = replaceOutsideInlineMath(text, /\bgamma\b/gi, () => "\\gamma");
+  text = replaceOutsideInlineMath(text, /\ba[′']X\s*=\s*Pn\s*i\s*=\s*1\s*a_?i\s*X_?i\b/gi, () => "\\(a'X=\\sum_{i=1}^n a_iX_i\\)", false);
+  text = replaceOutsideInlineMath(text, /\bPn\s*i\s*=\s*1\s*a_?i\s*X_?i\b/gi, () => "\\sum_{i=1}^n a_iX_i");
   text = replaceOutsideInlineMath(text, /\bsum_i\s*=\s*1\^n\s*a_iX_i\b/gi, () => "\\sum_{i=1}^n a_iX_i");
+  text = replaceOutsideInlineMath(text, /\bm\s*:\s*T\s*(?:→|->|to)\s*R\b/g, () => "\\(m:T\\to\\mathbb{R}\\)", false);
+  text = replaceOutsideInlineMath(text, /\bK[′']\s*Σ\s*[-−]\s*1\b/g, () => "\\(K'\\Sigma^{-1}\\)", false);
+  text = replaceOutsideInlineMath(text, /ρ\s*\(\s*t0\s*,\s*t0\s*\)/g, () => "\\(\\rho(t_0,t_0)\\)", false);
   text = text.replace(/\\\(\s*\\\(/g, "\\(").replace(/\\\)\s*\\\)/g, "\\)");
 
   return text;
@@ -307,7 +338,9 @@ export function validateLatexQuality(item: RevisionItem): LatexQualityReport {
   if (/\bX1\b|\bXn\b/.test(target)) issues.push("Contains raw X1/Xn tokens in math context.");
   if (/\bR\s+[dn]\b/.test(target)) issues.push("Contains raw R d / R n notation.");
   if (/\bSigma\b/.test(target)) issues.push("Contains raw Sigma token.");
-  if (/\bsum_i\b/.test(target)) issues.push("Contains raw sum_i notation.");
+  if (/\brho\b|\bgamma\b/.test(target)) issues.push("Contains raw rho/gamma token.");
+  if (/\bPn\s*i\s*=\s*1\b|\bsum_i\b/.test(target)) issues.push("Contains raw summation notation.");
+  if (/\uFFFE/.test(target)) issues.push("Contains PDF extraction artefact.");
   if (/dis-\s*/i.test(target)) issues.push("Contains broken hyphenation.");
   const openCount = (target.match(/\\\(/g) ?? []).length;
   const closeCount = (target.match(/\\\)/g) ?? []).length;
@@ -389,7 +422,7 @@ export function extractConceptName(candidate: RevisionCandidate | undefined, ite
     if (/\bisotropic spectral density\b/i.test(statement)) return "Isotropic spectral density";
     if (/\bisotropic semi-?variogram\b/i.test(statement)) return "Isotropic semi-variogram";
     if (/\bgeometric anisotropy\b/i.test(statement)) return "Geometric anisotropy";
-    if (/\bstratified\b|\bzonal anisotropy\b/i.test(statement)) return "Stratified/zonal anisotropy";
+    if (/\bstratified\b|\bzonal anisotropy\b/i.test(statement)) return "Stratified / zonal anisotropy";
     if (/\bsmoothed Matheron estimator\b/i.test(statement)) return "Smoothed Matheron estimator";
     if (/\bspectral density function\b/i.test(statement)) return "Spectral density";
 
@@ -398,6 +431,22 @@ export function extractConceptName(candidate: RevisionCandidate | undefined, ite
 
     const grfMatch = statement.match(/\b(?:is|are)\s+(?:a|an|the)?\s*Gaussian random field\b/i);
     if (grfMatch) return "Gaussian random field";
+
+    const defineMatch = statement.match(/\bWe define\s+(?:a|an|the)?\s*([A-Za-z][A-Za-z\s-]{2,70}?)(?:\s+as|\s+to be|\s+by|[.:])/i);
+    if (defineMatch) return capitaliseConcept(normaliseConceptPhrase(defineMatch[1]) || explicitTitleConcept || "Definition");
+
+    const familyMatch = statement.match(/\bThe family\s+[^.!?]{0,120}?\s+is\s+(?:a|an)\s+([A-Za-z][A-Za-z\s-]{2,70}?)\s+if\b/i);
+    if (familyMatch) return capitaliseConcept(normaliseConceptPhrase(familyMatch[1]) || explicitTitleConcept || "Definition");
+
+    const hasMatch = statement.match(/\bhas an?\s+(isotropic covariance|isotropic spectral density function|isotropic semi-?variogram)\s+if\b/i);
+    if (hasMatch) {
+      if (/spectral/i.test(hasMatch[1])) return "Isotropic spectral density";
+      if (/semi/i.test(hasMatch[1])) return "Isotropic semi-variogram";
+      return "Isotropic covariance";
+    }
+
+    if (/The semi-variogram exhibits geometric anisotropy if/i.test(statement)) return "Geometric anisotropy";
+    if (/The semi-variogram exhibits stratified or zonal anisotropy if/i.test(statement)) return "Stratified / zonal anisotropy";
 
     const articleMatch = statement.match(/^(?:A|An|The)\s+([A-Za-z][A-Za-z\s-]{1,60}?)(?:\s*\([^)]{0,120}\)\s*['’]?)?\s+(?:is|are|has|means|denotes|consists|refers)\b/i);
     if (articleMatch) return capitaliseConcept(normaliseConceptPhrase(articleMatch[1]) || explicitTitleConcept || "Definition");
@@ -635,7 +684,26 @@ function isUsableConceptName(value: string | undefined) {
 
 export function isGenericConceptName(value: string | undefined) {
   if (!value) return false;
-  return /^(definition|theorem|formula|remark|example)$/i.test(value.trim());
+  const trimmed = value.trim();
+  if (trimmed.length > 80 || /,$/.test(trimmed)) return true;
+  return /^(definition|theorem|formula|remark|question|example)(?:\s+\d+(?:\.\d+)*)?$/i.test(trimmed);
+}
+
+function cleanupStatementBoundary(type: RevisionItemType, value: string) {
+  if (type !== "definition") return value;
+  const boundaries = [
+    /\b(?:Definition|Theorem|Lemma|Proposition|Corollary|Remark|Example|Question|Proof)\s+\d+(?:\.\d+)*\b/i,
+    /\b(?:Chapter|Section)\s+\d+(?:\.\d+)*\b/i,
+    /\bThis definition allows us to\b/i,
+    /\bWe now\b/i,
+    /\bThe following theorem\b/i,
+  ];
+  let end = value.length;
+  for (const boundary of boundaries) {
+    const match = value.match(boundary);
+    if (match?.index !== undefined && match.index > 20) end = Math.min(end, match.index);
+  }
+  return value.slice(0, end).trim();
 }
 
 function capitalise(value: string) {

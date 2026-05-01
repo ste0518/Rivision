@@ -18,7 +18,7 @@ import { normalizeMathNotation } from "@/lib/revision-item-utils";
 import { buildSegmentationDebug, segmentRevisionCandidates } from "@/lib/segmentation";
 import { resetStudyStateStorage } from "@/lib/storage";
 import { validateRevisionItemsPayload, withValidation } from "@/lib/validation";
-import type { CuratedDeckResult, ExtractionVerificationReport, ParsedDocument, RevisionItem } from "@/lib/types";
+import type { CuratedDeckResult, ExtractionVerificationReport, ParsedDocument, RevisionItem, StudyFile } from "@/lib/types";
 import { useStudyStore } from "@/hooks/use-study-store";
 import { createId } from "@/lib/utils";
 
@@ -45,17 +45,23 @@ function ExtractPageContent() {
   const [manualJson, setManualJson] = useState("");
   const [manualErrors, setManualErrors] = useState<string[]>([]);
   const [apiError, setApiError] = useState<string>("");
+  const [mathStatus, setMathStatus] = useState<string>("");
   const [runtimeErrors, setRuntimeErrors] = useState<string[]>([]);
   const [debugMode, setDebugMode] = useState(false);
   const [activeTab, setActiveTab] = useState<"kept" | "needs_review" | "rejected" | "embedded" | "course_map">("kept");
 
   const settings = loadLlmPipelineSettings();
-  const notesDocuments = useMemo(() => store.notesFiles.map((file) => normaliseParsedDocument(file.parsedDocument ?? toLegacyParsedDocument(file.name, file.content), file.name, file.content)), [store.notesFiles]);
-  const guidanceDocuments = useMemo(() => store.guidanceFiles.map((file) => normaliseParsedDocument(file.parsedDocument ?? toLegacyParsedDocument(file.name, file.content), file.name, file.content)), [store.guidanceFiles]);
+  const uploadedFiles = useMemo(() => [...store.notesFiles, ...store.guidanceFiles], [store.guidanceFiles, store.notesFiles]);
+  const allParsedDocuments = useMemo(() => uploadedFiles.map(toRoleParsedDocument), [uploadedFiles]);
+  const notesDocuments = useMemo(() => allParsedDocuments.filter((document) => document.role === "lecture_notes" || document.role === "formula_sheet" || document.role === "other"), [allParsedDocuments]);
+  const guidanceDocuments = useMemo(() => allParsedDocuments.filter((document) => document.role === "exam_guidance"), [allParsedDocuments]);
+  const pastPaperDocuments = useMemo(() => allParsedDocuments.filter((document) => document.role === "past_paper"), [allParsedDocuments]);
+  const problemSheetDocuments = useMemo(() => allParsedDocuments.filter((document) => document.role === "problem_sheet"), [allParsedDocuments]);
+  const solutionDocuments = useMemo(() => allParsedDocuments.filter((document) => document.role === "solution_sheet"), [allParsedDocuments]);
   const notesText = useMemo(() => notesDocuments.map((file) => file.fullText).join("\n\n"), [notesDocuments]);
   const guidanceText = useMemo(() => guidanceDocuments.map((file) => file.fullText).join("\n\n"), [guidanceDocuments]);
-  const sourceFile = useMemo(() => store.notesFiles.map((file) => file.name).join(", ") || "Mock notes", [store.notesFiles]);
-  const allDocuments = useMemo(() => [...notesDocuments, ...guidanceDocuments], [guidanceDocuments, notesDocuments]);
+  const sourceFile = useMemo(() => uploadedFiles.map((file) => file.name).join(", ") || "Mock notes", [uploadedFiles]);
+  const allDocuments = allParsedDocuments;
   const candidates = useMemo(() => segmentRevisionCandidates(notesDocuments), [notesDocuments]);
   const segmentationDebug = useMemo(() => buildSegmentationDebug(notesDocuments), [notesDocuments]);
   const candidateSegmentationWarning = segmentationDebug.some((document) => document.warnings.length > 0);
@@ -96,11 +102,13 @@ function ExtractPageContent() {
         return;
       }
 
-      const result = await extractRevisionItems({ notesDocuments, guidanceDocuments, sourceFile });
+      const result = await extractRevisionItems({ notesDocuments, guidanceDocuments, pastPaperDocuments, problemSheetDocuments, solutionDocuments, sourceFile });
       store.setRevisionItems(result.items, result.rejectedItems, {
         embeddedItems: result.embeddedItems,
         courseStructureMap: result.courseStructureMap,
         courseKnowledgeMap: result.courseKnowledgeMap,
+        examPriorityMap: result.examPriorityMap,
+        revisionPack: result.revisionPack,
         curationReport: result.curationReport,
       });
       setVerification(result.verification);
@@ -138,6 +146,8 @@ function ExtractPageContent() {
           embeddedItems: manualDeck.embeddedItems,
           courseStructureMap: manualDeck.courseStructureMap,
           courseKnowledgeMap: manualDeck.courseKnowledgeMap,
+          examPriorityMap: manualDeck.examPriorityMap,
+          revisionPack: manualDeck.revisionPack,
           curationReport: manualDeck.curationReport,
         } : undefined,
       );
@@ -180,6 +190,11 @@ function ExtractPageContent() {
       uncertaintyNote: "Candidate auto-created from verification report; review needed.",
       questionPrompt: `State ${candidate.title}.`,
       answer: candidate.reason,
+      priorityScore: 40,
+      priorityLabel: "medium",
+      evidenceSignals: [],
+      whyThisCardMatters: "Added manually from verification report.",
+      revisionPackCategory: "needsReview",
       createdAt: now,
       updatedAt: now,
     };
@@ -206,6 +221,28 @@ function ExtractPageContent() {
       latexQuality: "medium",
       updatedAt: new Date().toISOString(),
     });
+  }
+
+  async function aiCleanItemMath(item: RevisionItem) {
+    setMathStatus("");
+    const response = await fetch("/api/ai-clean-math", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: item.statement }),
+    });
+    const payload = (await response.json()) as { markdown?: string; error?: string; issues?: string[]; latexQuality?: RevisionItem["latexQuality"] };
+    if (!response.ok || !payload.markdown) {
+      setMathStatus(payload.error || "AI math cleanup failed.");
+      return;
+    }
+    store.upsertRevisionItem({
+      ...item,
+      statementLatex: payload.markdown,
+      latexQuality: payload.latexQuality ?? (payload.issues?.length ? "low" : "high"),
+      warnings: [...(item.warnings ?? []), ...(payload.issues ?? [])],
+      updatedAt: new Date().toISOString(),
+    });
+    setMathStatus(payload.issues?.length ? "AI cleaned math, but KaTeX still reported issues." : "AI cleaned math.");
   }
 
   return (
@@ -235,6 +272,7 @@ function ExtractPageContent() {
           </div>
           {status ? <p className="text-sm text-blue-700">{status}</p> : null}
           {apiError ? <p className="text-sm text-red-700">{apiError}</p> : null}
+          {mathStatus ? <p className="text-sm text-slate-600">{mathStatus}</p> : null}
           {runtimeErrors.length > 0 ? (
             <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
               <div className="flex flex-wrap items-center justify-between gap-3">
@@ -267,6 +305,8 @@ function ExtractPageContent() {
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-slate-600">
             <p><strong>Top course topics:</strong> {topCourseTopics.length ? topCourseTopics.join(", ") : "None detected yet."}</p>
+            <p><strong>Top priority topics:</strong> {(store.examPriorityMap?.topics ?? []).slice(0, 6).map((topic) => `${topic.topicName} (${topic.priority})`).join(", ") || "None detected yet."}</p>
+            {store.revisionPack ? <p><strong>Revision pack:</strong> {store.revisionPack.overview}</p> : null}
             <p><strong>Formula policy:</strong> {store.courseKnowledgeMap?.formulaPolicy.standaloneFormulaRule ?? "Only named, central, examinable formulas become standalone cards."} {store.curationReport.formulaKeptCount} kept / {store.curationReport.formulaRejectedCount} rejected from {store.curationReport.formulaCandidates} formula candidate(s).</p>
             <p><strong>Proof policy:</strong> {store.courseKnowledgeMap?.proofPolicy.proofCardRule ?? "Create proof cards only when proof is required."}</p>
             {store.curationReport.embeddedCount > 0 ? <p><strong>Embedded content:</strong> {store.curationReport.embeddedCount} supporting item(s) were attached to parent cards instead of entering review.</p> : null}
@@ -295,6 +335,15 @@ function ExtractPageContent() {
               <TabButton active={activeTab === "course_map"} onClick={() => setActiveTab("course_map")}>Course map</TabButton>
             </div>
 
+            <div className="grid gap-3 rounded-lg border bg-slate-50 p-3 text-sm md:grid-cols-3">
+              <PackCount label="Must-know definitions" value={store.revisionPack?.mustKnowDefinitions.length ?? 0} />
+              <PackCount label="Theorem statements" value={store.revisionPack?.theoremStatements.length ?? 0} />
+              <PackCount label="Required proofs" value={store.revisionPack?.proofsToKnow.length ?? 0} />
+              <PackCount label="Core formulas" value={store.revisionPack?.formulasToKnow.length ?? 0} />
+              <PackCount label="Problem templates" value={store.revisionPack?.methodsAndTemplates.length ?? 0} />
+              <PackCount label="Conceptual distinctions" value={store.revisionPack?.conceptualDistinctions.length ?? 0} />
+            </div>
+
             {activeTab === "kept" ? (
               <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
                 {normalItems.length === 0 ? <p className="text-sm text-slate-500">No kept active cards yet.</p> : null}
@@ -313,6 +362,7 @@ function ExtractPageContent() {
                     onAccept={() => keepNeedsReviewItem(item)}
                     onReject={() => store.rejectRevisionItem(item.id, "Rejected during AI analysis review.")}
                     onFixMath={() => fixItemMath(item)}
+                    onAiCleanMath={() => void aiCleanItemMath(item)}
                   />
                 ))}
               </div>
@@ -528,6 +578,7 @@ function ExtractPageContent() {
                 onAccept={() => keepNeedsReviewItem(item)}
                 onReject={() => store.rejectRevisionItem(item.id, "Rejected during AI analysis review.")}
                 onFixMath={() => fixItemMath(item)}
+                onAiCleanMath={() => void aiCleanItemMath(item)}
               />
             ))}
           </CardContent>
@@ -665,6 +716,10 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
   );
 }
 
+function PackCount({ label, value }: { label: string; value: number }) {
+  return <div><p className="font-medium">{value}</p><p className="text-slate-500">{label}</p></div>;
+}
+
 function KeptCard({ item }: { item: RevisionItem }) {
   return (
     <Card>
@@ -679,10 +734,13 @@ function KeptCard({ item }: { item: RevisionItem }) {
         <div className="mb-2 flex flex-wrap gap-2">
           <Badge variant="outline">{item.cardPurpose}</Badge>
           <Badge variant="outline">standalone {item.standaloneValue ?? "unknown"}</Badge>
+          <Badge variant="outline">priority {item.priorityScore}</Badge>
+          {item.revisionPackCategory ? <Badge variant="outline">{item.revisionPackCategory}</Badge> : null}
           {item.latexQuality ? <Badge variant={item.latexQuality === "low" ? "unknown" : "outline"}>LaTeX {item.latexQuality}</Badge> : null}
         </div>
         <MathMarkdown content={previewText(getPrimaryCardPreview(item))} className="bg-transparent p-0 text-sm text-slate-600" />
         <p className="mt-2 text-xs text-slate-500">{item.sourceLocation || "source unknown"}</p>
+        {item.whyThisCardMatters ? <p className="mt-2 text-xs text-slate-500">{item.whyThisCardMatters}</p> : null}
         {item.curationReason ? <p className="mt-2 text-xs text-slate-500">{item.curationReason}</p> : null}
       </CardContent>
     </Card>
@@ -695,12 +753,14 @@ function ExtractedCard({
   onAccept,
   onReject,
   onFixMath,
+  onAiCleanMath,
 }: {
   item: RevisionItem;
   onImportanceChange: (importance: RevisionItem["importance"]) => void;
   onAccept?: () => void;
   onReject?: () => void;
   onFixMath?: () => void;
+  onAiCleanMath?: () => void;
 }) {
   return (
     <Card>
@@ -726,6 +786,7 @@ function ExtractedCard({
           {onReject ? <Button size="sm" variant="outline" onClick={onReject}>Reject</Button> : null}
           <Link className="inline-flex h-8 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50" href="/cards">Edit</Link>
           {onFixMath ? <Button size="sm" variant="outline" onClick={onFixMath}>Fix math</Button> : null}
+          {onAiCleanMath ? <Button size="sm" variant="outline" onClick={onAiCleanMath}>AI clean math</Button> : null}
         </div>
       </CardContent>
     </Card>
@@ -811,12 +872,17 @@ function buildCurationDiagnostics(
   };
 }
 
-function normaliseParsedDocument(document: ParsedDocument, sourceFile: string, fallbackText: string): ParsedDocument {
+function toRoleParsedDocument(file: StudyFile): ParsedDocument {
+  return normaliseParsedDocument(file.parsedDocument ?? toLegacyParsedDocument(file.name, file.content), file.name, file.content, file.role);
+}
+
+function normaliseParsedDocument(document: ParsedDocument, sourceFile: string, fallbackText: string, role?: StudyFile["role"]): ParsedDocument {
   const fullText = typeof document.fullText === "string" ? document.fullText : fallbackText || "";
   const pages = Array.isArray(document.pages) ? document.pages : [];
   return {
     sourceFile: document.sourceFile || sourceFile || "Unknown source",
     fileType: document.fileType || "unknown",
+    role: role ?? document.role,
     fullText,
     pages,
     sections: Array.isArray(document.sections) ? document.sections : [],

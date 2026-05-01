@@ -1,5 +1,6 @@
 import { migrateStoredCards, normalizeCuratedRevisionResult } from "@/lib/normalization";
-import type { CourseKnowledgeMap, CourseStructureMap, CurationReport, EmbeddedRevisionItem, GuidanceFile, RejectedRevisionItem, RevisionItem, ReviewSession, StudyFile } from "@/lib/types";
+import { inferStudyFileRole } from "@/lib/course-files";
+import type { CourseKnowledgeMap, CourseStructureMap, CurationReport, EmbeddedRevisionItem, ExamPriorityMap, GuidanceFile, RejectedRevisionItem, RevisionItem, RevisionPack, ReviewSession, StudyFile } from "@/lib/types";
 
 export type StudyState = {
   notesFiles: StudyFile[];
@@ -10,6 +11,8 @@ export type StudyState = {
   reviewSessions: ReviewSession[];
   courseStructureMap?: CourseStructureMap;
   courseKnowledgeMap?: CourseKnowledgeMap;
+  examPriorityMap?: ExamPriorityMap;
+  revisionPack?: RevisionPack;
   curationReport?: CurationReport;
 };
 export const emptyStudyState: StudyState = { notesFiles: [], guidanceFiles: [], revisionItems: [], rejectedItems: [], embeddedItems: [], reviewSessions: [] };
@@ -24,14 +27,16 @@ export function loadStudyState(): StudyState {
     return {
       ...emptyStudyState,
       ...parsed,
-      notesFiles: Array.isArray(parsed.notesFiles) ? parsed.notesFiles : [],
-      guidanceFiles: Array.isArray(parsed.guidanceFiles) ? parsed.guidanceFiles : [],
+      notesFiles: normalizeStudyFiles(parsed.notesFiles, "lecture_notes"),
+      guidanceFiles: normalizeStudyFiles(parsed.guidanceFiles, "exam_guidance") as GuidanceFile[],
       revisionItems: migrateStoredCards(parsed.revisionItems),
       rejectedItems: normalizedCuration.rejectedItems,
       embeddedItems: normalizedCuration.embeddedItems,
       reviewSessions: Array.isArray(parsed.reviewSessions) ? parsed.reviewSessions : [],
       courseStructureMap: parsed.courseStructureMap ? normalizedCuration.courseStructureMap : undefined,
       courseKnowledgeMap: parsed.courseKnowledgeMap ? normalizedCuration.courseKnowledgeMap : undefined,
+      examPriorityMap: parsed.examPriorityMap ? normalizedCuration.examPriorityMap : undefined,
+      revisionPack: parsed.revisionPack ? normalizedCuration.revisionPack : undefined,
       curationReport: parsed.curationReport ? normalizedCuration.curationReport : undefined,
     };
   } catch {
@@ -45,4 +50,14 @@ export function importRevisionItems(json: string): RevisionItem[] {
   const parsed = JSON.parse(json);
   if (!Array.isArray(parsed)) throw new Error("Imported JSON must be an array of RevisionItem objects.");
   return migrateStoredCards(parsed);
+}
+
+function normalizeStudyFiles(raw: unknown, fallbackRole: StudyFile["role"]): StudyFile[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((file) => {
+    if (!file || typeof file !== "object") return [];
+    const value = file as StudyFile;
+    const role = value.role ?? inferStudyFileRole(value.name || "") ?? fallbackRole;
+    return [{ ...value, role, parsedDocument: value.parsedDocument ? { ...value.parsedDocument, role } : value.parsedDocument }];
+  });
 }

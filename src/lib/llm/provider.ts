@@ -4,12 +4,18 @@ export interface LLMProvider {
   extractRevisionItems(input: {
     notesDocuments: ParsedDocument[];
     guidanceDocuments: ParsedDocument[];
+    pastPaperDocuments?: ParsedDocument[];
+    problemSheetDocuments?: ParsedDocument[];
+    solutionDocuments?: ParsedDocument[];
     pipelineMode: ExtractionPipelineMode;
   }): Promise<RevisionItem[]>;
 
   curateRevisionDeck(input: {
     notesDocuments: ParsedDocument[];
     guidanceDocuments: ParsedDocument[];
+    pastPaperDocuments?: ParsedDocument[];
+    problemSheetDocuments?: ParsedDocument[];
+    solutionDocuments?: ParsedDocument[];
     pipelineMode: ExtractionPipelineMode;
   }): Promise<CuratedDeckResult>;
 

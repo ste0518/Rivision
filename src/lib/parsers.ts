@@ -1,4 +1,5 @@
 import type { ParsedDocument, ParsedPage, ParsedSection } from "@/lib/types";
+import { normalizeExtractedMathText } from "@/lib/revision-item-utils";
 
 const MIN_PDF_CHARS_PER_PAGE = 80;
 
@@ -245,15 +246,16 @@ function finalizeParsedDocument(input: {
 }
 
 function repairObviousTextExtractionIssues(text: string) {
-  return text
+  return normalizeExtractedMathText(text
     .replace(/\uFB00/g, "ff")
     .replace(/\uFB01/g, "fi")
     .replace(/\uFB02/g, "fl")
+    .replace(/\uFFFE/g, "")
     .replace(/\u2010|\u2011|\u2012|\u2013|\u2014/g, "-")
     .replace(/([A-Za-z])-\n([a-z])/g, "$1$2")
     .replace(/[ \t]+\n/g, "\n")
     .replace(/\n{4,}/g, "\n\n\n")
-    .trim();
+    .trim());
 }
 
 function computeExtractionQuality(charCount: number, warnings: string[], errors: string[]): ParsedDocument["diagnostics"]["extractionQuality"] {

@@ -1,5 +1,11 @@
 import { attachProofsToPreviousTheorem, segmentRevisionCandidates, stripLeadingLabel } from "@/lib/segmentation";
 import {
+  buildExamPriorityMap,
+  buildRevisionPack,
+  priorityLabelFromScore,
+  revisionPackCategoryForItem,
+} from "@/lib/course-priority";
+import {
   buildQuestionPrompt,
   convertCommonMathToLatex,
   extractConceptName,
@@ -19,7 +25,10 @@ import type {
   CuratedDeckResult,
   CurationReport,
   EmbeddedRevisionItem,
+  ExamPriorityMap,
+  EvidenceSignal,
   ParsedDocument,
+  PriorityLabel,
   RejectedRevisionItem,
   RejectionCategory,
   RevisionItem,
@@ -31,6 +40,10 @@ type CurationInput = {
   candidates?: CandidateRevisionBlock[];
   guidanceDocuments: ParsedDocument[];
   parsedNotes: ParsedDocument[];
+  pastPaperDocuments?: ParsedDocument[];
+  problemSheetDocuments?: ParsedDocument[];
+  solutionDocuments?: ParsedDocument[];
+  examPriorityMap?: ExamPriorityMap;
 };
 
 type ScoredCandidate = {
@@ -81,21 +94,34 @@ export async function curateRevisionDeck({
   candidates,
   guidanceDocuments,
   parsedNotes,
+  pastPaperDocuments = [],
+  problemSheetDocuments = [],
+  solutionDocuments = [],
+  examPriorityMap,
 }: CurationInput): Promise<CuratedDeckResult> {
   const candidateBlocks = attachProofsToPreviousTheorem(candidates ?? segmentRevisionCandidates(parsedNotes));
+  const resolvedExamPriorityMap = examPriorityMap ?? await buildExamPriorityMap({
+    notesDocuments: parsedNotes,
+    guidanceDocuments,
+    pastPaperDocuments,
+    problemSheetDocuments,
+    solutionDocuments,
+  });
   const guidanceText = renderDocuments(guidanceDocuments);
+  const assessmentText = renderDocuments([...guidanceDocuments, ...pastPaperDocuments, ...problemSheetDocuments, ...solutionDocuments]);
   const notesText = renderDocuments(parsedNotes);
   const courseKnowledgeMap = buildCourseKnowledgeMap(guidanceText, notesText);
   const courseStructureMap = buildCourseStructureMap(parsedNotes, candidateBlocks, courseKnowledgeMap);
   const timestamp = new Date().toISOString();
 
   const scored = candidateBlocks.map((candidate) => {
-    const item = createRevisionItemFromCandidate(candidate, guidanceText, timestamp);
-    const score = scoreRevisionCandidate(candidate, item, guidanceText);
+    const item = createRevisionItemFromCandidate(candidate, assessmentText || guidanceText, timestamp);
+    const score = scoreRevisionCandidate(candidate, item, assessmentText || guidanceText);
+    const priority = scoreExamPriority(candidate, item, score, resolvedExamPriorityMap);
     return {
       candidate,
       score,
-      item: applyScoreToItem(item, score, guidanceText),
+      item: applyExamPriorityToItem(applyScoreToItem(item, score, assessmentText || guidanceText), priority),
     } satisfies ScoredCandidate;
   });
 
@@ -112,18 +138,18 @@ export async function curateRevisionDeck({
       continue;
     }
 
-    if (entry.score.keepDecision === "keep" || entry.score.keepDecision === "needs_review") {
+    if (entry.item.curationDecision === "keep" || entry.item.curationDecision === "needs_review") {
       keptItems.push(entry.item);
       seenKept.set(duplicateKey(entry.item), entry.item);
       continue;
     }
 
-    if (entry.score.keepDecision === "embed_in_parent") {
+    if (entry.item.curationDecision === "embed_in_parent") {
       embeddedCandidates.push(entry);
       continue;
     }
 
-    rejectedItems.push(toRejectedItem(entry, rejectionCategoryFor(entry), entry.score.reason, scoreConfidence(entry.score)));
+    rejectedItems.push(toRejectedItem(entry, rejectionCategoryFor(entry), entry.item.curationReason ?? entry.score.reason, scoreConfidence(entry.score)));
   }
 
   for (const entry of embeddedCandidates) {
@@ -143,7 +169,7 @@ export async function curateRevisionDeck({
   }
 
   const keptWithProofCards = addRequiredProofCards(keptItems, timestamp);
-  const qualityGate = qualityGateRevisionItems(keptWithProofCards, guidanceDocuments);
+  const qualityGate = qualityGateRevisionItems(keptWithProofCards, [...guidanceDocuments, ...pastPaperDocuments, ...problemSheetDocuments, ...solutionDocuments]);
   const gatedRejectedItems = [
     ...rejectedItems,
     ...qualityGate.rejectedItems.map((item) =>
@@ -168,6 +194,12 @@ export async function curateRevisionDeck({
     ),
   ];
   const curationReport = buildCurationReport(candidateBlocks, qualityGate.keptItems, qualityGate.needsReviewItems, gatedRejectedItems, embeddedItems, courseStructureMap);
+  const revisionPack = buildRevisionPack({
+    keptItems: qualityGate.keptItems,
+    needsReviewItems: qualityGate.needsReviewItems,
+    rejectedItems: gatedRejectedItems,
+    examPriorityMap: resolvedExamPriorityMap,
+  });
 
   return {
     keptItems: qualityGate.keptItems,
@@ -176,6 +208,8 @@ export async function curateRevisionDeck({
     embeddedItems,
     courseStructureMap,
     courseKnowledgeMap,
+    examPriorityMap: resolvedExamPriorityMap,
+    revisionPack,
     curationReport,
   };
 }
@@ -290,6 +324,11 @@ export function createRevisionItemFromCandidate(candidate: CandidateRevisionBloc
     curationDecision: "needs_review",
     curationReason: "Awaiting final deck quality gate.",
     relevanceReason: "Awaiting curation score.",
+    priorityScore: 0,
+    priorityLabel: "unknown",
+    evidenceSignals: [],
+    whyThisCardMatters: "Awaiting exam-priority evidence.",
+    revisionPackCategory: "needsReview",
     createdAt: timestamp,
     updatedAt: timestamp,
     reviewCount: 0,
@@ -398,6 +437,153 @@ function applyScoreToItem(item: RevisionItem, score: CandidateRelevanceScore, gu
   };
 }
 
+type ExamPriorityScore = {
+  score: number;
+  label: PriorityLabel;
+  evidence: EvidenceSignal[];
+  reasons: string[];
+  decision: RevisionItem["curationDecision"];
+};
+
+function scoreExamPriority(
+  candidate: CandidateRevisionBlock,
+  item: RevisionItem,
+  relevanceScore: CandidateRelevanceScore,
+  examPriorityMap: ExamPriorityMap,
+): ExamPriorityScore {
+  const text = normalise(`${item.conceptName ?? ""} ${item.title} ${item.statement} ${candidate.rawText}`);
+  const matchingTopics = examPriorityMap.topics.filter((topic) => topicMatches(text, topic.topicName));
+  const matchingTemplates = examPriorityMap.calculationTemplates.filter((template) =>
+    template.relatedTopics.some((topic) => topicMatches(text, topic)) || topicMatches(text, template.name)
+  );
+  const requiredSignals = [
+    ...examPriorityMap.requiredDefinitions,
+    ...examPriorityMap.requiredTheorems,
+    ...examPriorityMap.requiredProofs,
+    ...examPriorityMap.requiredFormulas,
+  ].filter((signal) => signal.itemType === item.type || (item.type === "proof" && signal.itemType === "proof"))
+    .filter((signal) => topicMatches(text, signal.name));
+
+  const evidence = uniqueEvidence([
+    ...matchingTopics.flatMap((topic) => topic.evidence),
+    ...matchingTemplates.flatMap((template) => template.evidence),
+    ...requiredSignals.flatMap((signal) => signal.evidence),
+  ]);
+  const reasons: string[] = [];
+  let priorityScore = 0;
+
+  if (evidence.some((signal) => signal.sourceRole === "exam_guidance")) {
+    priorityScore += 25;
+    reasons.push("Appears in exam guidance.");
+  }
+  if (evidence.some((signal) => signal.sourceRole === "past_paper")) {
+    priorityScore += 30;
+    reasons.push("Appears in a past paper.");
+  }
+  if (evidence.some((signal) => signal.sourceRole === "problem_sheet")) {
+    priorityScore += 20;
+    reasons.push("Appears in a problem sheet.");
+  }
+  if (evidence.some((signal) => signal.sourceRole === "solution_sheet")) {
+    priorityScore += 15;
+    reasons.push("Solution sheet uses this method or item.");
+  }
+
+  const strongestTopic = matchingTopics[0];
+  if (strongestTopic) {
+    priorityScore += strongestTopic.priority === "very_high" ? 30 : strongestTopic.priority === "high" ? 25 : strongestTopic.priority === "medium" ? 12 : 6;
+    reasons.push(`Supports ${strongestTopic.priority.replace("_", " ")} priority topic: ${strongestTopic.topicName}.`);
+  }
+
+  if (item.type === "definition" && (strongestTopic?.priority === "very_high" || strongestTopic?.priority === "high")) {
+    priorityScore = Math.max(priorityScore, 70);
+    reasons.push("Core definition for a high-priority topic.");
+  } else if ((item.type === "definition" || theoremLike(item.type) || item.type === "algorithm") && relevanceScore.conceptualCentrality >= 4) {
+    priorityScore += 20;
+    reasons.push("Core definition, theorem, or method in lecture notes.");
+  }
+
+  if (matchingTemplates.length > 0) {
+    priorityScore += item.type === "formula" ? 35 : 20;
+    reasons.push(`Used by recurring calculation template: ${matchingTemplates[0].name}.`);
+  }
+
+  if (requiredSignals.length > 0) {
+    priorityScore += requiredSignals[0].priority === "very_high" ? 25 : requiredSignals[0].priority === "high" ? 20 : 10;
+    reasons.push(`Explicitly signalled as required: ${requiredSignals[0].name}.`);
+  }
+
+  if (item.type === "formula" && matchingTemplates.length === 0 && !(strongestTopic?.priority === "very_high" || strongestTopic?.priority === "high")) {
+    priorityScore = Math.min(priorityScore, 39);
+    reasons.push("Formula is not tied to a high-priority topic or recurring calculation template.");
+  }
+
+  if ((item.type === "remark" || item.type === "example" || item.type === "other") && item.cardPurpose !== "conceptual_distinction" && item.cardPurpose !== "calculation_template") {
+    priorityScore = Math.min(priorityScore, 39);
+    reasons.push("Ordinary explanatory paragraph is not a normal review card.");
+  }
+
+  priorityScore = Math.max(priorityScore, relevanceScore.keepDecision === "keep" ? 40 : 0);
+  priorityScore = Math.max(0, Math.min(100, Math.round(priorityScore)));
+  const label = priorityLabelFromScore(priorityScore);
+  const genericConcept = isGenericConceptName(item.conceptName || item.cardFront);
+  const decision: RevisionItem["curationDecision"] = genericConcept
+    ? "needs_review"
+    : priorityScore >= 65
+      ? "keep"
+      : priorityScore >= 40
+        ? "needs_review"
+        : "reject";
+
+  return {
+    score: priorityScore,
+    label,
+    evidence,
+    reasons: reasons.length ? Array.from(new Set(reasons)) : ["No assessment or core lecture-note evidence found."],
+    decision,
+  };
+}
+
+function applyExamPriorityToItem(item: RevisionItem, priority: ExamPriorityScore): RevisionItem {
+  const category = revisionPackCategoryForItem({ ...item, curationDecision: priority.decision });
+  return {
+    ...item,
+    priorityScore: priority.score,
+    priorityLabel: priority.label,
+    evidenceSignals: priority.evidence,
+    whyThisCardMatters: priority.reasons.join(" "),
+    revisionPackCategory: category,
+    importance: priority.score >= 65 ? "must_know" : priority.score >= 40 ? "partial" : item.importance,
+    curationDecision: priority.decision,
+    curationStatus: priority.decision === "needs_review" ? "needs_review" : "kept",
+    cardPurpose: item.cardPurpose,
+    curationReason: priority.reasons.join(" "),
+    relevanceReason: priority.reasons.join(" "),
+    guidanceReason: priority.evidence.length ? priority.evidence.map((signal) => signal.explanation).join(" ") : item.guidanceReason,
+    classificationConfidence: priority.evidence.length > 0 && priority.score >= 65 ? "high" : priority.decision === "needs_review" ? "low" : item.classificationConfidence,
+  };
+}
+
+function topicMatches(text: string, topicName: string) {
+  const topic = normalise(topicName);
+  if (!topic || topic.length < 3) return false;
+  if (text.includes(topic)) return true;
+  const words = topic.split(/\s+/).filter((word) => word.length > 3);
+  return words.length > 0 && words.every((word) => text.includes(word));
+}
+
+function uniqueEvidence(evidence: EvidenceSignal[]) {
+  const seen = new Set<string>();
+  const output: EvidenceSignal[] = [];
+  for (const signal of evidence) {
+    const key = `${signal.sourceFile}|${signal.sourceRole}|${signal.pageNumber ?? ""}|${signal.excerpt}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    output.push(signal);
+  }
+  return output.slice(0, 8);
+}
+
 function addRequiredProofCards(items: RevisionItem[], timestamp: string) {
   const output = [...items];
   for (const item of items) {
@@ -420,6 +606,8 @@ function addRequiredProofCards(items: RevisionItem[], timestamp: string) {
       answerLatex: item.proofLatex ?? convertCommonMathToLatex(item.proof),
       tags: Array.from(new Set([...item.tags, "proof"])),
       relevanceReason: "Created because guidance indicates the proof is required.",
+      whyThisCardMatters: item.whyThisCardMatters || "Proof card created because the parent theorem proof is required.",
+      revisionPackCategory: "proofsToKnow",
       questionPrompt: `Prove ${item.displayTitle || item.title}.`,
       createdAt: timestamp,
       updatedAt: timestamp,

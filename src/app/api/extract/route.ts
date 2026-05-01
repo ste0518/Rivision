@@ -7,6 +7,9 @@ export async function POST(request: Request) {
     const body = (await request.json()) as {
       notesDocuments: ParsedDocument[];
       guidanceDocuments: ParsedDocument[];
+      pastPaperDocuments?: ParsedDocument[];
+      problemSheetDocuments?: ParsedDocument[];
+      solutionDocuments?: ParsedDocument[];
       settings?: Partial<LlmPipelineSettings>;
     };
 
@@ -20,6 +23,9 @@ export async function POST(request: Request) {
     const result = await runLlmExtractionPipeline({
       notesDocuments: Array.isArray(body.notesDocuments) ? body.notesDocuments : [],
       guidanceDocuments: Array.isArray(body.guidanceDocuments) ? body.guidanceDocuments : [],
+      pastPaperDocuments: Array.isArray(body.pastPaperDocuments) ? body.pastPaperDocuments : [],
+      problemSheetDocuments: Array.isArray(body.problemSheetDocuments) ? body.problemSheetDocuments : [],
+      solutionDocuments: Array.isArray(body.solutionDocuments) ? body.solutionDocuments : [],
       settings: body.settings,
     });
 

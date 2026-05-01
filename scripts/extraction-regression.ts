@@ -114,6 +114,10 @@ async function run() {
     importance: "unknown",
     questionPrompt: "State Definition 2.1: random field.",
     answer: "A random field is defined here.",
+    priorityScore: 0,
+    priorityLabel: "unknown",
+    evidenceSignals: [],
+    whyThisCardMatters: "Regression fixture.",
     createdAt: new Date().toISOString(),
     updatedAt: new Date().toISOString(),
   };
@@ -139,6 +143,10 @@ async function run() {
     importance: "unknown",
     questionPrompt: "State Theorem.",
     answer: "[GG] Gaetan, Carlo, and Guyon, Xavier. Theory of spatial statistics. Springer, 2010.",
+    priorityScore: 0,
+    priorityLabel: "unknown",
+    evidenceSignals: [],
+    whyThisCardMatters: "Regression fixture.",
     createdAt: now,
     updatedAt: now,
   };
@@ -158,6 +166,10 @@ async function run() {
     importance: "unknown",
     questionPrompt: "Write down the formula.",
     answer: "F_{t1,...,tn}(x1,...,xn) = P(Xt1 <= x1, ..., Xtn <= xn)",
+    priorityScore: 0,
+    priorityLabel: "unknown",
+    evidenceSignals: [],
+    whyThisCardMatters: "Regression fixture.",
     createdAt: now,
     updatedAt: now,
   };

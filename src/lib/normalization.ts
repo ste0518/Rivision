@@ -9,13 +9,18 @@ import type {
   CurationReport,
   CurationStatus,
   EmbeddedRevisionItem,
+  ExamPriorityMap,
   RejectedRevisionItem,
   RejectionCategory,
   RevisionImportance,
   RevisionItem,
+  RevisionPack,
   RevisionItemType,
+  PriorityLabel,
+  RevisionPackCategory,
   StandaloneValue,
 } from "@/lib/types";
+import { buildRevisionPack, emptyExamPriorityMap, priorityLabelFromScore } from "@/lib/course-priority";
 import { createId } from "@/lib/utils";
 
 const revisionItemTypes: RevisionItemType[] = ["definition", "theorem", "lemma", "proposition", "corollary", "formula", "proof", "algorithm", "example", "remark", "assumption", "property", "other"];
@@ -25,6 +30,8 @@ const decisions: CurationDecision[] = ["keep", "needs_review", "reject", "embed_
 const statuses: CurationStatus[] = ["kept", "needs_review"];
 const standaloneValues: StandaloneValue[] = ["high", "medium", "low"];
 const confidenceValues: ClassificationConfidence[] = ["high", "medium", "low"];
+const priorityLabels: PriorityLabel[] = ["very_high", "high", "medium", "low", "unknown"];
+const revisionPackCategories: RevisionPackCategory[] = ["mustKnowDefinitions", "theoremStatements", "proofsToKnow", "formulasToKnow", "methodsAndTemplates", "conceptualDistinctions", "needsReview", "rejected"];
 const rejectionCategories: RejectionCategory[] = ["bibliography_or_reference", "ordinary_explanatory_text", "formula_not_standalone", "intermediate_proof_step", "duplicate", "too_broad", "not_examinable", "background_only", "low_value", "parse_noise"];
 
 export function normalizeRevisionItem(raw: unknown): RevisionItem {
@@ -38,6 +45,7 @@ export function normalizeRevisionItem(raw: unknown): RevisionItem {
   const cardFront = stringValue(value.cardFront) || stringValue(value.conceptName) || title;
   const answer = stringValue(value.answer) || statement || title;
 
+  const priorityScore = clampScore(numberValue(value.priorityScore) ?? legacyPriorityScore(value));
   return normaliseRevisionItem({
     id: stringValue(value.id) || createId("card"),
     type,
@@ -77,6 +85,11 @@ export function normalizeRevisionItem(raw: unknown): RevisionItem {
     latexQuality: enumValue(value.latexQuality, ["high", "medium", "low"] as const, undefined),
     relevanceReason: optionalString(value.relevanceReason),
     relevanceScore: isRecord(value.relevanceScore) ? value.relevanceScore as unknown as RevisionItem["relevanceScore"] : undefined,
+    priorityScore,
+    priorityLabel: enumValue(value.priorityLabel, priorityLabels, priorityLabelFromScore(priorityScore)),
+    evidenceSignals: normalizeEvidenceSignals(value.evidenceSignals),
+    whyThisCardMatters: stringValue(value.whyThisCardMatters) || stringValue(value.relevanceReason) || stringValue(value.curationReason) || "Legacy card without priority evidence.",
+    revisionPackCategory: enumValue(value.revisionPackCategory, revisionPackCategories, undefined),
     deletedAt: optionalString(value.deletedAt),
     isDeleted: Boolean(value.isDeleted),
     createdAt: stringValue(value.createdAt) || now,
@@ -110,6 +123,8 @@ export function normalizeCuratedRevisionResult(raw: unknown): CuratedRevisionRes
   }));
   const rejectedItems = normalizeRejectedItems(value.rejectedItems);
   const embeddedItems = normalizeEmbeddedItems(value.embeddedItems);
+  const examPriorityMap = normalizeExamPriorityMap(value.examPriorityMap);
+  const revisionPack = normalizeRevisionPack(value.revisionPack, keptItems, needsReviewItems, rejectedItems, examPriorityMap);
 
   return {
     keptItems,
@@ -118,6 +133,8 @@ export function normalizeCuratedRevisionResult(raw: unknown): CuratedRevisionRes
     embeddedItems,
     courseStructureMap: normalizeCourseStructureMap(value.courseStructureMap),
     courseKnowledgeMap: normalizeCourseKnowledgeMap(value.courseKnowledgeMap),
+    examPriorityMap,
+    revisionPack,
     curationReport: normalizeCurationReport(value.curationReport, keptItems.length, needsReviewItems.length, rejectedItems.length, embeddedItems.length),
   };
 }
@@ -226,6 +243,94 @@ function normalizeCurationReport(raw: unknown, keptCount: number, needsReviewCou
     weakParsingWarnings: stringArray(value.weakParsingWarnings),
     notes: stringArray(value.notes),
   };
+}
+
+function normalizeEvidenceSignals(raw: unknown) {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    return [{
+      sourceFile: stringValue(item.sourceFile) || "Unknown source",
+      sourceRole: enumValue(item.sourceRole, ["lecture_notes", "exam_guidance", "past_paper", "problem_sheet", "solution_sheet", "formula_sheet", "other"] as const, "other"),
+      pageNumber: numberValue(item.pageNumber),
+      excerpt: stringValue(item.excerpt),
+      explanation: stringValue(item.explanation),
+    }];
+  });
+}
+
+function normalizeExamPriorityMap(raw: unknown): ExamPriorityMap {
+  if (!isRecord(raw)) return emptyExamPriorityMap();
+  return {
+    topics: Array.isArray(raw.topics) ? raw.topics.flatMap((topic) => isRecord(topic) ? [{
+      topicName: stringValue(topic.topicName) || "Unknown topic",
+      sectionNumbers: stringArray(topic.sectionNumbers),
+      priority: enumValue(topic.priority, priorityLabels, "unknown"),
+      evidence: normalizeEvidenceSignals(topic.evidence),
+      likelyAssessmentMode: enumValue(topic.likelyAssessmentMode, ["definition_recall", "theorem_statement", "proof", "calculation", "derivation", "conceptual_explanation", "model_interpretation", "mixed"] as const, "mixed"),
+    }] : []) : [],
+    recurringQuestionTypes: Array.isArray(raw.recurringQuestionTypes) ? raw.recurringQuestionTypes.flatMap((item) => isRecord(item) ? [{
+      name: stringValue(item.name) || "Question type",
+      description: stringValue(item.description),
+      relatedTopics: stringArray(item.relatedTopics),
+      evidence: normalizeEvidenceSignals(item.evidence),
+      cardPurposesSuggested: stringArray(item.cardPurposesSuggested).filter((purpose): purpose is CardPurpose => cardPurposes.includes(purpose as CardPurpose)),
+    }] : []) : [],
+    requiredDefinitions: normalizeRequiredSignals(raw.requiredDefinitions),
+    requiredTheorems: normalizeRequiredSignals(raw.requiredTheorems),
+    requiredProofs: normalizeRequiredSignals(raw.requiredProofs),
+    requiredFormulas: normalizeRequiredSignals(raw.requiredFormulas),
+    calculationTemplates: Array.isArray(raw.calculationTemplates) ? raw.calculationTemplates.flatMap((item) => isRecord(item) ? [{
+      name: stringValue(item.name) || "Calculation template",
+      relatedTopics: stringArray(item.relatedTopics),
+      requiredSteps: stringArray(item.requiredSteps),
+      evidence: normalizeEvidenceSignals(item.evidence),
+    }] : []) : [],
+    conceptualDistinctions: Array.isArray(raw.conceptualDistinctions) ? raw.conceptualDistinctions.flatMap((item) => isRecord(item) ? [{
+      name: stringValue(item.name) || "Conceptual distinction",
+      conceptsCompared: stringArray(item.conceptsCompared),
+      evidence: normalizeEvidenceSignals(item.evidence),
+    }] : []) : [],
+    notes: stringArray(raw.notes),
+  };
+}
+
+function normalizeRequiredSignals(raw: unknown) {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item) => isRecord(item) ? [{
+    name: stringValue(item.name) || "Required item",
+    itemType: enumValue(item.itemType, revisionItemTypes, "other"),
+    priority: enumValue(item.priority, priorityLabels, "unknown"),
+    evidence: normalizeEvidenceSignals(item.evidence),
+  }] : []);
+}
+
+function normalizeRevisionPack(raw: unknown, keptItems: RevisionItem[], needsReviewItems: RevisionItem[], rejectedItems: RejectedRevisionItem[], examPriorityMap: ExamPriorityMap): RevisionPack {
+  if (!isRecord(raw)) return buildRevisionPack({ keptItems, needsReviewItems, rejectedItems, examPriorityMap });
+  return {
+    overview: stringValue(raw.overview) || "Revision pack.",
+    topTopics: normalizeExamPriorityMap({ topics: raw.topTopics }).topics,
+    mustKnowDefinitions: migrateStoredCards(raw.mustKnowDefinitions),
+    theoremStatements: migrateStoredCards(raw.theoremStatements),
+    proofsToKnow: migrateStoredCards(raw.proofsToKnow),
+    formulasToKnow: migrateStoredCards(raw.formulasToKnow),
+    methodsAndTemplates: migrateStoredCards(raw.methodsAndTemplates),
+    conceptualDistinctions: migrateStoredCards(raw.conceptualDistinctions),
+    needsReview: migrateStoredCards(raw.needsReview),
+    rejected: normalizeRejectedItems(raw.rejected),
+  };
+}
+
+function legacyPriorityScore(value: Record<string, unknown>) {
+  const relevanceScore = recordValue(value.relevanceScore);
+  const examRelevance = numberValue(relevanceScore.examRelevance) ?? 0;
+  const guidanceSupport = numberValue(relevanceScore.guidanceSupport) ?? 0;
+  const standaloneValue = numberValue(relevanceScore.standaloneFlashcardValue) ?? 0;
+  return Math.round((examRelevance * 9) + (guidanceSupport * 7) + (standaloneValue * 4));
+}
+
+function clampScore(value: number) {
+  return Math.max(0, Math.min(100, Math.round(value)));
 }
 
 function normalizeCurationDecision(value: unknown): CurationDecision {

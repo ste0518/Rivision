@@ -1,11 +1,15 @@
 import { OpenAiResponsesProvider } from "@/lib/llm/openai-provider";
 import type { LlmPipelineSettings } from "@/lib/llm/provider";
 import { defaultLlmPipelineSettings } from "@/lib/llm/provider";
-import type { CourseKnowledgeMap, CourseStructureMap, CurationReport, EmbeddedRevisionItem, ExtractionVerificationReport, ParsedDocument, RejectedRevisionItem, RevisionItem } from "@/lib/types";
+import { buildRevisionPack, emptyExamPriorityMap } from "@/lib/course-priority";
+import type { CourseKnowledgeMap, CourseStructureMap, CurationReport, EmbeddedRevisionItem, ExamPriorityMap, ExtractionVerificationReport, ParsedDocument, RejectedRevisionItem, RevisionItem, RevisionPack } from "@/lib/types";
 
 export async function runLlmExtractionPipeline(input: {
   notesDocuments: ParsedDocument[];
   guidanceDocuments: ParsedDocument[];
+  pastPaperDocuments?: ParsedDocument[];
+  problemSheetDocuments?: ParsedDocument[];
+  solutionDocuments?: ParsedDocument[];
   settings?: Partial<LlmPipelineSettings>;
 }): Promise<{
   items: RevisionItem[];
@@ -14,6 +18,8 @@ export async function runLlmExtractionPipeline(input: {
   embeddedItems: EmbeddedRevisionItem[];
   courseStructureMap: CourseStructureMap;
   courseKnowledgeMap: CourseKnowledgeMap;
+  examPriorityMap: ExamPriorityMap;
+  revisionPack: RevisionPack;
   curationReport: CurationReport;
   verification: ExtractionVerificationReport;
 }> {
@@ -25,6 +31,9 @@ export async function runLlmExtractionPipeline(input: {
     await cheap.curateRevisionDeck({
       notesDocuments: input.notesDocuments,
       guidanceDocuments: input.guidanceDocuments,
+      pastPaperDocuments: input.pastPaperDocuments ?? [],
+      problemSheetDocuments: input.problemSheetDocuments ?? [],
+      solutionDocuments: input.solutionDocuments ?? [],
       pipelineMode: settings.mode,
     });
   }
@@ -32,6 +41,9 @@ export async function runLlmExtractionPipeline(input: {
   const curated = await primary.curateRevisionDeck({
     notesDocuments: input.notesDocuments,
     guidanceDocuments: input.guidanceDocuments,
+    pastPaperDocuments: input.pastPaperDocuments ?? [],
+    problemSheetDocuments: input.problemSheetDocuments ?? [],
+    solutionDocuments: input.solutionDocuments ?? [],
     pipelineMode: settings.mode,
   });
 
@@ -48,6 +60,8 @@ export async function runLlmExtractionPipeline(input: {
     embeddedItems: curated.embeddedItems,
     courseStructureMap: curated.courseStructureMap,
     courseKnowledgeMap: curated.courseKnowledgeMap,
+    examPriorityMap: curated.examPriorityMap ?? emptyExamPriorityMap(),
+    revisionPack: curated.revisionPack ?? buildRevisionPack({ keptItems: curated.keptItems, needsReviewItems: curated.needsReviewItems, rejectedItems: curated.rejectedItems, examPriorityMap: curated.examPriorityMap ?? emptyExamPriorityMap() }),
     curationReport: curated.curationReport,
     verification,
   };

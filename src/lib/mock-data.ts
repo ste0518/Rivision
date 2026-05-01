@@ -6,7 +6,7 @@ const now = () => new Date().toISOString();
 export function createMockRevisionItems(): RevisionItem[] {
   const timestamp = now();
   const sourceFile = "Mock spatial statistics notes";
-  return [
+  const items: Array<Omit<RevisionItem, "priorityScore" | "priorityLabel" | "evidenceSignals" | "whyThisCardMatters" | "revisionPackCategory">> = [
     {
       id: createId("card"), type: "definition", title: "Weak stationarity",
       conceptName: "Weak stationarity", displayTitle: "Weak stationarity", cardFront: "Weak stationarity", taskPrompt: "Recall the exact definition.",
@@ -50,4 +50,12 @@ export function createMockRevisionItems(): RevisionItem[] {
       guidanceReason: "Simple kriging statement is examinable; derivation is optional.", questionPrompt: "State the simple kriging BLUP result.", answer: "With known mean and covariance, simple kriging gives the best linear unbiased predictor by choosing weights on observed values that minimise prediction variance while preserving unbiasedness.", createdAt: timestamp, updatedAt: timestamp, reviewCount: 0,
     },
   ];
+  return items.map((item) => ({
+    ...item,
+    priorityScore: item.importance === "must_know" ? 85 : 65,
+    priorityLabel: item.importance === "must_know" ? "very_high" : "high",
+    evidenceSignals: [],
+    whyThisCardMatters: item.guidanceReason ?? "Mock card included for demonstration.",
+    revisionPackCategory: item.type === "definition" ? "mustKnowDefinitions" : item.type === "formula" ? "formulasToKnow" : "theoremStatements",
+  } satisfies RevisionItem));
 }

@@ -16,6 +16,24 @@ export type RevisionImportance = "must_know" | "partial" | "not_required" | "unk
 export type ClassificationConfidence = "high" | "medium" | "low";
 export type ExtractionPipelineMode = "ai_key_revision_analysis" | "local_rules_only" | "manual_json_import" | "openai_api" | "cheap_scan_then_verify";
 export type StandaloneValue = "high" | "medium" | "low";
+export type StudyFileRole =
+  | "lecture_notes"
+  | "exam_guidance"
+  | "past_paper"
+  | "problem_sheet"
+  | "solution_sheet"
+  | "formula_sheet"
+  | "other";
+export type PriorityLabel = "very_high" | "high" | "medium" | "low" | "unknown";
+export type RevisionPackCategory =
+  | "mustKnowDefinitions"
+  | "theoremStatements"
+  | "proofsToKnow"
+  | "formulasToKnow"
+  | "methodsAndTemplates"
+  | "conceptualDistinctions"
+  | "needsReview"
+  | "rejected";
 export type CardPurpose =
   | "definition_recall"
   | "theorem_statement"
@@ -70,6 +88,7 @@ export type ParseDiagnostics = {
 export type ParsedDocument = {
   sourceFile: string;
   fileType: "pdf" | "docx" | "txt" | "md" | "unknown";
+  role?: StudyFileRole;
   fullText: string;
   pages?: ParsedPage[];
   sections?: ParsedSection[];
@@ -197,6 +216,70 @@ export interface CourseKnowledgeMap {
   proofPolicy: ProofPolicySummary;
 }
 
+export interface EvidenceSignal {
+  sourceFile: string;
+  sourceRole: StudyFileRole;
+  pageNumber?: number;
+  excerpt: string;
+  explanation: string;
+}
+
+export interface ExamTopicPriority {
+  topicName: string;
+  sectionNumbers?: string[];
+  priority: PriorityLabel;
+  evidence: EvidenceSignal[];
+  likelyAssessmentMode:
+    | "definition_recall"
+    | "theorem_statement"
+    | "proof"
+    | "calculation"
+    | "derivation"
+    | "conceptual_explanation"
+    | "model_interpretation"
+    | "mixed";
+}
+
+export interface RecurringQuestionType {
+  name: string;
+  description: string;
+  relatedTopics: string[];
+  evidence: EvidenceSignal[];
+  cardPurposesSuggested: CardPurpose[];
+}
+
+export interface RequiredItemSignal {
+  name: string;
+  itemType: RevisionItemType;
+  priority: PriorityLabel;
+  evidence: EvidenceSignal[];
+}
+
+export interface CalculationTemplateSignal {
+  name: string;
+  relatedTopics: string[];
+  requiredSteps: string[];
+  evidence: EvidenceSignal[];
+}
+
+export interface ConceptualDistinctionSignal {
+  name: string;
+  conceptsCompared: string[];
+  evidence: EvidenceSignal[];
+}
+
+export interface ExamPriorityMap {
+  topics: ExamTopicPriority[];
+  recurringQuestionTypes: RecurringQuestionType[];
+  requiredDefinitions: RequiredItemSignal[];
+  requiredTheorems: RequiredItemSignal[];
+  requiredProofs: RequiredItemSignal[];
+  requiredFormulas: RequiredItemSignal[];
+  calculationTemplates: CalculationTemplateSignal[];
+  conceptualDistinctions: ConceptualDistinctionSignal[];
+  notes: string[];
+}
+
 export interface CurationReport {
   totalCandidates: number;
   keptCount: number;
@@ -214,6 +297,7 @@ export interface CurationReport {
 export type StudyFile = {
   id: string;
   name: string;
+  role: StudyFileRole;
   mimeType: string;
   size: number;
   uploadedAt: string;
@@ -261,6 +345,11 @@ export type RevisionItem = {
   latexQuality?: "high" | "medium" | "low";
   relevanceReason?: string;
   relevanceScore?: CandidateRelevanceScore;
+  priorityScore: number;
+  priorityLabel: PriorityLabel;
+  evidenceSignals: EvidenceSignal[];
+  whyThisCardMatters: string;
+  revisionPackCategory?: RevisionPackCategory;
   deletedAt?: string;
   isDeleted?: boolean;
   createdAt: string;
@@ -305,12 +394,27 @@ export interface CuratedRevisionResult {
   embeddedItems: EmbeddedRevisionItem[];
   courseStructureMap: CourseStructureMap;
   courseKnowledgeMap: CourseKnowledgeMap;
+  examPriorityMap: ExamPriorityMap;
+  revisionPack: RevisionPack;
   curationReport: CurationReport;
 }
 
 export type CuratedDeckResult = CuratedRevisionResult;
 
 export type ReviewSession = { id: string; itemId: string; rating: ReviewRating; reviewedAt: string; };
+export interface RevisionPack {
+  overview: string;
+  topTopics: ExamTopicPriority[];
+  mustKnowDefinitions: RevisionItem[];
+  theoremStatements: RevisionItem[];
+  proofsToKnow: RevisionItem[];
+  formulasToKnow: RevisionItem[];
+  methodsAndTemplates: RevisionItem[];
+  conceptualDistinctions: RevisionItem[];
+  needsReview: RevisionItem[];
+  rejected: RejectedRevisionItem[];
+}
+
 export type ExtractionVerificationReport = {
   missingCandidates: Array<{
     title: string;
@@ -349,6 +453,9 @@ export const revisionItemTypes: RevisionItemType[] = [
   "other",
 ];
 export const importances: RevisionImportance[] = ["must_know", "partial", "not_required", "unknown"];
+export const studyFileRoles: StudyFileRole[] = ["lecture_notes", "exam_guidance", "past_paper", "problem_sheet", "solution_sheet", "formula_sheet", "other"];
+export const priorityLabels: PriorityLabel[] = ["very_high", "high", "medium", "low", "unknown"];
+export const revisionPackCategories: RevisionPackCategory[] = ["mustKnowDefinitions", "theoremStatements", "proofsToKnow", "formulasToKnow", "methodsAndTemplates", "conceptualDistinctions", "needsReview", "rejected"];
 export const cardPurposes: CardPurpose[] = [
   "definition_recall",
   "theorem_statement",

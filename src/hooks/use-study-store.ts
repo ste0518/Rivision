@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createMockRevisionItems } from "@/lib/mock-data";
 import { emptyStudyState, loadStudyState, resetStudyStateStorage, saveStudyState, type StudyState } from "@/lib/storage";
-import type { CourseKnowledgeMap, CourseStructureMap, CurationReport, EmbeddedRevisionItem, GuidanceFile, RejectedRevisionItem, RevisionItem, ReviewRating, ReviewSession, StudyFile } from "@/lib/types";
+import type { CourseKnowledgeMap, CourseStructureMap, CurationReport, EmbeddedRevisionItem, ExamPriorityMap, GuidanceFile, RejectedRevisionItem, RevisionItem, RevisionPack, ReviewRating, ReviewSession, StudyFile } from "@/lib/types";
 import { applyReviewRating } from "@/lib/srs";
 import { withValidation } from "@/lib/validation";
 
@@ -26,9 +26,16 @@ export function useStudyStore() {
   const actions = useMemo(() => ({
     addNotesFiles(files: StudyFile[]) { setState((current) => ({ ...current, notesFiles: [...current.notesFiles, ...files] })); },
     addGuidanceFiles(files: GuidanceFile[]) { setState((current) => ({ ...current, guidanceFiles: [...current.guidanceFiles, ...files] })); },
+    updateFileRole(id: string, role: StudyFile["role"]) {
+      setState((current) => ({
+        ...current,
+        notesFiles: current.notesFiles.map((file) => file.id === id ? { ...file, role, parsedDocument: file.parsedDocument ? { ...file.parsedDocument, role } : file.parsedDocument } : file),
+        guidanceFiles: current.guidanceFiles.map((file) => file.id === id ? { ...file, role, parsedDocument: file.parsedDocument ? { ...file.parsedDocument, role } : file.parsedDocument } : file),
+      }));
+    },
     removeNotesFile(id: string) { setState((current) => ({ ...current, notesFiles: current.notesFiles.filter((file) => file.id !== id) })); },
     removeGuidanceFile(id: string) { setState((current) => ({ ...current, guidanceFiles: current.guidanceFiles.filter((file) => file.id !== id) })); },
-    setRevisionItems(items: RevisionItem[], rejectedItems?: RejectedRevisionItem[], curation?: { embeddedItems?: EmbeddedRevisionItem[]; courseStructureMap?: CourseStructureMap; courseKnowledgeMap?: CourseKnowledgeMap; curationReport?: CurationReport }) {
+    setRevisionItems(items: RevisionItem[], rejectedItems?: RejectedRevisionItem[], curation?: { embeddedItems?: EmbeddedRevisionItem[]; courseStructureMap?: CourseStructureMap; courseKnowledgeMap?: CourseKnowledgeMap; examPriorityMap?: ExamPriorityMap; revisionPack?: RevisionPack; curationReport?: CurationReport }) {
       setState((current) => ({
         ...current,
         revisionItems: items.map(withValidation),
@@ -36,6 +43,8 @@ export function useStudyStore() {
         embeddedItems: curation?.embeddedItems ?? current.embeddedItems,
         courseStructureMap: curation?.courseStructureMap ?? current.courseStructureMap,
         courseKnowledgeMap: curation?.courseKnowledgeMap ?? current.courseKnowledgeMap,
+        examPriorityMap: curation?.examPriorityMap ?? current.examPriorityMap,
+        revisionPack: curation?.revisionPack ?? current.revisionPack,
         curationReport: curation?.curationReport ?? current.curationReport,
       }));
     },

@@ -1,5 +1,6 @@
 import OpenAI from "openai";
 import { createRevisionItemFromCandidate, curateRevisionDeck } from "@/lib/curation";
+import { buildExamPriorityMap } from "@/lib/course-priority";
 import { extractionSystemPrompt, verificationSystemPrompt } from "@/lib/llm/prompts";
 import type { LLMProvider } from "@/lib/llm/provider";
 import { curatedDeckResponseSchema, verificationReportSchema } from "@/lib/llm/schemas";
@@ -22,6 +23,9 @@ export class OpenAiResponsesProvider implements LLMProvider {
   async extractRevisionItems(input: {
     notesDocuments: ParsedDocument[];
     guidanceDocuments: ParsedDocument[];
+    pastPaperDocuments?: ParsedDocument[];
+    problemSheetDocuments?: ParsedDocument[];
+    solutionDocuments?: ParsedDocument[];
     pipelineMode: ExtractionPipelineMode;
   }): Promise<RevisionItem[]> {
     const curated = await this.curateRevisionDeck(input);
@@ -31,11 +35,23 @@ export class OpenAiResponsesProvider implements LLMProvider {
   async curateRevisionDeck(input: {
     notesDocuments: ParsedDocument[];
     guidanceDocuments: ParsedDocument[];
+    pastPaperDocuments?: ParsedDocument[];
+    problemSheetDocuments?: ParsedDocument[];
+    solutionDocuments?: ParsedDocument[];
     pipelineMode: ExtractionPipelineMode;
   }): Promise<CuratedDeckResult> {
     const candidates = attachProofsToPreviousTheorem(segmentRevisionCandidates(input.notesDocuments));
+    const pastPaperDocuments = input.pastPaperDocuments ?? [];
+    const problemSheetDocuments = input.problemSheetDocuments ?? [];
+    const solutionDocuments = input.solutionDocuments ?? [];
     const notesText = renderCandidateDocumentSet(input.notesDocuments, input.guidanceDocuments);
     const guidanceText = renderDocumentSet("GUIDANCE", input.guidanceDocuments);
+    const assessmentText = [
+      renderDocumentSet("GUIDANCE", input.guidanceDocuments),
+      renderDocumentSet("GUIDANCE", pastPaperDocuments),
+      renderDocumentSet("GUIDANCE", problemSheetDocuments),
+      renderDocumentSet("GUIDANCE", solutionDocuments),
+    ].filter(Boolean).join("\n\n");
 
     const response = await this.client.responses.create({
       model: this.model,
@@ -43,7 +59,7 @@ export class OpenAiResponsesProvider implements LLMProvider {
         { role: "system", content: extractionSystemPrompt },
         {
           role: "user",
-          content: `Pipeline mode: ${input.pipelineMode}\n\nGuidance:\n${guidanceText || "(none)"}\n\nSegmented candidate blocks:\n${notesText}`,
+          content: `Pipeline mode: ${input.pipelineMode}\n\nGuidance and assessment evidence:\n${assessmentText || guidanceText || "(none)"}\n\nSegmented candidate blocks:\n${notesText}`,
         },
       ],
       text: {
@@ -57,11 +73,22 @@ export class OpenAiResponsesProvider implements LLMProvider {
     });
 
     const payload = safeParseJson<CuratedDeckResult>(response.output_text);
-    if (payload) return { ...payload, rejectedItems: hydrateRejectedItems(payload.rejectedItems, candidates, guidanceText) };
+    if (payload) return { ...payload, rejectedItems: hydrateRejectedItems(payload.rejectedItems, candidates, assessmentText || guidanceText) };
+    const examPriorityMap = await buildExamPriorityMap({
+      notesDocuments: input.notesDocuments,
+      guidanceDocuments: input.guidanceDocuments,
+      pastPaperDocuments,
+      problemSheetDocuments,
+      solutionDocuments,
+    });
     return curateRevisionDeck({
       candidates,
       guidanceDocuments: input.guidanceDocuments,
       parsedNotes: input.notesDocuments,
+      pastPaperDocuments,
+      problemSheetDocuments,
+      solutionDocuments,
+      examPriorityMap,
     });
   }
 

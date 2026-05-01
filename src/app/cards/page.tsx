@@ -17,7 +17,7 @@ import { MathMarkdown } from "@/components/MathMarkdown";
 import { getPrimaryCardPreview, hasGenericConceptName, hasLowLatexQuality } from "@/lib/card-render";
 import { normalizeMathNotation } from "@/lib/revision-item-utils";
 import { exportRevisionItems, importRevisionItems } from "@/lib/storage";
-import { cardPurposes, importances, revisionItemTypes, type RevisionItem } from "@/lib/types";
+import { cardPurposes, importances, revisionItemTypes, revisionPackCategories, type RevisionItem } from "@/lib/types";
 import { useStudyStore } from "@/hooks/use-study-store";
 
 type UndoState = { message: string; itemIds: string[]; action: "delete" | "restore" } | null;
@@ -28,10 +28,11 @@ export default function CardsPage() {
   const [adding, setAdding] = useState(false);
   const [importText, setImportText] = useState("");
   const [importError, setImportError] = useState("");
-  const [filters, setFilters] = useState({ type: "all", cardPurpose: "all", importance: "all", curation: "keep", standaloneValue: "all", lowLatexOnly: false, section: "", tag: "", source: "", showRejected: false, showDeleted: false });
+  const [filters, setFilters] = useState({ type: "all", cardPurpose: "all", packCategory: "all", importance: "all", curation: "keep", standaloneValue: "all", lowLatexOnly: false, section: "", tag: "", source: "", showRejected: false, showDeleted: false });
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedDeletedIds, setSelectedDeletedIds] = useState<string[]>([]);
   const [undo, setUndo] = useState<UndoState>(null);
+  const [mathStatus, setMathStatus] = useState("");
 
   const activeCards = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted), [store.revisionItems]);
   const deletedCards = useMemo(() => store.revisionItems.filter((item) => item.isDeleted), [store.revisionItems]);
@@ -84,6 +85,28 @@ export default function CardsPage() {
     }
   }
 
+  async function aiCleanMath(item: RevisionItem) {
+    setMathStatus("");
+    const response = await fetch("/api/ai-clean-math", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: item.statement }),
+    });
+    const payload = (await response.json()) as { markdown?: string; error?: string; issues?: string[]; latexQuality?: RevisionItem["latexQuality"] };
+    if (!response.ok || !payload.markdown) {
+      setMathStatus(payload.error || "AI math cleanup failed.");
+      return;
+    }
+    store.upsertRevisionItem({
+      ...item,
+      statementLatex: payload.markdown,
+      latexQuality: payload.latexQuality ?? (payload.issues?.length ? "low" : "high"),
+      warnings: [...(item.warnings ?? []), ...(payload.issues ?? [])],
+      updatedAt: new Date().toISOString(),
+    });
+    setMathStatus(payload.issues?.length ? "AI cleaned math, but KaTeX still reported issues." : "AI cleaned math.");
+  }
+
   function handleUndo() {
     if (!undo) return;
     if (undo.action === "delete") store.restoreRevisionItems(undo.itemIds);
@@ -109,6 +132,10 @@ export default function CardsPage() {
           <Select value={filters.cardPurpose} onChange={(event) => setFilters({ ...filters, cardPurpose: event.target.value })}>
             <option value="all">All purposes</option>
             {cardPurposes.map((purpose) => <option key={purpose}>{purpose}</option>)}
+          </Select>
+          <Select value={filters.packCategory} onChange={(event) => setFilters({ ...filters, packCategory: event.target.value })}>
+            <option value="all">All pack categories</option>
+            {revisionPackCategories.map((category) => <option key={category} value={category}>{category}</option>)}
           </Select>
           <Select value={filters.importance} onChange={(event) => setFilters({ ...filters, importance: event.target.value })}>
             <option value="all">All importance</option>
@@ -150,7 +177,9 @@ export default function CardsPage() {
         <Button variant="secondary" onClick={store.seedMockData}>Load mock data</Button>
         <Button variant="destructive" onClick={() => deleteCards(selectedIds)} disabled={selectedIds.length === 0}>Bulk delete selected</Button>
         <Button variant="outline" onClick={() => fixMath(selectedIds)} disabled={selectedIds.length === 0}>Fix math</Button>
+        <Button variant="outline" onClick={() => { const item = store.revisionItems.find((candidate) => candidate.id === selectedIds[0]); if (item) void aiCleanMath(item); }} disabled={selectedIds.length !== 1}>AI clean math</Button>
       </div>
+      {mathStatus ? <p className="mb-4 text-sm text-slate-600">{mathStatus}</p> : null}
 
       <Card className="mb-6">
         <CardHeader><CardTitle>Import cards from JSON</CardTitle></CardHeader>
@@ -189,8 +218,9 @@ export default function CardsPage() {
                     <div className="space-y-2">
                       <MathMarkdown content={item.cardFront} className="bg-transparent p-0 font-medium text-slate-950" />
                       <div className="flex flex-wrap gap-1 text-xs text-slate-500">
-                        <span>{item.displayTitle || item.title} · {item.type} · {item.cardPurpose} · {(item.tags ?? []).join(", ")}</span>
+                        <span>{item.displayTitle || item.title} · {item.type} · {item.cardPurpose} · {item.revisionPackCategory ?? "uncategorised"} · {(item.tags ?? []).join(", ")}</span>
                         <Badge variant="outline">{item.curationDecision ?? "keep"}</Badge>
+                        <Badge variant="outline">priority {item.priorityScore ?? 0}</Badge>
                         <Badge variant="outline">standalone {item.standaloneValue ?? "unknown"}</Badge>
                       </div>
                       <MathMarkdown content={getPrimaryCardPreview(item)} className="bg-transparent p-0 text-sm text-slate-600" />
@@ -211,6 +241,7 @@ export default function CardsPage() {
                       <Button size="sm" variant="outline" onClick={() => store.upsertRevisionItem({ ...item, curationDecision: "keep", curationStatus: "kept", cardPurpose: item.cardPurpose === "needs_review" ? "definition_recall" : item.cardPurpose })}>Mark keep</Button>
                       <Button size="sm" variant="outline" onClick={() => store.upsertRevisionItem({ ...item, curationDecision: "needs_review", curationStatus: "needs_review", cardPurpose: "needs_review" })}>Needs review</Button>
                       <Button size="sm" variant="outline" onClick={() => fixMath([item.id])}>Fix math</Button>
+                      <Button size="sm" variant="outline" onClick={() => void aiCleanMath(item)}>AI clean math</Button>
                       <Button size="sm" variant="destructive" onClick={() => deleteCards([item.id])}><Trash2 className="h-4 w-4" />Delete</Button>
                     </div>
                   </TableCell>
@@ -305,9 +336,10 @@ export default function CardsPage() {
   );
 }
 
-function matchesFilters(item: RevisionItem, filters: { type: string; cardPurpose: string; importance: string; curation: string; standaloneValue: string; lowLatexOnly: boolean; section: string; tag: string; source: string }) {
+function matchesFilters(item: RevisionItem, filters: { type: string; cardPurpose: string; packCategory: string; importance: string; curation: string; standaloneValue: string; lowLatexOnly: boolean; section: string; tag: string; source: string }) {
   return (filters.type === "all" || item.type === filters.type) &&
     (filters.cardPurpose === "all" || item.cardPurpose === filters.cardPurpose) &&
+    (filters.packCategory === "all" || item.revisionPackCategory === filters.packCategory) &&
     (filters.importance === "all" || item.importance === filters.importance) &&
     (filters.curation === "all" || (item.curationDecision ?? "keep") === filters.curation) &&
     (filters.standaloneValue === "all" || item.standaloneValue === filters.standaloneValue) &&
