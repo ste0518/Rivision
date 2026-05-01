@@ -1,6 +1,7 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
+import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -12,7 +13,6 @@ import { defaultLlmPipelineSettings, type LlmPipelineSettings } from "@/lib/llm/
 import { defaultRelevanceSettings, loadRelevanceSettings, saveRelevanceSettings, type RelevanceSettings } from "@/lib/relevance";
 import { exportRevisionItems, importRevisionItems, loadStorageSettings, saveStorageSettings, type StorageSettings } from "@/lib/storage";
 import { useStudyStore } from "@/hooks/use-study-store";
-import Link from "next/link";
 
 export default function SettingsPage() {
   const store = useStudyStore();
@@ -20,15 +20,31 @@ export default function SettingsPage() {
   const [llm, setLlm] = useState<LlmPipelineSettings>(() => loadLlmPipelineSettings() ?? defaultLlmPipelineSettings);
   const [relevance, setRelevance] = useState<RelevanceSettings>(() => loadRelevanceSettings() ?? defaultRelevanceSettings);
   const [storageSettings, setStorageSettings] = useState<StorageSettings>(() => loadStorageSettings());
+  const [openaiConfigured, setOpenaiConfigured] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/settings-status")
+      .then((res) => res.json() as Promise<{ openaiConfigured?: boolean }>)
+      .then((body) => {
+        if (!cancelled) setOpenaiConfigured(Boolean(body.openaiConfigured));
+      })
+      .catch(() => {
+        if (!cancelled) setOpenaiConfigured(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <div>
-      <PageHeader title="Settings and portability" description="Keep the app local-first: export corrected cards, import JSON later, or reset local browser data." />
+      <PageHeader title="Settings" description="Extraction mode, review behaviour, exports, and advanced debugging." />
       <div className="grid gap-6 lg:grid-cols-2">
         <Card>
           <CardHeader>
             <CardTitle>Extraction mode</CardTitle>
-            <CardDescription>Choose AI key revision analysis, local rules, manual JSON import, or OpenAI API extraction.</CardDescription>
+            <CardDescription>Choose AI-assisted analysis, local rules, or manual JSON import.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <label className="space-y-1 text-sm font-medium">
@@ -55,14 +71,17 @@ export default function SettingsPage() {
               </>
             ) : null}
             <Button onClick={() => saveLlmPipelineSettings(llm)}>Save LLM settings</Button>
-            <p className="text-xs text-slate-500">Only OpenAI modes require OPENAI_API_KEY. Local rules and manual JSON import work without paid API usage.</p>
+            <p className="text-xs text-slate-500">
+              API status:{" "}
+              {openaiConfigured === null ? "Checking…" : openaiConfigured ? "OPENAI_API_KEY detected on server." : "No OPENAI_API_KEY on server — AI modes fall back to local heuristics."}
+            </p>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
             <CardTitle>Review filtering</CardTitle>
-            <CardDescription>Control how conservative extraction is about weak unknown cards.</CardDescription>
+            <CardDescription>How conservative the app is about weak unknown cards.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <label className="flex items-center gap-2 text-sm font-medium">
@@ -73,30 +92,15 @@ export default function SettingsPage() {
               />
               Show unknown low-relevance cards in review
             </label>
-            <p className="text-xs text-slate-500">Default is off. Low-value unknown items are sent to Rejected / low relevance instead.</p>
+            <p className="text-xs text-slate-500">Default is off. Low-value unknown items go to Rejected instead.</p>
             <Button onClick={() => saveRelevanceSettings(relevance)}>Save review filtering</Button>
           </CardContent>
         </Card>
 
         <Card>
           <CardHeader>
-            <CardTitle>JSON import/export</CardTitle>
-            <CardDescription>Use this to reuse manually corrected cards. Full project exports and safer reset options live in Storage manager.</CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3">
-            <Textarea className="min-h-48" value={json} onChange={(e) => setJson(e.target.value)} placeholder="Paste or generate RevisionItem[] JSON" />
-            <div className="flex flex-wrap gap-2">
-              <Button variant="outline" onClick={() => setJson(exportRevisionItems(store.revisionItems))}>Generate export JSON</Button>
-              <Button onClick={() => { store.setRevisionItems(importRevisionItems(json)); setJson(""); }} disabled={!json.trim()}>Import JSON</Button>
-              <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50" href="/settings/storage">Open storage manager</Link>
-            </div>
-          </CardContent>
-        </Card>
-
-        <Card>
-          <CardHeader>
-            <CardTitle>Mode and debug</CardTitle>
-            <CardDescription>Simple revision mode is the default. Advanced mode reveals parser diagnostics and raw candidate details.</CardDescription>
+            <CardTitle>Interface</CardTitle>
+            <CardDescription>Simple mode hides parser diagnostics and raw candidates.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <label className="space-y-1 text-sm font-medium">
@@ -114,18 +118,39 @@ export default function SettingsPage() {
               />
               Persist debug data
             </label>
-            <p className="text-xs text-slate-500">Default is off. When off, extraction diagnostics are rendered from memory and not written to persistent localStorage.</p>
-            <Button onClick={() => saveStorageSettings(storageSettings)}>Save storage settings</Button>
+            <Button onClick={() => saveStorageSettings(storageSettings)}>Save interface settings</Button>
+          </CardContent>
+        </Card>
+
+        <Card>
+          <CardHeader>
+            <CardTitle>Export / import / storage</CardTitle>
+            <CardDescription>Move cards between browsers or free space.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Textarea className="min-h-32" value={json} onChange={(e) => setJson(e.target.value)} placeholder="Paste RevisionItem[] JSON" />
+            <div className="flex flex-wrap gap-2">
+              <Button variant="outline" onClick={() => setJson(exportRevisionItems(store.revisionItems))}>Generate export JSON</Button>
+              <Button onClick={() => { store.setRevisionItems(importRevisionItems(json)); setJson(""); }} disabled={!json.trim()}>Import JSON</Button>
+              <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50" href="/settings/storage">Storage manager</Link>
+            </div>
+            <Button variant="destructive" onClick={() => { store.resetAll(); window.location.reload(); }}>Reset local data</Button>
           </CardContent>
         </Card>
 
         <Card className="lg:col-span-2">
           <CardHeader>
-            <CardTitle>Internal extraction prompt</CardTitle>
-            <CardDescription>Used by the OpenAI Responses API extraction pass.</CardDescription>
+            <CardTitle>Advanced</CardTitle>
+            <CardDescription>Internal prompts and debugging — optional.</CardDescription>
           </CardHeader>
-          <CardContent>
-            <pre className="whitespace-pre-wrap rounded-lg bg-slate-950 p-4 text-sm text-white">{getLlmExtractionPrompt()}</pre>
+          <CardContent className="space-y-4">
+            <details className="rounded-lg border border-slate-200 bg-slate-50">
+              <summary className="cursor-pointer px-4 py-3 text-sm font-medium text-slate-900">Prompt editor (internal extraction prompt)</summary>
+              <div className="border-t border-slate-200 p-4">
+                <p className="mb-3 text-xs text-slate-500">Read-only snapshot of the OpenAI extraction system prompt used by the API route.</p>
+                <pre className="max-h-[28rem] overflow-auto whitespace-pre-wrap rounded-lg bg-slate-950 p-4 text-sm text-white">{getLlmExtractionPrompt()}</pre>
+              </div>
+            </details>
           </CardContent>
         </Card>
       </div>

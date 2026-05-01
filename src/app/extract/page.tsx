@@ -3,6 +3,7 @@
 import { useMemo, useState } from "react";
 import type { ReactNode } from "react";
 import Link from "next/link";
+import { useRouter } from "next/navigation";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -16,7 +17,7 @@ import { extractRevisionItems, generateManualExtractionPrompt, loadLlmPipelineSe
 import { getPrimaryCardPreview, hasLowLatexQuality } from "@/lib/card-render";
 import { normalizeMathNotation } from "@/lib/revision-item-utils";
 import { buildSegmentationDebug, segmentRevisionCandidates } from "@/lib/segmentation";
-import { clearDebugData, loadStorageSettings, persistRevisionCandidates, resetStudyStateStorage } from "@/lib/storage";
+import { clearDebugData, loadStorageSettings, persistRevisionCandidates, resetStudyStateStorage, saveStorageSettings } from "@/lib/storage";
 import { validateRevisionItemsPayload, withValidation } from "@/lib/validation";
 import type { CuratedDeckResult, ExtractionVerificationReport, ParsedDocument, RevisionItem, StudyFile } from "@/lib/types";
 import { useStudyStore } from "@/hooks/use-study-store";
@@ -38,6 +39,7 @@ export default function ExtractPage() {
 }
 
 function ExtractPageContent() {
+  const router = useRouter();
   const store = useStudyStore();
   const [extracting, setExtracting] = useState(false);
   const [status, setStatus] = useState<string>("");
@@ -47,7 +49,7 @@ function ExtractPageContent() {
   const [apiError, setApiError] = useState<string>("");
   const [mathStatus, setMathStatus] = useState<string>("");
   const [runtimeErrors, setRuntimeErrors] = useState<string[]>([]);
-  const [debugMode, setDebugMode] = useState(() => loadStorageSettings().interfaceMode === "advanced");
+  const [debugMode, setDebugMode] = useState(false);
   const [activeTab, setActiveTab] = useState<"kept" | "needs_review" | "rejected" | "embedded" | "course_map">("kept");
 
   const settings = loadLlmPipelineSettings();
@@ -125,6 +127,7 @@ function ExtractPageContent() {
       });
       setVerification(result.verification);
       if (result.error) setApiError(result.error);
+      router.push("/pack");
 
       if (settings.mode === "ai_key_revision_analysis" || settings.mode === "openai_api" || settings.mode === "cheap_scan_then_verify") {
         if (result.items.length === 0) {
@@ -166,6 +169,7 @@ function ExtractPageContent() {
         } : undefined,
       );
       setStatus(`Imported ${result.items.length} card(s) from manual JSON.`);
+      router.push("/pack");
     } catch {
       setManualErrors(["JSON parse error. Please provide valid JSON array."]);
     }
@@ -279,7 +283,7 @@ function ExtractPageContent() {
       <div className="mb-6 grid gap-3 md:grid-cols-4">
         <WorkflowStep step="1" title="Upload files" done={uploadedFiles.length > 0} />
         <WorkflowStep step="2" title="Analyse notes" done={Boolean(store.curationReport)} active={!store.curationReport} />
-        <WorkflowStep step="3" title="Review pack" done={normalItems.length > 0} />
+        <WorkflowStep step="3" title="Study Pack summary" done={normalItems.length > 0} />
         <WorkflowStep step="4" title="Start revision" done={false} />
       </div>
 
@@ -297,8 +301,16 @@ function ExtractPageContent() {
             </Button>
             <Link className="inline-flex h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-medium hover:bg-slate-50" href="/upload">Upload files</Link>
             <label className="flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm">
-              <input type="checkbox" checked={debugMode} onChange={(event) => setDebugMode(event.target.checked)} />
-              Advanced debug
+              <input
+                type="checkbox"
+                checked={debugMode}
+                onChange={(event) => {
+                  const next = event.target.checked;
+                  setDebugMode(next);
+                  saveStorageSettings({ ...loadStorageSettings(), interfaceMode: next ? "advanced" : "simple" });
+                }}
+              />
+              Advanced debug mode
             </label>
             {debugMode ? <Button variant="outline" onClick={handlePromptCopy}>Generate manual ChatGPT prompt</Button> : null}
           </div>
@@ -381,10 +393,9 @@ function ExtractPageContent() {
             </div>
             <p>{store.revisionPack?.overview ?? "A revision pack has been built from your notes."}</p>
             <div className="flex flex-wrap gap-2">
-              <Link className="inline-flex h-10 items-center justify-center rounded-md bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-800" href="/review">Start reviewing</Link>
-              <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50" href="/pack">Edit deck</Link>
-              <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50" href="/cards?curation=needs_review">Review issues</Link>
-              <Button variant="outline" onClick={() => setDebugMode((current) => !current)}>Advanced debug</Button>
+              <Link className="inline-flex h-10 items-center justify-center rounded-md bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-800" href="/pack">Open study pack</Link>
+              <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50" href="/review">Start reviewing</Link>
+              <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50" href="/cards?tab=needs_review">Review issues</Link>
             </div>
             {debugMode ? (
               <details className="rounded-lg border bg-slate-50 p-3">
@@ -406,7 +417,10 @@ function ExtractPageContent() {
       ) : null}
 
       {debugMode && store.curationReport ? (
-        <Card className="mt-6">
+        <details className="mt-6 rounded-lg border border-slate-200 bg-slate-50 open:bg-slate-50">
+          <summary className="cursor-pointer select-none px-4 py-3 text-sm font-medium text-slate-900">Advanced debug — pack breakdown &amp; raw extraction</summary>
+          <div className="space-y-6 border-t border-slate-200 p-4">
+        <Card className="shadow-sm">
           <CardHeader>
             <CardTitle>AI key revision analysis</CardTitle>
             <CardDescription>Structured revision pack grouped by final curation decision.</CardDescription>
@@ -520,9 +534,8 @@ function ExtractPageContent() {
             ) : null}
           </CardContent>
         </Card>
-      ) : null}
 
-      {debugMode ? <Card className="mt-6">
+      <Card className="shadow-sm">
         <CardHeader>
           <CardTitle>Segmentation diagnostics</CardTitle>
           <CardDescription>{candidates.length} candidate(s) found before local rules or LLM extraction.</CardDescription>
@@ -570,10 +583,9 @@ function ExtractPageContent() {
             ))}
           </div>
         </CardContent>
-      </Card> : null}
+      </Card>
 
-      {debugMode ? (
-        <Card className="mt-6">
+      <Card className="shadow-sm">
           <CardHeader>
             <CardTitle>Curation diagnostics</CardTitle>
             <CardDescription>Current stored decisions and reasons from the latest extraction/import.</CardDescription>
@@ -599,33 +611,13 @@ function ExtractPageContent() {
             </div>
           </CardContent>
         </Card>
-      ) : null}
 
-      {settings.mode === "manual_json_import" ? (
-        <Card className="mt-6">
+      <Card className="shadow-sm">
           <CardHeader>
-            <CardTitle>Manual JSON import</CardTitle>
-            <CardDescription>Paste JSON from ChatGPT/Codex, or upload a JSON file, then validate and import.</CardDescription>
+            <CardTitle>Parsing diagnostics</CardTitle>
+            <CardDescription>Preview parsed text and extraction quality before relying on cards.</CardDescription>
           </CardHeader>
-          <CardContent className="space-y-3">
-            <Input type="file" accept="application/json,.json" onChange={(event) => onManualFileUpload(event.target.files?.[0] ?? null)} />
-            <Textarea value={manualJson} onChange={(event) => setManualJson(event.target.value)} className="min-h-56" placeholder="Paste RevisionItem[] JSON" />
-            <Button onClick={handleManualImport} disabled={!manualJson.trim()}>Validate and import JSON</Button>
-            {manualErrors.length > 0 ? (
-              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
-                {manualErrors.map((error) => <p key={error}>{error}</p>)}
-              </div>
-            ) : null}
-          </CardContent>
-        </Card>
-      ) : null}
-
-      {debugMode ? <Card className="mt-6">
-        <CardHeader>
-          <CardTitle>Parsing diagnostics</CardTitle>
-          <CardDescription>Preview parsed text and extraction quality before LLM extraction.</CardDescription>
-        </CardHeader>
-        <CardContent className="space-y-4">
+          <CardContent className="space-y-4">
           {allDocuments.length === 0 ? <p className="text-sm text-slate-500">No parsed files yet. Upload notes and guidance first.</p> : null}
           {allDocuments.map((doc) => (
             <div key={`${doc.sourceFile}-${doc.fileType}`} className="rounded-lg border p-3">
@@ -648,32 +640,10 @@ function ExtractPageContent() {
             </div>
           ))}
         </CardContent>
-      </Card> : null}
-
-      {needsReviewItems.length > 0 ? (
-        <Card className="mt-6 border-amber-300 bg-amber-50">
-          <CardHeader>
-            <CardTitle>Needs review</CardTitle>
-            <CardDescription>Borderline or suspicious items. These are not shown in normal review until manually accepted.</CardDescription>
-          </CardHeader>
-          <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-            {needsReviewItems.map((item) => (
-              <ExtractedCard
-                key={item.id}
-                item={item}
-                onImportanceChange={(importance) => store.upsertRevisionItem({ ...item, importance, updatedAt: new Date().toISOString() })}
-                onAccept={() => keepNeedsReviewItem(item)}
-                onReject={() => store.rejectRevisionItem(item.id, "Rejected during AI analysis review.")}
-                onFixMath={() => fixItemMath(item)}
-                onAiCleanMath={() => void aiCleanItemMath(item)}
-              />
-            ))}
-          </CardContent>
-        </Card>
-      ) : null}
+      </Card>
 
       {debugMode && store.rejectedItems.length > 0 ? (
-        <Card className="mt-6 border-slate-300 bg-slate-50">
+        <Card className="shadow-sm border-slate-300 bg-slate-50">
           <CardHeader>
             <CardTitle>Rejected / low relevance</CardTitle>
             <CardDescription>These items were extracted but are not included in normal review unless restored.</CardDescription>
@@ -702,10 +672,10 @@ function ExtractPageContent() {
       ) : null}
 
       {debugMode && normalItems.length > 0 ? (
-        <Card className="mt-6">
+        <Card className="shadow-sm">
           <CardHeader>
-          <CardTitle>Kept revision cards</CardTitle>
-            <CardDescription>These cards are included in normal review.</CardDescription>
+            <CardTitle>Kept revision cards (detail)</CardTitle>
+            <CardDescription>Included in normal review.</CardDescription>
           </CardHeader>
           <CardContent className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
             {normalItems.map((item) => (
@@ -715,8 +685,8 @@ function ExtractPageContent() {
                     <CardTitle className="text-base">{item.title}</CardTitle>
                     <div className="flex flex-wrap gap-2">
                       <Badge variant={item.importance}>{item.importance}</Badge>
-                  {item.extractionWarning || item.warnings?.length ? <Badge variant="unknown">check extraction</Badge> : null}
-                  {hasLowLatexQuality(item) ? <Badge variant="unknown">Low LaTeX quality</Badge> : null}
+                      {item.extractionWarning || item.warnings?.length ? <Badge variant="unknown">check extraction</Badge> : null}
+                      {hasLowLatexQuality(item) ? <Badge variant="unknown">Low LaTeX quality</Badge> : null}
                     </div>
                   </div>
                   <CardDescription>{item.type} · {item.cardPurpose} · {item.section || "section unknown"} · {item.sourceLocation || "source unknown"}</CardDescription>
@@ -745,7 +715,7 @@ function ExtractPageContent() {
       ) : null}
 
       {debugMode && verification ? (
-        <Card className="mt-6">
+        <Card className="shadow-sm">
           <CardHeader>
             <CardTitle>Verification report</CardTitle>
             <CardDescription>overall completeness: {verification.overallCompleteness}</CardDescription>
@@ -780,6 +750,29 @@ function ExtractPageContent() {
                 </div>
               ))}
             </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
+          </div>
+        </details>
+      ) : null}
+
+      {settings.mode === "manual_json_import" ? (
+        <Card className="mt-6">
+          <CardHeader>
+            <CardTitle>Manual JSON import</CardTitle>
+            <CardDescription>Paste JSON from ChatGPT/Codex, or upload a JSON file, then validate and import.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <Input type="file" accept="application/json,.json" onChange={(event) => onManualFileUpload(event.target.files?.[0] ?? null)} />
+            <Textarea value={manualJson} onChange={(event) => setManualJson(event.target.value)} className="min-h-56" placeholder="Paste RevisionItem[] JSON" />
+            <Button onClick={handleManualImport} disabled={!manualJson.trim()}>Validate and import JSON</Button>
+            {manualErrors.length > 0 ? (
+              <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-700">
+                {manualErrors.map((error) => <p key={error}>{error}</p>)}
+              </div>
+            ) : null}
           </CardContent>
         </Card>
       ) : null}

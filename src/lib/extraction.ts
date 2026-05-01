@@ -1,3 +1,4 @@
+import { applyReviewQualityGatesSplit } from "@/lib/card-quality-gates";
 import { runCoursePackBuilder } from "@/lib/course-builder";
 import { buildRevisionPack, emptyExamPriorityMap } from "@/lib/course-priority";
 import { defaultLlmPipelineSettings, type LlmPipelineSettings } from "@/lib/llm/provider";
@@ -85,8 +86,13 @@ export async function extractRevisionItems({
         courseKnowledgeMap: llmResult.courseKnowledgeMap ?? emptyCourseKnowledgeMap(),
         assessmentMap: llmResult.assessmentMap,
         examPriorityMap: llmResult.examPriorityMap ?? emptyExamPriorityMap(),
-        revisionPack: llmResult.revisionPack ?? buildRevisionPack({ keptItems: processed.items, needsReviewItems: processed.needsReviewItems, rejectedItems: processed.rejectedItems, examPriorityMap: llmResult.examPriorityMap ?? emptyExamPriorityMap() }),
-        curationReport: llmResult.curationReport ?? emptyCurationReport(0, processed.items.length, processed.needsReviewItems.length, processed.rejectedItems.length, llmResult.embeddedItems?.length ?? 0),
+        revisionPack: buildRevisionPack({
+          keptItems: processed.items,
+          needsReviewItems: processed.needsReviewItems,
+          rejectedItems: processed.rejectedItems,
+          examPriorityMap: llmResult.examPriorityMap ?? emptyExamPriorityMap(),
+        }),
+        curationReport: reconcileCurationReport(llmResult.curationReport, processed, llmResult.embeddedItems?.length ?? 0, processed.rejectedItems.length),
         verification: mergeSuspiciousItems(llmResult.verification ?? emptyVerificationReport("Verification unavailable."), [...processed.items, ...processed.needsReviewItems]),
         error: llmResult.error,
       };
@@ -110,11 +116,16 @@ export async function extractRevisionItems({
       courseKnowledgeMap: curated.courseKnowledgeMap,
       assessmentMap: curated.assessmentMap,
       examPriorityMap: curated.examPriorityMap,
-      revisionPack: curated.revisionPack,
-      curationReport: {
-        ...curated.curationReport,
-        notes: fallbackWarning ? [fallbackWarning, ...curated.curationReport.notes] : curated.curationReport.notes,
-      },
+      revisionPack: buildRevisionPack({
+        keptItems: processed.items,
+        needsReviewItems: processed.needsReviewItems,
+        rejectedItems: processed.rejectedItems,
+        examPriorityMap: curated.examPriorityMap,
+      }),
+      curationReport: (() => {
+        const next = reconcileCurationReport(curated.curationReport, processed, curated.embeddedItems.length, processed.rejectedItems.length);
+        return { ...next, notes: fallbackWarning ? [fallbackWarning, ...next.notes] : next.notes };
+      })(),
       verification: mergeSuspiciousItems(emptyVerificationReport("Local deterministic extraction mode does not run LLM verification."), items),
       error: fallbackWarning,
     };
@@ -250,9 +261,12 @@ async function deterministicCurate(
 function postProcessRevisionItems(items: RevisionItem[], needsReviewItems: RevisionItem[], rejectedItems: RejectedRevisionItem[]) {
   const validation = validateAndRepairRevisionItems(items);
   const needsReviewValidation = validateAndRepairRevisionItems(needsReviewItems.map((item) => ({ ...item, curationDecision: "needs_review", curationStatus: "needs_review" })));
+  const mergedKept = [...validation.validItems, ...validation.invalidItems].map(withValidation);
+  const mergedNeedsReview = [...needsReviewValidation.validItems, ...needsReviewValidation.invalidItems].map(withValidation);
+  const gated = applyReviewQualityGatesSplit(mergedKept, mergedNeedsReview);
   return {
-    items: [...validation.validItems, ...validation.invalidItems].map(withValidation),
-    needsReviewItems: [...needsReviewValidation.validItems, ...needsReviewValidation.invalidItems].map(withValidation),
+    items: gated.kept.map(withValidation),
+    needsReviewItems: gated.needsReview.map(withValidation),
     rejectedItems: rejectedItems.map((item) => ({
       ...item,
       originalItem: item.originalItem ? withValidation(item.originalItem) : undefined,
@@ -338,6 +352,24 @@ function emptyCurationReport(totalCandidates: number, keptCount: number, needsRe
     weakParsingWarnings: [],
     notes: [],
   };
+}
+
+function reconcileCurationReport(
+  base: CurationReport | undefined,
+  processed: { items: RevisionItem[]; needsReviewItems: RevisionItem[] },
+  embeddedCount: number,
+  rejectedCount: number,
+): CurationReport {
+  const keptCount = processed.items.length;
+  const needsReviewCount = processed.needsReviewItems.length;
+  const defaults = emptyCurationReport(
+    base?.totalCandidates ?? keptCount + needsReviewCount + rejectedCount,
+    keptCount,
+    needsReviewCount,
+    rejectedCount,
+    embeddedCount,
+  );
+  return { ...defaults, ...base, keptCount, needsReviewCount, rejectedCount, embeddedCount };
 }
 
 function normalizeParsedDocuments(documents: unknown): ParsedDocument[] {

@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -24,6 +24,22 @@ export default function ReviewPage() {
   const [includeMediumPriority, setIncludeMediumPriority] = useState(false);
   const [categoryFilter, setCategoryFilter] = useState("all");
   const [mathStatus, setMathStatus] = useState("");
+  const [apiOk, setApiOk] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/settings-status")
+      .then((res) => res.json() as Promise<{ openaiConfigured?: boolean }>)
+      .then((json) => {
+        if (!cancelled) setApiOk(Boolean(json.openaiConfigured));
+      })
+      .catch(() => {
+        if (!cancelled) setApiOk(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
   const requestedCardId = typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("card") ?? "";
   const dueCards = useMemo(
     () => store.revisionItems.filter((item) =>
@@ -146,6 +162,13 @@ export default function ReviewPage() {
             <CardDescription>{dueCards.length} due card(s) · reviewed {card.reviewCount ?? 0} time(s)</CardDescription>
           </CardHeader>
           <CardContent className="space-y-5">
+            {hasLowLatexQuality(card) ? (
+              <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
+                <span className="font-medium">Math quality warning.</span>{" "}
+                <Button size="sm" className="ml-2" variant="outline" type="button" onClick={fixCurrentMath}>Fix math</Button>{" "}
+                <Link className="ml-2 font-medium text-blue-800 underline" href="/cards?tab=low_math">All low-math cards</Link>
+              </div>
+            ) : null}
             {!revealed ? (
               <Button size="lg" onClick={() => setRevealed(true)}>Show answer</Button>
             ) : (
@@ -184,7 +207,7 @@ export default function ReviewPage() {
                   <Button variant="outline" onClick={deleteCurrentCard}>Delete</Button>
                   <Button variant="outline" onClick={() => rate("hard")}>Skip</Button>
                   <Button variant="outline" onClick={fixCurrentMath}>Fix math</Button>
-                  <Button variant="outline" onClick={() => void aiCleanCurrentMath()}>AI clean math</Button>
+                  {apiOk ? <Button variant="outline" onClick={() => void aiCleanCurrentMath()}>AI clean math</Button> : null}
                 </div>
               </>
             )}

@@ -1,12 +1,11 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
-import { Select } from "@/components/ui/select";
 import { CardForm } from "@/components/card-form";
 import { MathMarkdown } from "@/components/MathMarkdown";
 import { PageHeader } from "@/components/page-header";
@@ -15,30 +14,108 @@ import { normalizeMathNotation } from "@/lib/revision-item-utils";
 import type { RevisionItem } from "@/lib/types";
 import { useStudyStore } from "@/hooks/use-study-store";
 
+type SectionId = "core" | "formulas" | "algorithms" | "proofs" | "worked" | "exercises" | "needs_review" | "low_math";
+
 type Section = {
-  id: string;
+  id: SectionId;
   title: string;
-  categories: Array<RevisionItem["revisionPackCategory"]>;
-  match?: (item: RevisionItem) => boolean;
+  match: (item: RevisionItem) => boolean;
 };
 
 const sections: Section[] = [
-  { id: "must", title: "Must know", categories: ["mustKnowDefinitions", "modelsToKnow", "conceptualDistinctions"] },
-  { id: "formulas", title: "Formulas", categories: ["formulasToKnow"] },
-  { id: "algorithms", title: "Algorithms", categories: ["methodsAndTemplates"], match: (item) => item.type === "algorithm" || item.cardPurpose === "method_steps" },
-  { id: "proofs", title: "Proofs", categories: ["proofsToKnow"] },
-  { id: "examples", title: "Worked examples", categories: ["workedExamplePatterns"], match: (item) => item.cardPurpose === "calculation_template" || item.cardPurpose === "worked_example_pattern" },
-  { id: "review", title: "Needs review", categories: ["needsReview"], match: (item) => item.curationDecision === "needs_review" || hasLowLatexQuality(item) },
+  {
+    id: "core",
+    title: "Core concepts",
+    match: (item) =>
+      ["mustKnowDefinitions", "modelsToKnow", "conceptualDistinctions", "theoremStatements"].includes(item.revisionPackCategory ?? "") ||
+      (item.type === "definition" && (item.curationDecision ?? "keep") === "keep"),
+  },
+  {
+    id: "formulas",
+    title: "Key formulas",
+    match: (item) => item.revisionPackCategory === "formulasToKnow" || item.cardPurpose === "formula_recall",
+  },
+  {
+    id: "algorithms",
+    title: "Algorithms",
+    match: (item) => item.type === "algorithm" || item.cardPurpose === "method_steps",
+  },
+  {
+    id: "proofs",
+    title: "Proofs",
+    match: (item) => item.revisionPackCategory === "proofsToKnow" || item.cardPurpose === "proof_recall" || item.type === "proof",
+  },
+  {
+    id: "worked",
+    title: "Worked examples",
+    match: (item) => item.revisionPackCategory === "workedExamplePatterns" || item.cardPurpose === "worked_example_pattern",
+  },
+  {
+    id: "exercises",
+    title: "Exercises",
+    match: (item) => item.cardPurpose === "calculation_template" && item.revisionPackCategory !== "workedExamplePatterns",
+  },
+  {
+    id: "low_math",
+    title: "Low math quality",
+    match: (item) => hasLowLatexQuality(item),
+  },
+  {
+    id: "needs_review",
+    title: "Needs review",
+    match: (item) => (item.curationDecision ?? "keep") === "needs_review",
+  },
 ];
 
 export default function PackPage() {
   const store = useStudyStore();
   const [editing, setEditing] = useState<RevisionItem | undefined>();
-  const [filter, setFilter] = useState("all");
   const [mathStatus, setMathStatus] = useState("");
+  const [apiOk, setApiOk] = useState<boolean | null>(null);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/settings-status")
+      .then((res) => res.json() as Promise<{ openaiConfigured?: boolean }>)
+      .then((json) => {
+        if (!cancelled) setApiOk(Boolean(json.openaiConfigured));
+      })
+      .catch(() => {
+        if (!cancelled) setApiOk(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
+
   const activeCards = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted), [store.revisionItems]);
-  const reviewedCount = activeCards.filter((item) => (item.reviewCount ?? 0) > 0).length;
-  const title = store.courseMap?.courseTitle || store.revisionPack?.topTopics?.[0]?.topicName || inferPackTitle(activeCards);
+  const title =
+    store.courseMap?.courseTitle ||
+    store.revisionPack?.topTopics?.[0]?.topicName ||
+    inferPackTitle(activeCards);
+
+  const lowMathCount = useMemo(() => activeCards.filter(hasLowLatexQuality).length, [activeCards]);
+  const needsReviewOnlyCount = useMemo(
+    () => activeCards.filter((item) => (item.curationDecision ?? "keep") === "needs_review").length,
+    [activeCards],
+  );
+
+  const sectionBuckets = useMemo(() => {
+    const placed = new Set<string>();
+    const buckets: Partial<Record<SectionId, RevisionItem[]>> = {};
+    for (const section of sections) {
+      const list: RevisionItem[] = [];
+      for (const item of activeCards) {
+        if (placed.has(item.id)) continue;
+        if (section.match(item)) {
+          placed.add(item.id);
+          list.push(item);
+        }
+      }
+      buckets[section.id] = list;
+    }
+    return buckets;
+  }, [activeCards]);
 
   function fixMath(item: RevisionItem) {
     store.upsertRevisionItem({
@@ -52,6 +129,7 @@ export default function PackPage() {
   }
 
   async function aiCleanMath(item: RevisionItem) {
+    if (!apiOk) return;
     setMathStatus("");
     const response = await fetch("/api/ai-clean-math", {
       method: "POST",
@@ -73,39 +151,56 @@ export default function PackPage() {
     setMathStatus(payload.issues?.length ? "AI cleaned math, but KaTeX still reported issues." : "AI cleaned math.");
   }
 
-  const visibleSections = sections.filter((section) => filter === "all" || section.id === filter);
-
   return (
     <div>
-      <PageHeader title="Study Pack" description="A one-page revision checklist for the cards generated from your notes." />
+      <PageHeader
+        title="Study pack"
+        description="Your course summary and card checklist. Triage “Needs review” and “Low math quality” before normal revision."
+      />
 
       <Card className="mb-6">
         <CardHeader>
-          <CardTitle>{title}</CardTitle>
-          <CardDescription>{reviewedCount}/{activeCards.length} cards reviewed</CardDescription>
+          <CardTitle className="text-xl">{title}</CardTitle>
+          <CardDescription>
+            {activeCards.length} card{activeCards.length === 1 ? "" : "s"} total
+            {store.curationReport ? ` · pack completeness about ${store.curationReport.packCompletenessScore ?? 0}%` : ""}
+          </CardDescription>
         </CardHeader>
-        <CardContent className="grid gap-3 text-sm md:grid-cols-5">
-          <PackStat label="Formulas" value={count(activeCards, (item) => item.revisionPackCategory === "formulasToKnow")} />
-          <PackStat label="Algorithms" value={count(activeCards, (item) => item.type === "algorithm" || item.cardPurpose === "method_steps")} />
-          <PackStat label="Proofs" value={count(activeCards, (item) => item.revisionPackCategory === "proofsToKnow")} />
-          <PackStat label="Worked examples" value={count(activeCards, (item) => item.revisionPackCategory === "workedExamplePatterns" || item.cardPurpose === "calculation_template")} />
-          <PackStat label="Needs review" value={count(activeCards, (item) => item.curationDecision === "needs_review" || hasLowLatexQuality(item))} warning />
+        <CardContent className="grid gap-3 text-sm md:grid-cols-4 lg:grid-cols-7">
+          <PackStat label="Cards" value={activeCards.length} />
+          <PackStat label="Needs review" value={needsReviewOnlyCount} warning={needsReviewOnlyCount > 0} />
+          <PackStat label="Low math quality" value={lowMathCount} warning={lowMathCount > 0} />
+          <PackStat label="Kept" value={activeCards.filter((item) => (item.curationDecision ?? "keep") === "keep").length} />
+          <PackStat label="Rejected (total)" value={store.rejectedItems.length + activeCards.filter((i) => i.curationDecision === "reject").length} />
+        </CardContent>
+        <CardContent className="flex flex-wrap gap-2 border-t pt-4">
+          <Link className="inline-flex h-10 items-center justify-center rounded-md bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-800" href="/review">
+            Start reviewing
+          </Link>
+          <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50" href="/cards">
+            Edit deck
+          </Link>
+          <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50" href="/cards?tab=needs_review">
+            Review issues
+          </Link>
+          {lowMathCount > 0 ? (
+            <Link
+              className="inline-flex h-10 items-center justify-center rounded-md border border-amber-300 bg-amber-50 px-4 py-2 text-sm font-medium text-amber-950 hover:bg-amber-100"
+              href="/cards?tab=low_math"
+            >
+              Fix math issues ({lowMathCount})
+            </Link>
+          ) : null}
         </CardContent>
       </Card>
 
-      <div className="mb-4 flex flex-wrap items-center gap-2">
-        <Link className="inline-flex h-10 items-center justify-center rounded-md bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-800" href="/review">Start reviewing</Link>
-        <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50" href="/cards">Edit deck</Link>
-        <Select className="max-w-xs" value={filter} onChange={(event) => setFilter(event.target.value)}>
-          <option value="all">All sections</option>
-          {sections.map((section) => <option key={section.id} value={section.id}>{section.title}</option>)}
-        </Select>
-      </div>
       {mathStatus ? <p className="mb-4 text-sm text-slate-600">{mathStatus}</p> : null}
+      {apiOk === false ? <p className="mb-4 text-xs text-slate-500">AI math cleanup is unavailable without a server API key. Local “Fix math” still works.</p> : null}
 
-      <div className="space-y-6">
-        {visibleSections.map((section) => {
-          const cards = cardsForSection(activeCards, section);
+      <div className="space-y-8">
+        {sections.map((section) => {
+          const cards = sectionBuckets[section.id] ?? [];
+          if (cards.length === 0) return null;
           return (
             <Card key={section.id}>
               <CardHeader>
@@ -113,11 +208,11 @@ export default function PackPage() {
                 <CardDescription>{cards.length} card(s)</CardDescription>
               </CardHeader>
               <CardContent className="grid gap-3 md:grid-cols-2 xl:grid-cols-3">
-                {cards.length === 0 ? <p className="text-sm text-slate-500">No cards in this section yet.</p> : null}
                 {cards.map((item) => (
                   <CompactPackCard
                     key={item.id}
                     item={item}
+                    showAiClean={Boolean(apiOk)}
                     onEdit={() => setEditing(item)}
                     onDelete={() => store.deleteRevisionItem(item.id)}
                     onFixMath={() => fixMath(item)}
@@ -129,6 +224,22 @@ export default function PackPage() {
           );
         })}
       </div>
+
+      {activeCards.length === 0 ? (
+        <Card className="mt-6 border-dashed">
+          <CardContent className="py-8 text-center text-sm text-slate-600">
+            No cards yet.{" "}
+            <Link className="font-medium text-blue-700 underline" href="/upload">
+              Upload notes
+            </Link>{" "}
+            and{" "}
+            <Link className="font-medium text-blue-700 underline" href="/extract">
+              run analysis
+            </Link>
+            .
+          </CardContent>
+        </Card>
+      ) : null}
 
       {editing ? (
         <Dialog open onOpenChange={(open) => { if (!open) setEditing(undefined); }}>
@@ -147,27 +258,56 @@ export default function PackPage() {
   );
 }
 
-function CompactPackCard({ item, onEdit, onDelete, onFixMath, onAiCleanMath }: { item: RevisionItem; onEdit: () => void; onDelete: () => void; onFixMath: () => void; onAiCleanMath: () => void }) {
+function CompactPackCard({
+  item,
+  onEdit,
+  onDelete,
+  onFixMath,
+  onAiCleanMath,
+  showAiClean,
+}: {
+  item: RevisionItem;
+  onEdit: () => void;
+  onDelete: () => void;
+  onFixMath: () => void;
+  onAiCleanMath: () => void;
+  showAiClean: boolean;
+}) {
+  const preview = (item.answer ?? item.statement ?? "").replace(/\s+/g, " ").trim().slice(0, 140);
+
   return (
     <div className="rounded-lg border bg-white p-3">
       <div className="flex items-start justify-between gap-3">
-        <div>
+        <div className="min-w-0">
           <MathMarkdown content={item.cardFront} className="bg-transparent p-0 text-base font-semibold text-slate-950" />
-          {item.taskPrompt ? <p className="mt-1 text-xs text-slate-500">{item.taskPrompt}</p> : null}
+          {preview ? <p className="mt-1 line-clamp-2 text-xs text-slate-500">{preview}{preview.length >= 140 ? "…" : ""}</p> : null}
         </div>
         <Badge variant={item.importance}>{item.importance}</Badge>
       </div>
       <div className="mt-3 flex flex-wrap gap-1">
         <Badge variant="outline">{labelForCategory(item)}</Badge>
-        <Badge variant="outline">page {item.pageNumber ?? "?"}</Badge>
-        {hasLowLatexQuality(item) ? <Badge variant="unknown">Fix math</Badge> : null}
+        <Badge variant="outline">priority {item.priorityScore ?? "—"}</Badge>
+        <Badge variant="outline">{item.pageNumber != null ? `p. ${item.pageNumber}` : "page ?"}</Badge>
+        {hasLowLatexQuality(item) ? <Badge variant="unknown">Math</Badge> : null}
       </div>
       <div className="mt-3 flex flex-wrap gap-2">
-        <Link className="inline-flex h-8 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50" href={`/review?card=${item.id}`}>Review</Link>
-        <Button size="sm" variant="outline" onClick={onEdit}>Edit</Button>
-        <Button size="sm" variant="outline" onClick={onFixMath}>Fix math</Button>
-        <Button size="sm" variant="outline" onClick={onAiCleanMath}>AI clean math</Button>
-        <Button size="sm" variant="destructive" onClick={onDelete}>Delete</Button>
+        <Link className="inline-flex h-8 items-center justify-center rounded-md border border-slate-300 bg-white px-3 text-sm font-medium hover:bg-slate-50" href={`/review?card=${item.id}`}>
+          Review
+        </Link>
+        <Button size="sm" variant="outline" type="button" onClick={onEdit}>
+          Edit
+        </Button>
+        <Button size="sm" variant="outline" type="button" onClick={onFixMath}>
+          Fix math
+        </Button>
+        {showAiClean ? (
+          <Button size="sm" variant="outline" type="button" onClick={onAiCleanMath}>
+            AI clean math
+          </Button>
+        ) : null}
+        <Button size="sm" variant="destructive" type="button" onClick={onDelete}>
+          Delete
+        </Button>
       </div>
     </div>
   );
@@ -182,22 +322,12 @@ function PackStat({ label, value, warning }: { label: string; value: number; war
   );
 }
 
-function cardsForSection(cards: RevisionItem[], section: Section) {
-  return cards.filter((item) =>
-    section.categories.includes(item.revisionPackCategory) ||
-    Boolean(section.match?.(item))
-  );
-}
-
-function count(cards: RevisionItem[], predicate: (item: RevisionItem) => boolean) {
-  return cards.filter(predicate).length;
-}
-
 function labelForCategory(item: RevisionItem) {
-  return (item.revisionPackCategory ?? item.cardPurpose).replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ");
+  const raw = item.revisionPackCategory ?? item.cardPurpose ?? item.type;
+  return String(raw).replace(/([a-z])([A-Z])/g, "$1 $2").replace(/_/g, " ");
 }
 
 function inferPackTitle(cards: RevisionItem[]) {
   if (cards.some((item) => /monte carlo|importance sampling/i.test(`${item.cardFront} ${item.answer}`))) return "Monte Carlo Integration";
-  return "Revision Pack";
+  return "Revision pack";
 }
