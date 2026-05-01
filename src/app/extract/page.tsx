@@ -6,6 +6,7 @@ import Link from "next/link";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { ErrorBoundary } from "@/components/error-boundary";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
@@ -15,12 +16,28 @@ import { extractRevisionItems, generateManualExtractionPrompt, loadLlmPipelineSe
 import { getPrimaryCardPreview, hasLowLatexQuality } from "@/lib/card-render";
 import { normalizeMathNotation } from "@/lib/revision-item-utils";
 import { buildSegmentationDebug, segmentRevisionCandidates } from "@/lib/segmentation";
+import { resetStudyStateStorage } from "@/lib/storage";
 import { validateRevisionItemsPayload, withValidation } from "@/lib/validation";
 import type { CuratedDeckResult, ExtractionVerificationReport, ParsedDocument, RevisionItem } from "@/lib/types";
 import { useStudyStore } from "@/hooks/use-study-store";
 import { createId } from "@/lib/utils";
 
 export default function ExtractPage() {
+  return (
+    <ErrorBoundary
+      title="Extraction UI error"
+      description="The extraction page caught a runtime error. Parsed files remain in local data unless you reset them."
+      onResetLocalData={() => {
+        resetStudyStateStorage();
+        window.location.reload();
+      }}
+    >
+      <ExtractPageContent />
+    </ErrorBoundary>
+  );
+}
+
+function ExtractPageContent() {
   const store = useStudyStore();
   const [extracting, setExtracting] = useState(false);
   const [status, setStatus] = useState<string>("");
@@ -28,11 +45,13 @@ export default function ExtractPage() {
   const [manualJson, setManualJson] = useState("");
   const [manualErrors, setManualErrors] = useState<string[]>([]);
   const [apiError, setApiError] = useState<string>("");
+  const [runtimeErrors, setRuntimeErrors] = useState<string[]>([]);
+  const [debugMode, setDebugMode] = useState(false);
   const [activeTab, setActiveTab] = useState<"kept" | "needs_review" | "rejected" | "embedded" | "course_map">("kept");
 
   const settings = loadLlmPipelineSettings();
-  const notesDocuments = useMemo(() => store.notesFiles.map((file) => file.parsedDocument ?? toLegacyParsedDocument(file.name, file.content)), [store.notesFiles]);
-  const guidanceDocuments = useMemo(() => store.guidanceFiles.map((file) => file.parsedDocument ?? toLegacyParsedDocument(file.name, file.content)), [store.guidanceFiles]);
+  const notesDocuments = useMemo(() => store.notesFiles.map((file) => normaliseParsedDocument(file.parsedDocument ?? toLegacyParsedDocument(file.name, file.content), file.name, file.content)), [store.notesFiles]);
+  const guidanceDocuments = useMemo(() => store.guidanceFiles.map((file) => normaliseParsedDocument(file.parsedDocument ?? toLegacyParsedDocument(file.name, file.content), file.name, file.content)), [store.guidanceFiles]);
   const notesText = useMemo(() => notesDocuments.map((file) => file.fullText).join("\n\n"), [notesDocuments]);
   const guidanceText = useMemo(() => guidanceDocuments.map((file) => file.fullText).join("\n\n"), [guidanceDocuments]);
   const sourceFile = useMemo(() => store.notesFiles.map((file) => file.name).join(", ") || "Mock notes", [store.notesFiles]);
@@ -57,46 +76,52 @@ export default function ExtractPage() {
     () => guidanceDocuments.some((doc) => !doc.diagnostics.success || !doc.fullText.trim()),
     [guidanceDocuments],
   );
+  const curationDiagnostics = useMemo(() => buildCurationDiagnostics(store.revisionItems, store.rejectedItems, store.embeddedItems), [store.embeddedItems, store.rejectedItems, store.revisionItems]);
 
   async function runExtraction() {
     setExtracting(true);
     setStatus("");
     setApiError("");
+    setRuntimeErrors([]);
     setVerification(null);
 
-    if (settings.mode === "manual_json_import") {
-      setStatus("Manual JSON import mode is enabled. Paste JSON below and validate/import it.");
-      setExtracting(false);
-      return;
-    }
-
-    if (failedDocuments.length > 0) {
-      setStatus("Extraction blocked: one or more uploaded files failed to parse. Fix parsing issues and retry.");
-      setExtracting(false);
-      return;
-    }
-
-    const result = await extractRevisionItems({ notesDocuments, guidanceDocuments, sourceFile });
-    store.setRevisionItems(result.items, result.rejectedItems, {
-      embeddedItems: result.embeddedItems,
-      courseStructureMap: result.courseStructureMap,
-      courseKnowledgeMap: result.courseKnowledgeMap,
-      curationReport: result.curationReport,
-    });
-    setVerification(result.verification);
-    if (result.error) setApiError(result.error);
-
-    if (settings.mode === "ai_key_revision_analysis" || settings.mode === "openai_api" || settings.mode === "cheap_scan_then_verify") {
-      if (result.items.length === 0) {
-        setStatus("AI key revision analysis returned no kept items. Check parsing diagnostics and rejected low-relevance items.");
-      } else {
-        setStatus(`AI key revision analysis complete with ${result.curationReport.keptCount} kept, ${result.curationReport.needsReviewCount} needing review, ${result.curationReport.embeddedCount} embedded, and ${result.rejectedItems.length} rejected item(s).`);
+    try {
+      if (settings.mode === "manual_json_import") {
+        setStatus("Manual JSON import mode is enabled. Paste JSON below and validate/import it.");
+        return;
       }
-    } else {
-      setStatus(`Deck curation complete via local deterministic rules with ${result.curationReport.keptCount} kept, ${result.curationReport.needsReviewCount} needing review, ${result.curationReport.embeddedCount} embedded, and ${result.rejectedItems.length} rejected item(s).`);
-    }
 
-    setExtracting(false);
+      if (failedDocuments.length > 0) {
+        setStatus("Extraction blocked: one or more uploaded files failed to parse. Fix parsing issues and retry.");
+        return;
+      }
+
+      const result = await extractRevisionItems({ notesDocuments, guidanceDocuments, sourceFile });
+      store.setRevisionItems(result.items, result.rejectedItems, {
+        embeddedItems: result.embeddedItems,
+        courseStructureMap: result.courseStructureMap,
+        courseKnowledgeMap: result.courseKnowledgeMap,
+        curationReport: result.curationReport,
+      });
+      setVerification(result.verification);
+      if (result.error) setApiError(result.error);
+
+      if (settings.mode === "ai_key_revision_analysis" || settings.mode === "openai_api" || settings.mode === "cheap_scan_then_verify") {
+        if (result.items.length === 0) {
+          setStatus("AI key revision analysis returned no kept items. Check parsing diagnostics and rejected low-relevance items.");
+        } else {
+          setStatus(`AI key revision analysis complete with ${result.curationReport.keptCount} kept, ${result.curationReport.needsReviewCount} needing review, ${result.curationReport.embeddedCount} embedded, and ${result.rejectedItems.length} rejected item(s).`);
+        }
+      } else {
+        setStatus(`Deck curation complete via local deterministic rules with ${result.curationReport.keptCount} kept, ${result.curationReport.needsReviewCount} needing review, ${result.curationReport.embeddedCount} embedded, and ${result.rejectedItems.length} rejected item(s).`);
+      }
+    } catch (error) {
+      const message = renderErrorMessage(error);
+      setRuntimeErrors((current) => [...current, message]);
+      setStatus("Extraction failed, but parsed text and segmentation diagnostics are still available below.");
+    } finally {
+      setExtracting(false);
+    }
   }
 
   function handleManualImport() {
@@ -203,9 +228,22 @@ export default function ExtractPage() {
               {extracting ? "Analysing..." : "Run AI key revision analysis"}
             </Button>
             <Button variant="outline" onClick={handlePromptCopy}>Generate manual ChatGPT prompt</Button>
+            <label className="flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm">
+              <input type="checkbox" checked={debugMode} onChange={(event) => setDebugMode(event.target.checked)} />
+              Debug mode
+            </label>
           </div>
           {status ? <p className="text-sm text-blue-700">{status}</p> : null}
           {apiError ? <p className="text-sm text-red-700">{apiError}</p> : null}
+          {runtimeErrors.length > 0 ? (
+            <div className="rounded-lg border border-red-200 bg-red-50 p-3 text-sm text-red-800">
+              <div className="flex flex-wrap items-center justify-between gap-3">
+                <p className="font-medium">Runtime error</p>
+                <Button size="sm" variant="destructive" onClick={() => { resetStudyStateStorage(); window.location.reload(); }}>Reset local data</Button>
+              </div>
+              {runtimeErrors.map((error, index) => <pre key={`${error}-${index}`} className="mt-2 whitespace-pre-wrap text-xs">{error}</pre>)}
+            </div>
+          ) : null}
           {guidanceFailed ? (
             <p className="text-sm text-amber-700">
               Guidance could not be parsed, so importance classification may be unreliable.
@@ -347,9 +385,9 @@ export default function ExtractPage() {
         </Card>
       ) : null}
 
-      <Card className="mt-6">
+      {debugMode ? <Card className="mt-6">
         <CardHeader>
-          <CardTitle>Segmentation Debug</CardTitle>
+          <CardTitle>Segmentation diagnostics</CardTitle>
           <CardDescription>{candidates.length} candidate(s) found before local rules or LLM extraction.</CardDescription>
         </CardHeader>
         <CardContent className="space-y-3">
@@ -395,7 +433,36 @@ export default function ExtractPage() {
             ))}
           </div>
         </CardContent>
-      </Card>
+      </Card> : null}
+
+      {debugMode ? (
+        <Card className="mt-6">
+          <CardHeader>
+            <CardTitle>Curation diagnostics</CardTitle>
+            <CardDescription>Current stored decisions and reasons from the latest extraction/import.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            <div className="flex flex-wrap gap-2">
+              <Badge variant="must_know">kept {curationDiagnostics.keptCount}</Badge>
+              <Badge variant="unknown">needs review {curationDiagnostics.needsReviewCount}</Badge>
+              <Badge variant="outline">embedded {curationDiagnostics.embeddedCount}</Badge>
+              <Badge variant="not_required">rejected {curationDiagnostics.rejectedCount}</Badge>
+            </div>
+            {curationDiagnostics.rejectedCategories.length ? (
+              <p><strong>Rejected categories:</strong> {curationDiagnostics.rejectedCategories.join(", ")}</p>
+            ) : null}
+            <div className="max-h-96 space-y-2 overflow-auto">
+              {curationDiagnostics.decisions.map((decision) => (
+                <div key={decision.id} className="rounded border bg-white p-2">
+                  <p className="font-medium">{decision.title}</p>
+                  <p className="text-xs text-slate-500">{decision.kind} · {decision.decision} · {decision.category ?? "no category"}</p>
+                  <p className="mt-1 text-slate-700">{decision.reason}</p>
+                </div>
+              ))}
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
 
       {settings.mode === "manual_json_import" ? (
         <Card className="mt-6">
@@ -416,7 +483,7 @@ export default function ExtractPage() {
         </Card>
       ) : null}
 
-      <Card className="mt-6">
+      {debugMode ? <Card className="mt-6">
         <CardHeader>
           <CardTitle>Parsing diagnostics</CardTitle>
           <CardDescription>Preview parsed text and extraction quality before LLM extraction.</CardDescription>
@@ -437,13 +504,14 @@ export default function ExtractPage() {
                 {typeof doc.diagnostics.pageCount === "number" ? ` · pages: ${doc.diagnostics.pageCount}` : ""}
                 {doc.diagnostics.likelyScannedPdf ? " · likelyScannedPdf: true" : ""}
               </p>
+              {doc.pages?.length ? <p className="mt-1 text-xs text-slate-500">chars per page: {doc.pages.map((page) => `${page.pageNumber}:${page.charCount}`).join(", ")}</p> : null}
               {doc.diagnostics.warnings.length > 0 ? <p className="mt-2 text-sm text-amber-700">{doc.diagnostics.warnings.join(" | ")}</p> : null}
               {doc.diagnostics.errors.length > 0 ? <p className="mt-2 text-sm text-red-700">{doc.diagnostics.errors.join(" | ")}</p> : null}
               <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded bg-slate-50 p-2 text-xs">{doc.fullText.slice(0, 1500) || "(no parsed text)"}</pre>
             </div>
           ))}
         </CardContent>
-      </Card>
+      </Card> : null}
 
       {needsReviewItems.length > 0 ? (
         <Card className="mt-6 border-amber-300 bg-amber-50">
@@ -698,6 +766,80 @@ function isCuratedDeckResult(value: unknown): value is CuratedDeckResult {
       Array.isArray((value as Partial<CuratedDeckResult>).keptItems) &&
       Array.isArray((value as Partial<CuratedDeckResult>).rejectedItems),
   );
+}
+
+function buildCurationDiagnostics(
+  revisionItems: RevisionItem[],
+  rejectedItems: { id: string; title: string; rejectionCategory?: string; rejectionReason?: string; confidence?: string }[],
+  embeddedItems: { id: string; content: string; reason?: string; sourceLocation?: string }[],
+) {
+  const keptCount = revisionItems.filter((item) => !item.isDeleted && (item.curationDecision ?? "keep") === "keep").length;
+  const needsReviewCount = revisionItems.filter((item) => !item.isDeleted && (item.curationDecision ?? "keep") === "needs_review").length;
+  const rejectedCategories = Array.from(new Set(rejectedItems.map((item) => item.rejectionCategory).filter(Boolean)));
+  return {
+    keptCount,
+    needsReviewCount,
+    rejectedCount: rejectedItems.length,
+    embeddedCount: embeddedItems.length,
+    rejectedCategories,
+    decisions: [
+      ...revisionItems.map((item) => ({
+        id: item.id,
+        title: item.displayTitle || item.title || item.cardFront || "Untitled card",
+        kind: "card",
+        decision: item.curationDecision ?? "keep",
+        category: item.cardPurpose,
+        reason: item.curationReason || item.relevanceReason || item.guidanceReason || "No decision reason stored.",
+      })),
+      ...rejectedItems.map((item) => ({
+        id: item.id,
+        title: item.title || "Rejected item",
+        kind: "rejected",
+        decision: "reject",
+        category: item.rejectionCategory,
+        reason: item.rejectionReason || "No rejection reason stored.",
+      })),
+      ...embeddedItems.map((item) => ({
+        id: item.id,
+        title: item.sourceLocation || "Embedded content",
+        kind: "embedded",
+        decision: "embed_in_parent",
+        category: "embedded",
+        reason: item.reason || previewText(item.content || ""),
+      })),
+    ],
+  };
+}
+
+function normaliseParsedDocument(document: ParsedDocument, sourceFile: string, fallbackText: string): ParsedDocument {
+  const fullText = typeof document.fullText === "string" ? document.fullText : fallbackText || "";
+  const pages = Array.isArray(document.pages) ? document.pages : [];
+  return {
+    sourceFile: document.sourceFile || sourceFile || "Unknown source",
+    fileType: document.fileType || "unknown",
+    fullText,
+    pages,
+    sections: Array.isArray(document.sections) ? document.sections : [],
+    diagnostics: {
+      success: document.diagnostics?.success ?? Boolean(fullText.trim()),
+      charCount: document.diagnostics?.charCount ?? fullText.length,
+      pageCount: document.diagnostics?.pageCount ?? (pages.length || undefined),
+      warnings: Array.isArray(document.diagnostics?.warnings) ? document.diagnostics.warnings : [],
+      errors: Array.isArray(document.diagnostics?.errors) ? document.diagnostics.errors : [],
+      likelyScannedPdf: document.diagnostics?.likelyScannedPdf,
+      extractionQuality: document.diagnostics?.extractionQuality ?? (fullText.trim() ? "medium" : "failed"),
+    },
+  };
+}
+
+function renderErrorMessage(error: unknown) {
+  if (error instanceof Error) return `${error.message}${error.stack ? `\n${error.stack}` : ""}`;
+  if (typeof error === "string") return error;
+  try {
+    return JSON.stringify(error, null, 2);
+  } catch {
+    return "Unknown extraction error.";
+  }
 }
 
 function toLegacyParsedDocument(sourceFile: string, fullText: string): ParsedDocument {

@@ -1,6 +1,7 @@
 import { curateRevisionDeck } from "@/lib/curation";
 import { defaultLlmPipelineSettings, type LlmPipelineSettings } from "@/lib/llm/provider";
 import { extractionSystemPrompt } from "@/lib/llm/prompts";
+import { normalizeCuratedRevisionResult } from "@/lib/normalization";
 import { attachProofsToPreviousTheorem, segmentRevisionCandidates } from "@/lib/segmentation";
 import type {
   CourseKnowledgeMap,
@@ -43,6 +44,8 @@ export async function extractRevisionItems({
   guidanceDocuments,
   sourceFile = "Uploaded notes",
 }: ExtractRevisionItemsInput): Promise<ExtractRevisionItemsResult> {
+  notesDocuments = normalizeParsedDocuments(notesDocuments);
+  guidanceDocuments = normalizeParsedDocuments(guidanceDocuments);
   const notesText = notesDocuments.map((doc) => doc.fullText).join("\n\n");
   const guidanceText = guidanceDocuments.map((doc) => doc.fullText).join("\n\n");
   const hasRealInput = Boolean(notesText.trim() || guidanceText.trim());
@@ -147,32 +150,35 @@ async function extractViaApi(input: {
       headers: { "Content-Type": "application/json" },
       body: JSON.stringify(input),
     });
-    const payload = (await response.json()) as Partial<ExtractRevisionItemsResult>;
+    const payload = await parseJsonResponse(response);
+    const normalized = normalizeCuratedRevisionResult(payload);
+    const verification = normalizeVerificationReport((payload as Partial<ExtractRevisionItemsResult>).verification);
+    const error = errorMessage((payload as Partial<ExtractRevisionItemsResult>).error);
     if (!response.ok) {
       return {
-        items: payload.items ?? [],
-        needsReviewItems: payload.needsReviewItems ?? [],
-        rejectedItems: payload.rejectedItems ?? [],
-        embeddedItems: payload.embeddedItems ?? [],
-        verification: payload.verification,
-        courseStructureMap: payload.courseStructureMap,
-        courseKnowledgeMap: payload.courseKnowledgeMap,
-        curationReport: payload.curationReport,
-        error: payload.error ?? "LLM curation failed.",
+        items: normalized.keptItems,
+        needsReviewItems: normalized.needsReviewItems,
+        rejectedItems: normalized.rejectedItems,
+        embeddedItems: normalized.embeddedItems,
+        verification,
+        courseStructureMap: normalized.courseStructureMap,
+        courseKnowledgeMap: normalized.courseKnowledgeMap,
+        curationReport: normalized.curationReport,
+        error: error ?? "LLM curation failed.",
       };
     }
     return {
-      items: payload.items ?? [],
-      needsReviewItems: payload.needsReviewItems ?? [],
-      rejectedItems: payload.rejectedItems ?? [],
-      embeddedItems: payload.embeddedItems ?? [],
-      verification: payload.verification,
-      courseStructureMap: payload.courseStructureMap,
-      courseKnowledgeMap: payload.courseKnowledgeMap,
-      curationReport: payload.curationReport,
+      items: normalized.keptItems,
+      needsReviewItems: normalized.needsReviewItems,
+      rejectedItems: normalized.rejectedItems,
+      embeddedItems: normalized.embeddedItems,
+      verification,
+      courseStructureMap: normalized.courseStructureMap,
+      courseKnowledgeMap: normalized.courseKnowledgeMap,
+      curationReport: normalized.curationReport,
     };
-  } catch {
-    return { items: [], needsReviewItems: [], rejectedItems: [], embeddedItems: [], error: "Network error while contacting extraction API." };
+  } catch (error) {
+    return { items: [], needsReviewItems: [], rejectedItems: [], embeddedItems: [], error: errorMessage(error) ?? "Network error while contacting extraction API." };
   }
 }
 
@@ -294,6 +300,62 @@ function emptyCurationReport(totalCandidates: number, keptCount: number, needsRe
     weakParsingWarnings: [],
     notes: [],
   };
+}
+
+function normalizeParsedDocuments(documents: unknown): ParsedDocument[] {
+  if (!Array.isArray(documents)) return [];
+  return documents.flatMap((document) => {
+    if (!document || typeof document !== "object") return [];
+    const value = document as Partial<ParsedDocument>;
+    const fullText = typeof value.fullText === "string" ? value.fullText : "";
+    return [{
+      sourceFile: typeof value.sourceFile === "string" && value.sourceFile.trim() ? value.sourceFile : "Unknown source",
+      fileType: value.fileType ?? "unknown",
+      fullText,
+      pages: Array.isArray(value.pages) ? value.pages : [],
+      sections: Array.isArray(value.sections) ? value.sections : [],
+      diagnostics: {
+        success: value.diagnostics?.success ?? Boolean(fullText.trim()),
+        charCount: value.diagnostics?.charCount ?? fullText.length,
+        pageCount: value.diagnostics?.pageCount ?? (Array.isArray(value.pages) ? value.pages.length : undefined),
+        warnings: Array.isArray(value.diagnostics?.warnings) ? value.diagnostics.warnings : [],
+        errors: Array.isArray(value.diagnostics?.errors) ? value.diagnostics.errors : [],
+        likelyScannedPdf: value.diagnostics?.likelyScannedPdf,
+        extractionQuality: value.diagnostics?.extractionQuality ?? (fullText.trim() ? "medium" : "failed"),
+      },
+    }];
+  });
+}
+
+async function parseJsonResponse(response: Response): Promise<unknown> {
+  try {
+    return await response.json();
+  } catch {
+    return { error: response.ok ? "Extraction API returned non-JSON data." : `Extraction API failed with status ${response.status}.` };
+  }
+}
+
+function normalizeVerificationReport(report: unknown): ExtractionVerificationReport | undefined {
+  if (!report || typeof report !== "object") return undefined;
+  const value = report as Partial<ExtractionVerificationReport>;
+  return {
+    missingCandidates: Array.isArray(value.missingCandidates) ? value.missingCandidates : [],
+    suspiciousItems: Array.isArray(value.suspiciousItems) ? value.suspiciousItems : [],
+    guidanceAmbiguities: Array.isArray(value.guidanceAmbiguities) ? value.guidanceAmbiguities : [],
+    overallCompleteness: value.overallCompleteness === "high" || value.overallCompleteness === "medium" || value.overallCompleteness === "low" ? value.overallCompleteness : "low",
+    notes: typeof value.notes === "string" ? value.notes : "Verification unavailable.",
+  };
+}
+
+function errorMessage(error: unknown) {
+  if (!error) return undefined;
+  if (error instanceof Error) return error.message;
+  if (typeof error === "string") return error;
+  try {
+    return JSON.stringify(error);
+  } catch {
+    return "Unknown extraction error.";
+  }
 }
 /*
 import { createMockRevisionItems } from "@/lib/mock-data";

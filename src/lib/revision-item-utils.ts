@@ -2,7 +2,7 @@ import { createId } from "@/lib/utils";
 import { inferTopic, splitShortLeadingTitle, stripLeadingLabel } from "@/lib/segmentation";
 import type { LatexQualityReport, RevisionCandidate, RevisionItem, RevisionItemType } from "@/lib/types";
 
-const labelledItemRegex = /\b(Definition|Theorem|Lemma|Proposition|Corollary|Proof|Remark|Example|Assumption|Property|Algorithm|Formula)\s*(?:[A-Za-z]?\d+(?:\.\d+)*)?\b/g;
+const labelledItemRegex = /\b(Definition|Theorem|Lemma|Proposition|Corollary|Proof|Remark|Example|Question|Assumption|Property|Algorithm|Formula)\s*(?:[A-Za-z]?\d+(?:\.\d+)*)?\b/g;
 const proofMarkerRegex = /\bProof(?:\s+of\s+(?:Theorem|Lemma|Proposition|Corollary)\s*[A-Za-z]?\d*(?:\.\d+)*)?\s*[:.]/i;
 
 export function normaliseRevisionItem(item: RevisionItem): RevisionItem {
@@ -21,9 +21,9 @@ export function normaliseRevisionItem(item: RevisionItem): RevisionItem {
   const cardFront = buildCardFront({ ...item, type: correctedType, theoremNumber, conceptName, displayTitle });
   const title = normaliseTitle({ ...item, type: correctedType, theoremNumber, statement, titleTopic: statementParts.title, conceptName, displayTitle });
   const extractionWarning = item.extractionWarning ?? buildExtractionWarning({ ...item, type: correctedType, title, statement, proof });
-  const proofRequired = theoremLike(correctedType) ? item.proofRequired : undefined;
+  const proofRequired = theoremLike(correctedType) ? (/\bnot examinable|non-examinable|not required\b/i.test(`${statement} ${proof}`) ? false : item.proofRequired) : undefined;
   const cardPurpose = item.cardPurpose ?? inferCardPurpose(correctedType, title, statement, proofRequired);
-  const taskPrompt = item.taskPrompt ?? buildTaskPrompt(correctedType, Boolean(proofRequired), cardPurpose);
+  const taskPrompt = specificTaskPrompt(conceptName) ?? item.taskPrompt ?? buildTaskPrompt(correctedType, Boolean(proofRequired), cardPurpose);
   const answer = cleanAnswer(correctedType, statement, item.answer);
   const statementLatex = repairMathTextToLatex(item.statementLatex || statement);
   const proofLatex = proof ? repairMathTextToLatex(item.proofLatex || proof) : undefined;
@@ -129,6 +129,13 @@ export function normalizeMathNotation(value: string) {
 
   text = replaceOutsideInlineMath(
     text,
+    /\(\s*X_?1\s*,\s*(?:\.\s*){2,}\s*,?\s*X_?n\s*\)\s*['’]/g,
+    () => "\\((X_1,\\ldots,X_n)'\\)",
+    false,
+  );
+
+  text = replaceOutsideInlineMath(
+    text,
     /\bm\s*=\s*\(\s*E\s*X_?1\s*,\s*(?:\.\s*){2,}\s*,?\s*E\s*X_?n\s*\)\s*['’]?\s+in\s+R\s*\^?\s*n\b/gi,
     () => "\\(m=(\\mathbb{E}X_1,\\ldots,\\mathbb{E}X_n)'\\in\\mathbb{R}^n\\)",
     false,
@@ -142,17 +149,18 @@ export function normalizeMathNotation(value: string) {
   );
 
   text = replaceOutsideInlineMath(text, /\bn\s*x\s*n\b/gi, () => "n\\times n");
-  text = replaceOutsideInlineMath(text, /\bSigma_?\s*ij\s*=\s*Cov\s*\(\s*X_?i\s*,\s*X_?j\s*\)/gi, () => "\\Sigma_{ij}=\\operatorname{Cov}(X_i,X_j)");
-  text = replaceOutsideInlineMath(text, /\bΣ_?\s*ij\s*=\s*Cov\s*\(\s*Xi\s*,\s*Xj\s*\)/g, () => "\\Sigma_{ij}=\\operatorname{Cov}(X_i,X_j)");
-  text = replaceOutsideInlineMath(text, /\bSigma\b/g, () => "\\Sigma");
-  text = replaceOutsideInlineMath(text, /\bΣ\b/g, () => "\\Sigma");
-  text = replaceOutsideInlineMath(text, /\bCov\b/g, () => "\\operatorname{Cov}");
   text = replaceOutsideInlineMath(text, /\bmu\b/gi, () => "\\mu");
   text = replaceOutsideInlineMath(text, /\brho\b/gi, () => "\\rho");
 
   text = replaceOutsideInlineMath(
     text,
     /\ba\s*['’]\s*X\s*=\s*sum_?i\s*=\s*1\s*\^?\s*n\s*a_?i\s*X_?i\b/gi,
+    () => "\\(a'X=\\sum_{i=1}^n a_iX_i\\)",
+    false,
+  );
+  text = replaceOutsideInlineMath(
+    text,
+    /\ba\s*[′']\s*X\s*=\s*(?:P|∑|sum)\s*n?\s*i\s*=\s*1\s*a_?i\s*X_?i\b/gi,
     () => "\\(a'X=\\sum_{i=1}^n a_iX_i\\)",
     false,
   );
@@ -180,6 +188,59 @@ export function normalizeMathNotation(value: string) {
     text,
     /\bX\s*=\s*\(\s*X\s*_?\s*t\s*\)\s*(?:_\{\s*t\s*(?:in|∈|\\in)\s*T\s*\}|\s*t\s*(?:in|∈)\s*T)/gi,
     () => "\\(X=(X_t)_{t\\in T}\\)",
+    false,
+  );
+  text = replaceOutsideInlineMath(
+    text,
+    /\bT\s*(?:⊆|\\subseteq|subset(?:eq)?|is a subset of)\s*R\s*\^?\s*d\b/gi,
+    () => "\\(T\\subseteq\\mathbb{R}^d\\)",
+    false,
+  );
+  text = replaceOutsideInlineMath(
+    text,
+    /\bT\s*(?:⊆|\\subseteq|subset(?:eq)?)\s*Rd\b/gi,
+    () => "\\(T\\subseteq\\mathbb{R}^d\\)",
+    false,
+  );
+  text = replaceOutsideInlineMath(
+    text,
+    /(?:Σ|Sigma)_?\s*i\s*,?\s*j\s*=\s*Cov\s*\(\s*X_?i\s*,\s*X_?j\s*\)/gi,
+    () => "\\(\\Sigma_{ij}=\\operatorname{Cov}(X_i,X_j)\\)",
+    false,
+  );
+  text = replaceOutsideInlineMath(text, /\bSigma_?\s*ij\s*=\s*Cov\s*\(\s*X_?i\s*,\s*X_?j\s*\)/gi, () => "\\(\\Sigma_{ij}=\\operatorname{Cov}(X_i,X_j)\\)", false);
+  text = replaceOutsideInlineMath(text, /\bΣ_?\s*ij\s*=\s*Cov\s*\(\s*Xi\s*,\s*Xj\s*\)/g, () => "\\(\\Sigma_{ij}=\\operatorname{Cov}(X_i,X_j)\\)", false);
+  text = replaceOutsideInlineMath(text, /\bSigma\b/g, () => "\\Sigma");
+  text = replaceOutsideInlineMath(text, /\bΣ\b/g, () => "\\Sigma");
+  text = replaceOutsideInlineMath(text, /\bCov\b/g, () => "\\operatorname{Cov}");
+  text = replaceOutsideInlineMath(
+    text,
+    /ρ\s*:\s*T\s*(?:×|x)\s*T\s*(?:→|->|to)\s*R\b/g,
+    () => "\\(\\rho:T\\times T\\to\\mathbb{R}\\)",
+    false,
+  );
+  text = replaceOutsideInlineMath(
+    text,
+    /ρ\s*\(\s*t_?i\s*,\s*t_?j\s*\)/g,
+    () => "\\(\\rho(t_i,t_j)\\)",
+    false,
+  );
+  text = replaceOutsideInlineMath(
+    text,
+    /γ\s*:\s*R\s*\^?\s*d\s*(?:→|->|to)\s*R\s*\+?/g,
+    () => "\\(\\gamma:\\mathbb{R}^d\\to\\mathbb{R}_+\\)",
+    false,
+  );
+  text = replaceOutsideInlineMath(
+    text,
+    /γ\s*:\s*Rd\s*(?:→|->|to)\s*R\s*\+?/g,
+    () => "\\(\\gamma:\\mathbb{R}^d\\to\\mathbb{R}_+\\)",
+    false,
+  );
+  text = replaceOutsideInlineMath(
+    text,
+    /(?:Xˆ|ˆ\s*X|X\s*hat|hat\s*X)\s*t_?0\s*=\s*m\s*\(\s*t_?0\s*\)\s*\+\s*K[′']\s*Σ\s*[-−]?\s*1\s*\(\s*Z\s*[-−]\s*M\s*\)/gi,
+    () => "\\(\\hat X_{t_0}=m(t_0)+K'\\Sigma^{-1}(Z-M)\\)",
     false,
   );
   text = replaceOutsideInlineMath(
@@ -277,7 +338,7 @@ export function countLabelledItems(value: string) {
 }
 
 export function typeFromLabel(value: string): RevisionItemType | undefined {
-  const match = value.match(/\b(Definition|Theorem|Lemma|Proposition|Corollary|Proof|Remark|Example|Assumption|Property|Algorithm|Formula)\s*(?:[A-Za-z]?\d+(?:\.\d+)*)?\b/);
+  const match = value.match(/\b(Definition|Theorem|Lemma|Proposition|Corollary|Proof|Remark|Example|Question|Assumption|Property|Algorithm|Formula)\s*(?:[A-Za-z]?\d+(?:\.\d+)*)?\b/);
   if (!match) return undefined;
   const word = match[1].toLowerCase();
   if (word === "definition") return "definition";
@@ -288,6 +349,7 @@ export function typeFromLabel(value: string): RevisionItemType | undefined {
   if (word === "proof") return "proof";
   if (word === "remark") return "remark";
   if (word === "example") return "example";
+  if (word === "question") return "example";
   if (word === "assumption") return "assumption";
   if (word === "property") return "property";
   if (word === "algorithm") return "algorithm";
@@ -320,6 +382,17 @@ export function extractConceptName(candidate: RevisionCandidate | undefined, ite
   const explicitTitleConcept = normaliseConceptPhrase(explicitTitle);
 
   if (type === "definition") {
+    if (/\bsemi-?variogram\b/i.test(statement) && /\bdefined by\b|\bis defined\b/i.test(statement)) return "Semi-variogram";
+    if (/\bnugget effect\b/i.test(statement)) return "Nugget effect";
+    if (/\bpractical range\b/i.test(statement) && /\bsill\b/i.test(statement)) return "Sill, range, practical range";
+    if (/\bisotropic covariance\b/i.test(statement)) return "Isotropic covariance";
+    if (/\bisotropic spectral density\b/i.test(statement)) return "Isotropic spectral density";
+    if (/\bisotropic semi-?variogram\b/i.test(statement)) return "Isotropic semi-variogram";
+    if (/\bgeometric anisotropy\b/i.test(statement)) return "Geometric anisotropy";
+    if (/\bstratified\b|\bzonal anisotropy\b/i.test(statement)) return "Stratified/zonal anisotropy";
+    if (/\bsmoothed Matheron estimator\b/i.test(statement)) return "Smoothed Matheron estimator";
+    if (/\bspectral density function\b/i.test(statement)) return "Spectral density";
+
     const stationarity = statement.match(/^(?:A|An|The)\s+[^.!?]{1,80}?\s+is\s+(weakly|strictly|intrinsically|second-order)\s+stationary\s+if\b/i);
     if (stationarity) return capitaliseConcept(`${stationarity[1].replace(/ly$/i, "")} stationarity`);
 
@@ -349,6 +422,11 @@ export function extractConceptName(candidate: RevisionCandidate | undefined, ite
   }
 
   if (theoremLike(item.type)) {
+    if (number === "2.5" || /\bpositive semi-definite\b/i.test(statement) && /\bcovariance function\b/i.test(statement)) return "Covariance function validity";
+    if (number === "3.2" || /\bsimple Kriging\b/i.test(statement)) return "Simple Kriging";
+    if (number === "3.3" || /\bordinary Kriging\b/i.test(statement)) return "Ordinary Kriging";
+    if (/\bBochner'?s theorem\b/i.test(item.title) || /\bspectral measure\b/i.test(statement)) return "Bochner's theorem";
+    if (number === "2.2" || /\bjoint cumulative distribution\b/i.test(statement)) return "Random field finite-dimensional distributions";
     if (explicitTitleConcept && !/^(theorem|lemma|proposition|corollary)(\s+\d|\b)/i.test(explicitTitleConcept)) {
       return capitaliseConcept(explicitTitleConcept);
     }
@@ -374,6 +452,7 @@ function buildDisplayTitle(type: RevisionItemType, number: string | undefined, c
   const label = `${capitalise(type)}${number ? ` ${number}` : ""}`;
   if (type === "definition" && conceptName && conceptName.toLowerCase() !== "definition") return `${label}. ${conceptName}`;
   if (type === "formula" && conceptName && conceptName.toLowerCase() !== "formula") return `${label}. ${conceptName}`;
+  if (theoremLike(type) && conceptName && !/^(theorem|lemma|proposition|corollary)(\s+\d|\b)/i.test(conceptName)) return `${label}. ${conceptName}`;
   if (theoremLike(type) || type === "proof") return label.trim() || fallbackTitle;
   if (conceptName) return number ? `${label}. ${conceptName}` : conceptName;
   return fallbackTitle || label;
@@ -412,6 +491,13 @@ function buildTaskPrompt(type: RevisionItemType, proofRequired: boolean, purpose
   if (type === "proof" || proofRequired) return "Reproduce the proof.";
   if (theoremLike(type)) return "State the theorem and its conditions.";
   return "Recall the key statement.";
+}
+
+function specificTaskPrompt(conceptName: string | undefined) {
+  if (conceptName === "Covariance function validity") return "State the positive semi-definiteness condition.";
+  if (conceptName === "Simple Kriging") return "State the BLUP predictor and mean squared prediction error.";
+  if (conceptName === "Ordinary Kriging") return "State the BLUP predictor and mean squared prediction error.";
+  return undefined;
 }
 
 function normaliseTitle(item: RevisionItem & { titleTopic?: string }) {

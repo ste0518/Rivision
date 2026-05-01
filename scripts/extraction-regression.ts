@@ -1,8 +1,10 @@
 import assert from "node:assert/strict";
 import { segmentRevisionCandidates } from "../src/lib/segmentation";
 import { extractRevisionItems } from "../src/lib/extraction";
+import { normalizeCuratedRevisionResult, normalizeRevisionItem } from "../src/lib/normalization";
 import { filterRevisionItemsByRelevance } from "../src/lib/relevance";
 import { convertCommonMathToLatex } from "../src/lib/revision-item-utils";
+import { spatialStatisticsFixtureDocument, spatialStatisticsGuidanceDocument } from "../src/lib/test-fixtures/spatial-statistics-ch2-excerpt";
 import { validateAndRepairRevisionItems } from "../src/lib/validation";
 import type { ParsedDocument, RevisionItem } from "../src/lib/types";
 
@@ -166,5 +168,101 @@ async function run() {
     ["bibliography_or_reference", "formula_not_standalone"],
   );
 
+  const fixtureCandidates = segmentRevisionCandidates([spatialStatisticsFixtureDocument]);
+  const firstFixtureLabels = fixtureCandidates.slice(0, 11).map((candidate) => `${candidate.label} ${candidate.number ?? ""}`.trim());
+  assert.deepEqual(firstFixtureLabels, [
+    "Definition 2.1",
+    "Remark",
+    "Theorem 2.2",
+    "Proof",
+    "Remark",
+    "Definition 2.3",
+    "Definition 2.4",
+    "Remark",
+    "Theorem 2.5",
+    "Remark",
+    "Proof",
+  ]);
+  const theorem22Candidate = fixtureCandidates.find((candidate) => candidate.label === "Theorem" && candidate.number === "2.2");
+  assert.ok(theorem22Candidate, "Theorem 2.2 should be segmented.");
+  assert.match(theorem22Candidate.rawText, /joint cumulative distribution/);
+  assert.doesNotMatch(theorem22Candidate.rawText, /\bProof\b/);
+  assert.ok(fixtureCandidates.some((candidate) => candidate.label === "Proof" && /not examinable/.test(candidate.rawText)), "Theorem 2.2 proof should remain a separate candidate before curation.");
+
+  const fixtureExtraction = await extractRevisionItems({
+    notesDocuments: [spatialStatisticsFixtureDocument],
+    guidanceDocuments: [spatialStatisticsGuidanceDocument],
+    sourceFile: spatialStatisticsFixtureDocument.sourceFile,
+  });
+  const fixtureItems = fixtureExtraction.items;
+
+  const randomField = findByNumber(fixtureItems, "2.1");
+  assert.equal(randomField.conceptName, "Random field");
+  assert.equal(randomField.cardFront, "Random field");
+  assert.equal(randomField.displayTitle, "Definition 2.1. Random field");
+  assert.equal(randomField.cardPurpose, "definition_recall");
+  assert.doesNotMatch(randomField.statement, /\bTheorem 2\.2\b/);
+
+  const gaussianRandomField = findByNumber(fixtureItems, "2.4");
+  assert.equal(gaussianRandomField.conceptName, "Gaussian random field");
+  assert.equal(gaussianRandomField.cardFront, "Gaussian random field");
+  assert.notEqual(gaussianRandomField.cardFront, "Definition");
+
+  const theorem22 = findByNumber(fixtureItems, "2.2");
+  assert.equal(theorem22.type, "theorem");
+  assert.equal(theorem22.cardPurpose, "theorem_statement");
+  assert.equal(theorem22.proofRequired, false);
+  assert.match(theorem22.statement, /joint cumulative distribution/);
+  assert.match(theorem22.proof ?? "", /not examinable/);
+  assert.ok(!fixtureItems.some((item) => item.type === "proof" && item.parentItemId === theorem22.id), "Theorem 2.2 proof should not become an active proof card.");
+  assert.ok(!fixtureItems.some((item) => item.type === "formula" && /Ft1|joint cumulative distribution|cumulative distribution function/i.test(item.statement)), "Theorem 2.2 joint CDF should not become a standalone formula card.");
+
+  const covarianceValidity = findByNumber(fixtureItems, "2.5");
+  assert.equal(covarianceValidity.conceptName, "Covariance function validity");
+  assert.equal(covarianceValidity.cardFront, "Covariance function validity");
+  assert.equal(covarianceValidity.taskPrompt, "State the positive semi-definiteness condition.");
+  assert.match(covarianceValidity.statement, /positive semi-?definite/);
+
+  const semiVariogram = findByNumber(fixtureItems, "2.13");
+  assert.equal(semiVariogram.conceptName, "Semi-variogram");
+  assert.equal(semiVariogram.cardFront, "Semi-variogram");
+
+  const simpleKriging = findByNumber(fixtureItems, "3.2");
+  assert.equal(simpleKriging.conceptName, "Simple Kriging");
+  assert.equal(simpleKriging.cardFront, "Simple Kriging");
+  assert.equal(simpleKriging.taskPrompt, "State the BLUP predictor and mean squared prediction error.");
+
+  const bochner = findByNumber(fixtureItems, "2.11");
+  assert.equal(bochner.proofRequired, false);
+  assert.equal(bochner.cardPurpose, "theorem_statement");
+
+  assert.ok(!fixtureItems.some((item) => /normal.*density|sigma sqrt|probability density function/i.test(item.cardFront + item.statement) && item.type === "formula"), "Normal density background formula should not be kept as standalone.");
+
+  assert.match(convertCommonMathToLatex("X = (Xt)t∈T"), /\\\(X=\(X_t\)_\{t\\in T\}\\\)/);
+  assert.match(convertCommonMathToLatex("T ⊆ R d"), /\\\(T\\subseteq\\mathbb\{R\}\^d\\\)/);
+  assert.match(convertCommonMathToLatex("(X1, . . . , Xn)'"), /\\\(\(X_1,\\ldots,X_n\)'\\\)/);
+  assert.match(convertCommonMathToLatex("Σi,j = Cov(Xi, Xj)"), /\\\(\\Sigma_\{ij\}=\\operatorname\{Cov\}\(X_i,X_j\)\\\)/);
+  assert.match(convertCommonMathToLatex("a′X = Pn i=1 aiXi"), /\\\(a'X=\\sum_\{i=1\}\^n a_iX_i\\\)/);
+  assert.match(convertCommonMathToLatex("ρ : T × T → R"), /\\\(\\rho:T\\times T\\to\\mathbb\{R\}\\\)/);
+  assert.match(convertCommonMathToLatex("ρ(ti,tj)"), /\\\(\\rho\(t_i,t_j\)\\\)/);
+  assert.match(convertCommonMathToLatex("γ : R d → R+"), /\\\(\\gamma:\\mathbb\{R\}\^d\\to\\mathbb\{R\}_\+\\\)/);
+  assert.match(convertCommonMathToLatex("Xˆ t0 = m(t0) + K′Σ−1(Z−M)"), /\\\(\\hat X_\{t_0\}=m\(t_0\)\+K'\\Sigma\^\{-1\}\(Z-M\)\\\)/);
+
+  const migrated = normalizeRevisionItem({
+    title: "Old card",
+    statement: "A random field is useful.",
+    answer: "A random field is useful.",
+  });
+  assert.equal(migrated.cardPurpose, "background_context");
+  assert.equal(Array.isArray(migrated.tags), true);
+  const normalizedDeck = normalizeCuratedRevisionResult({ keptItems: [migrated], curationReport: {} });
+  assert.equal(normalizedDeck.keptItems.length, 1);
+
   console.log("Extraction regression passed.");
+}
+
+function findByNumber(items: RevisionItem[], number: string) {
+  const item = items.find((candidate) => candidate.theoremNumber === number);
+  assert.ok(item, `${number} should be extracted.`);
+  return item;
 }

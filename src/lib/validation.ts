@@ -1,5 +1,6 @@
 import type { RevisionItem } from "@/lib/types";
-import { countLabelledItems, normaliseRevisionItem, typeFromLabel } from "@/lib/revision-item-utils";
+import { normalizeRevisionItem } from "@/lib/normalization";
+import { countLabelledItems, typeFromLabel } from "@/lib/revision-item-utils";
 
 export type RevisionItemsValidationResult = {
   validItems: RevisionItem[];
@@ -32,7 +33,7 @@ export function validateRevisionItem(item: RevisionItem): string[] {
 }
 
 export function withValidation(item: RevisionItem): RevisionItem {
-  const normalised = normaliseRevisionItem(item);
+  const normalised = normalizeRevisionItem(item);
   return { ...normalised, warnings: validateRevisionItem(normalised) };
 }
 
@@ -42,7 +43,7 @@ export function validateAndRepairRevisionItems(items: RevisionItem[]): RevisionI
   const warnings: string[] = [];
 
   for (const item of items) {
-    const normalised = normaliseRevisionItem(item);
+    const normalised = normalizeRevisionItem(item);
     const itemWarnings = collectHardValidationWarnings(normalised);
     const repaired = itemWarnings.length
       ? {
@@ -145,7 +146,7 @@ export function validateRevisionItemsPayload(payload: unknown): { items: Revisio
       return;
     }
 
-    items.push(item as RevisionItem);
+    items.push(normalizeRevisionItem(item));
   });
 
   return { items, errors };

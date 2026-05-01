@@ -1,0 +1,285 @@
+import { normaliseRevisionItem } from "@/lib/revision-item-utils";
+import type {
+  CardPurpose,
+  ClassificationConfidence,
+  CourseKnowledgeMap,
+  CourseStructureMap,
+  CuratedRevisionResult,
+  CurationDecision,
+  CurationReport,
+  CurationStatus,
+  EmbeddedRevisionItem,
+  RejectedRevisionItem,
+  RejectionCategory,
+  RevisionImportance,
+  RevisionItem,
+  RevisionItemType,
+  StandaloneValue,
+} from "@/lib/types";
+import { createId } from "@/lib/utils";
+
+const revisionItemTypes: RevisionItemType[] = ["definition", "theorem", "lemma", "proposition", "corollary", "formula", "proof", "algorithm", "example", "remark", "assumption", "property", "other"];
+const importances: RevisionImportance[] = ["must_know", "partial", "not_required", "unknown"];
+const cardPurposes: CardPurpose[] = ["definition_recall", "theorem_statement", "proof_recall", "formula_recall", "method_steps", "conceptual_distinction", "application_condition", "calculation_template", "background_context", "needs_review"];
+const decisions: CurationDecision[] = ["keep", "needs_review", "reject", "embed_in_parent"];
+const statuses: CurationStatus[] = ["kept", "needs_review"];
+const standaloneValues: StandaloneValue[] = ["high", "medium", "low"];
+const confidenceValues: ClassificationConfidence[] = ["high", "medium", "low"];
+const rejectionCategories: RejectionCategory[] = ["bibliography_or_reference", "ordinary_explanatory_text", "formula_not_standalone", "intermediate_proof_step", "duplicate", "too_broad", "not_examinable", "background_only", "low_value", "parse_noise"];
+
+export function normalizeRevisionItem(raw: unknown): RevisionItem {
+  const value = isRecord(raw) ? raw : {};
+  const now = new Date().toISOString();
+  const type = enumValue(value.type, revisionItemTypes, "other") ?? "other";
+  const curationDecision = normalizeCurationDecision(value.curationDecision);
+  const curationStatus = enumValue(value.curationStatus, statuses, curationDecision === "needs_review" ? "needs_review" : "kept");
+  const statement = stringValue(value.statement) || stringValue(value.answer) || stringValue(value.originalRawText);
+  const title = stringValue(value.title) || stringValue(value.displayTitle) || stringValue(value.conceptName) || defaultTitle(type);
+  const cardFront = stringValue(value.cardFront) || stringValue(value.conceptName) || title;
+  const answer = stringValue(value.answer) || statement || title;
+
+  return normaliseRevisionItem({
+    id: stringValue(value.id) || createId("card"),
+    type,
+    title,
+    conceptName: optionalString(value.conceptName),
+    displayTitle: optionalString(value.displayTitle) || title,
+    cardFront,
+    taskPrompt: optionalString(value.taskPrompt),
+    statement: statement || answer,
+    statementLatex: optionalString(value.statementLatex),
+    originalRawText: optionalString(value.originalRawText) || statement || answer,
+    proof: optionalString(value.proof),
+    proofLatex: optionalString(value.proofLatex),
+    proofRequired: typeof value.proofRequired === "boolean" ? value.proofRequired : undefined,
+    sourceFile: stringValue(value.sourceFile) || "Unknown source",
+    sourceLocation: optionalString(value.sourceLocation),
+    pageNumber: numberValue(value.pageNumber),
+    section: optionalString(value.section),
+    theoremNumber: optionalString(value.theoremNumber),
+    tags: stringArray(value.tags),
+    importance: enumValue(value.importance, importances, "unknown"),
+    cardPurpose: enumValue(value.cardPurpose, cardPurposes, fallbackCardPurpose(type, curationDecision)),
+    curationStatus,
+    classificationConfidence: enumValue(value.classificationConfidence, confidenceValues, undefined),
+    guidanceReason: optionalString(value.guidanceReason),
+    guidanceEvidence: stringArray(value.guidanceEvidence),
+    uncertaintyNote: optionalString(value.uncertaintyNote),
+    extractionWarning: optionalString(value.extractionWarning),
+    questionPrompt: stringValue(value.questionPrompt) || fallbackQuestionPrompt(type, title),
+    answer,
+    answerLatex: optionalString(value.answerLatex),
+    standaloneValue: enumValue(value.standaloneValue, standaloneValues, undefined),
+    curationDecision,
+    curationReason: optionalString(value.curationReason),
+    parentItemId: optionalString(value.parentItemId),
+    embeddedFormulas: stringArray(value.embeddedFormulas),
+    latexQuality: enumValue(value.latexQuality, ["high", "medium", "low"] as const, undefined),
+    relevanceReason: optionalString(value.relevanceReason),
+    relevanceScore: isRecord(value.relevanceScore) ? value.relevanceScore as unknown as RevisionItem["relevanceScore"] : undefined,
+    deletedAt: optionalString(value.deletedAt),
+    isDeleted: Boolean(value.isDeleted),
+    createdAt: stringValue(value.createdAt) || now,
+    updatedAt: stringValue(value.updatedAt) || now,
+    warnings: stringArray(value.warnings),
+    latestRating: enumValue(value.latestRating, ["again", "hard", "good", "easy"] as const, undefined),
+    reviewCount: numberValue(value.reviewCount),
+    dueAt: optionalString(value.dueAt),
+    lastReviewedAt: optionalString(value.lastReviewedAt),
+  });
+}
+
+export function migrateStoredCards(rawCards: unknown): RevisionItem[] {
+  if (!Array.isArray(rawCards)) return [];
+  return rawCards.flatMap((card) => {
+    try {
+      return [normalizeRevisionItem(card)];
+    } catch {
+      return [];
+    }
+  });
+}
+
+export function normalizeCuratedRevisionResult(raw: unknown): CuratedRevisionResult {
+  const value = isRecord(raw) ? raw : {};
+  const keptItems = migrateStoredCards(value.keptItems ?? value.items);
+  const needsReviewItems = migrateStoredCards(value.needsReviewItems).map((item) => ({
+    ...item,
+    curationDecision: "needs_review" as const,
+    curationStatus: "needs_review" as const,
+  }));
+  const rejectedItems = normalizeRejectedItems(value.rejectedItems);
+  const embeddedItems = normalizeEmbeddedItems(value.embeddedItems);
+
+  return {
+    keptItems,
+    needsReviewItems,
+    rejectedItems,
+    embeddedItems,
+    courseStructureMap: normalizeCourseStructureMap(value.courseStructureMap),
+    courseKnowledgeMap: normalizeCourseKnowledgeMap(value.courseKnowledgeMap),
+    curationReport: normalizeCurationReport(value.curationReport, keptItems.length, needsReviewItems.length, rejectedItems.length, embeddedItems.length),
+  };
+}
+
+export function emptyCuratedRevisionResult(): CuratedRevisionResult {
+  return normalizeCuratedRevisionResult({});
+}
+
+function normalizeRejectedItems(raw: unknown): RejectedRevisionItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    const originalItem = item.originalItem ? normalizeRevisionItem(item.originalItem) : undefined;
+    return [{
+      id: stringValue(item.id) || createId("rejected"),
+      originalCandidateId: optionalString(item.originalCandidateId),
+      originalItem,
+      title: stringValue(item.title) || originalItem?.title || "Rejected item",
+      type: enumValue(item.type, revisionItemTypes, "other"),
+      rawText: optionalString(item.rawText),
+      rejectionReason: stringValue(item.rejectionReason) || stringValue(item.reason) || "Rejected during curation.",
+      rejectionCategory: enumValue(item.rejectionCategory, rejectionCategories, "low_value"),
+      confidence: enumValue(item.confidence, confidenceValues, "medium"),
+      sourceLocation: optionalString(item.sourceLocation),
+    }];
+  });
+}
+
+function normalizeEmbeddedItems(raw: unknown): EmbeddedRevisionItem[] {
+  if (!Array.isArray(raw)) return [];
+  return raw.flatMap((item) => {
+    if (!isRecord(item)) return [];
+    return [{
+      id: stringValue(item.id) || createId("embedded"),
+      parentItemId: stringValue(item.parentItemId),
+      content: stringValue(item.content),
+      reason: stringValue(item.reason) || "Embedded into parent card.",
+      sourceLocation: optionalString(item.sourceLocation),
+    }];
+  });
+}
+
+function normalizeCourseStructureMap(raw: unknown): CourseStructureMap {
+  if (!isRecord(raw)) return { sections: [], topics: [], detectedItems: [] };
+  return {
+    sections: Array.isArray(raw.sections) ? raw.sections.flatMap((section) => isRecord(section) ? [{
+      sectionNumber: optionalString(section.sectionNumber),
+      title: stringValue(section.title) || "Untitled section",
+      sourceFile: stringValue(section.sourceFile) || "Unknown source",
+      pageStart: numberValue(section.pageStart),
+      pageEnd: numberValue(section.pageEnd),
+      summary: stringValue(section.summary),
+      likelyImportance: enumValue(section.likelyImportance, ["core", "supporting", "background", "unknown"] as const, "unknown"),
+    }] : []) : [],
+    topics: Array.isArray(raw.topics) ? raw.topics.flatMap((topic) => isRecord(topic) ? [{
+      name: stringValue(topic.name) || "Unknown topic",
+      section: optionalString(topic.section),
+      relatedItems: stringArray(topic.relatedItems),
+      importance: enumValue(topic.importance, ["core", "supporting", "background", "unknown"] as const, "unknown"),
+      evidence: stringArray(topic.evidence),
+      likelyExamUse: enumValue(topic.likelyExamUse, ["definition_recall", "theorem_statement", "proof", "calculation", "derivation", "conceptual_explanation", "not_likely"] as const, "not_likely"),
+    }] : []) : [],
+    detectedItems: [],
+  };
+}
+
+function normalizeCourseKnowledgeMap(raw: unknown): CourseKnowledgeMap {
+  const value = isRecord(raw) ? raw : {};
+  const formulaPolicy = recordValue(value.formulaPolicy);
+  const proofPolicy = recordValue(value.proofPolicy);
+  return {
+    coreTopics: normalizeCourseStructureMap({ topics: value.coreTopics }).topics,
+    requiredSections: Array.isArray(value.requiredSections) ? value.requiredSections.flatMap((section) => isRecord(section) ? [{
+      sectionNumber: optionalString(section.sectionNumber),
+      sectionTitle: optionalString(section.sectionTitle),
+      requirement: enumValue(section.requirement, ["must_know", "statement_only", "proof_required", "proof_not_required", "understand_only", "not_required", "unknown"] as const, "unknown"),
+      evidence: stringArray(section.evidence),
+    }] : []) : [],
+    formulaPolicy: {
+      standaloneFormulaRule: stringValue(formulaPolicy.standaloneFormulaRule) || "Only named, central, examinable formulas become standalone cards.",
+      keepStandaloneWhen: stringArray(formulaPolicy.keepStandaloneWhen),
+      embedOrRejectWhen: stringArray(formulaPolicy.embedOrRejectWhen),
+      guidanceEvidence: stringArray(formulaPolicy.guidanceEvidence),
+    },
+    proofPolicy: {
+      proofCardRule: stringValue(proofPolicy.proofCardRule) || "Create proof-recall cards only when guidance asks for proof or derivation.",
+      proofRequiredWhen: stringArray(proofPolicy.proofRequiredWhen),
+      proofOptionalWhen: stringArray(proofPolicy.proofOptionalWhen),
+      guidanceEvidence: stringArray(proofPolicy.guidanceEvidence),
+    },
+  };
+}
+
+function normalizeCurationReport(raw: unknown, keptCount: number, needsReviewCount: number, rejectedCount: number, embeddedCount: number): CurationReport {
+  const value = isRecord(raw) ? raw : {};
+  return {
+    totalCandidates: numberValue(value.totalCandidates) ?? keptCount + needsReviewCount + rejectedCount + embeddedCount,
+    keptCount: numberValue(value.keptCount) ?? keptCount,
+    needsReviewCount: numberValue(value.needsReviewCount) ?? needsReviewCount,
+    rejectedCount: numberValue(value.rejectedCount) ?? rejectedCount,
+    embeddedCount: numberValue(value.embeddedCount) ?? embeddedCount,
+    formulaCandidates: numberValue(value.formulaCandidates) ?? 0,
+    formulaKeptCount: numberValue(value.formulaKeptCount) ?? 0,
+    formulaRejectedCount: numberValue(value.formulaRejectedCount) ?? 0,
+    mainTopics: stringArray(value.mainTopics),
+    weakParsingWarnings: stringArray(value.weakParsingWarnings),
+    notes: stringArray(value.notes),
+  };
+}
+
+function normalizeCurationDecision(value: unknown): CurationDecision {
+  if (value === "kept") return "keep";
+  return enumValue(value, decisions, "keep");
+}
+
+function fallbackCardPurpose(type: RevisionItemType, decision: CurationDecision): CardPurpose {
+  if (decision === "needs_review") return "needs_review";
+  if (type === "definition") return "definition_recall";
+  if (type === "formula") return "formula_recall";
+  if (type === "proof") return "proof_recall";
+  if (["theorem", "lemma", "proposition", "corollary"].includes(type)) return "theorem_statement";
+  if (type === "algorithm") return "method_steps";
+  return "background_context";
+}
+
+function fallbackQuestionPrompt(type: RevisionItemType, title: string) {
+  if (type === "definition") return `State ${title}.`;
+  if (["theorem", "lemma", "proposition", "corollary"].includes(type)) return `State ${title}.`;
+  return `Explain ${title}.`;
+}
+
+function defaultTitle(type: RevisionItemType) {
+  return type.charAt(0).toUpperCase() + type.slice(1);
+}
+
+function enumValue<T extends string>(value: unknown, allowed: readonly T[], fallback: T): T;
+function enumValue<T extends string>(value: unknown, allowed: readonly T[], fallback?: undefined): T | undefined;
+function enumValue<T extends string>(value: unknown, allowed: readonly T[], fallback?: T): T | undefined {
+  return typeof value === "string" && allowed.includes(value as T) ? value as T : fallback;
+}
+
+function stringValue(value: unknown) {
+  return typeof value === "string" ? value : "";
+}
+
+function optionalString(value: unknown) {
+  const string = stringValue(value).trim();
+  return string || undefined;
+}
+
+function stringArray(value: unknown) {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function numberValue(value: unknown) {
+  return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+}
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return Boolean(value && typeof value === "object" && !Array.isArray(value));
+}
+
+function recordValue(value: unknown): Record<string, unknown> {
+  return isRecord(value) ? value : {};
+}

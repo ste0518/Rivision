@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { createMockRevisionItems } from "@/lib/mock-data";
-import { emptyStudyState, loadStudyState, saveStudyState, type StudyState } from "@/lib/storage";
+import { emptyStudyState, loadStudyState, resetStudyStateStorage, saveStudyState, type StudyState } from "@/lib/storage";
 import type { CourseKnowledgeMap, CourseStructureMap, CurationReport, EmbeddedRevisionItem, GuidanceFile, RejectedRevisionItem, RevisionItem, ReviewRating, ReviewSession, StudyFile } from "@/lib/types";
 import { applyReviewRating } from "@/lib/srs";
 import { withValidation } from "@/lib/validation";
@@ -130,7 +130,10 @@ export function useStudyStore() {
       });
     },
     seedMockData() { setState((current) => ({ ...current, revisionItems: createMockRevisionItems().map(withValidation) })); },
-    resetAll() { setState(emptyStudyState); },
+    resetAll() {
+      resetStudyStateStorage();
+      setState(emptyStudyState);
+    },
   }), []);
 
   return { ...state, ready, ...actions };

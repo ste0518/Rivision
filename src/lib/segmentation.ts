@@ -18,6 +18,7 @@ export const majorLabelWords = [
   "Corollary",
   "Remark",
   "Example",
+  "Question",
   "Assumption",
   "Property",
   "Proof",
@@ -151,7 +152,7 @@ export function buildSegmentationDebug(parsedDocuments: ParsedDocument[]): Segme
 
 export function stripLeadingLabel(rawText: string) {
   return rawText
-    .replace(/^\s*(Definition|Theorem|Lemma|Proposition|Corollary|Remark|Example|Assumption|Property|Formula|Equation|Proof|Algorithm)\s*\d*(?:\.\d+)*\s*(?:\[[^\]]+\])?\s*[:.)-]?\s*/i, "")
+    .replace(/^\s*(Definition|Theorem|Lemma|Proposition|Corollary|Remark|Example|Question|Assumption|Property|Formula|Equation|Proof|Algorithm)\s*\d*(?:\.\d+)*\s*(?:\[[^\]]+\])?\s*[:.)-]?\s*/i, "")
     .replace(/^\[[^\]]{1,24}\]\s*/, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -167,6 +168,7 @@ export function labelToType(label: string): RevisionItemType | null {
   if (word === "proof") return "proof";
   if (word === "remark") return "remark";
   if (word === "example") return "example";
+  if (word === "question") return "example";
   if (word === "assumption") return "assumption";
   if (word === "property") return "property";
   if (word === "algorithm") return "algorithm";
@@ -268,6 +270,7 @@ function normaliseCandidateLabel(label: string): RevisionCandidateLabel {
 
 function isPlausibleLabelMatch(text: string, start: number, matchText: string, label: RevisionCandidateLabel, number?: string) {
   const before = text.slice(Math.max(0, start - 16), start);
+  if (/\b(from|see|using|by|as|than)\s+$/i.test(before)) return false;
   if (/\bof\s+$/i.test(before)) return true;
   const previousChar = text[start - 1];
   const isAtTextStart = start === 0;
@@ -277,7 +280,7 @@ function isPlausibleLabelMatch(text: string, start: number, matchText: string, l
   const matched = matchText.trim();
   const hasTerminator = /[\.:]$/.test(matched);
   const hasBracketTitle = /\[[^\]]+\]$/.test(matched);
-  const canBeUnnumbered = ["Remark", "Proof", "Example", "Assumption", "Property", "Algorithm"].includes(label);
+  const canBeUnnumbered = ["Remark", "Proof", "Example", "Question", "Assumption", "Property", "Algorithm"].includes(label);
   return Boolean(number || hasTerminator || hasBracketTitle || canBeUnnumbered);
 }
 

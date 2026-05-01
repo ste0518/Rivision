@@ -19,7 +19,15 @@ export default function ReviewPage() {
   const [deletedCardId, setDeletedCardId] = useState<string | null>(null);
   const [includeNeedsReview, setIncludeNeedsReview] = useState(false);
   const dueCards = useMemo(
-    () => store.revisionItems.filter((item) => !item.isDeleted && (includeNeedsReview || (item.curationDecision ?? "keep") === "keep") && item.standaloneValue !== "low" && item.importance !== "not_required" && !needsRepair(item) && isDue(item)),
+    () => store.revisionItems.filter((item) =>
+      !item.isDeleted &&
+      (item.curationDecision ?? "keep") !== "reject" &&
+      (includeNeedsReview || (item.curationDecision ?? "keep") === "keep") &&
+      item.standaloneValue !== "low" &&
+      item.importance !== "not_required" &&
+      !needsRepair(item) &&
+      isDue(item),
+    ),
     [includeNeedsReview, store.revisionItems],
   );
   const card = dueCards[0];

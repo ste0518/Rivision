@@ -27,7 +27,8 @@ export default function CardsPage() {
   const [editing, setEditing] = useState<RevisionItem | undefined>();
   const [adding, setAdding] = useState(false);
   const [importText, setImportText] = useState("");
-  const [filters, setFilters] = useState({ type: "all", cardPurpose: "all", importance: "all", curation: "kept", standaloneValue: "all", lowLatexOnly: false, section: "", tag: "", source: "", showRejected: false, showDeleted: false });
+  const [importError, setImportError] = useState("");
+  const [filters, setFilters] = useState({ type: "all", cardPurpose: "all", importance: "all", curation: "keep", standaloneValue: "all", lowLatexOnly: false, section: "", tag: "", source: "", showRejected: false, showDeleted: false });
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedDeletedIds, setSelectedDeletedIds] = useState<string[]>([]);
   const [undo, setUndo] = useState<UndoState>(null);
@@ -47,8 +48,13 @@ export default function CardsPage() {
   }
 
   function importJson() {
-    store.setRevisionItems(importRevisionItems(importText));
-    setImportText("");
+    try {
+      store.setRevisionItems(importRevisionItems(importText));
+      setImportText("");
+      setImportError("");
+    } catch (error) {
+      setImportError(error instanceof Error ? error.message : "Could not import JSON.");
+    }
   }
 
   function deleteCards(ids: string[]) {
@@ -110,7 +116,7 @@ export default function CardsPage() {
           </Select>
           <Select value={filters.curation} onChange={(event) => setFilters({ ...filters, curation: event.target.value })}>
             <option value="all">All curation</option>
-            <option value="kept">Kept</option>
+            <option value="keep">Kept</option>
             <option value="needs_review">Needs review</option>
             <option value="reject">Rejected (from cards list)</option>
           </Select>
@@ -151,6 +157,7 @@ export default function CardsPage() {
         <CardContent className="space-y-3">
           <Textarea value={importText} onChange={(event) => setImportText(event.target.value)} placeholder="Paste exported RevisionItem[] JSON" />
           <Button variant="outline" onClick={importJson} disabled={!importText.trim()}>Import JSON</Button>
+          {importError ? <p className="text-sm text-red-700">{importError}</p> : null}
         </CardContent>
       </Card>
 
@@ -181,7 +188,11 @@ export default function CardsPage() {
                   <TableCell>
                     <div className="space-y-2">
                       <MathMarkdown content={item.cardFront} className="bg-transparent p-0 font-medium text-slate-950" />
-                      <div className="text-xs text-slate-500">{item.displayTitle || item.title} · {item.type} · {item.cardPurpose} · {item.tags.join(", ")} · standalone {item.standaloneValue ?? "unknown"}</div>
+                      <div className="flex flex-wrap gap-1 text-xs text-slate-500">
+                        <span>{item.displayTitle || item.title} · {item.type} · {item.cardPurpose} · {(item.tags ?? []).join(", ")}</span>
+                        <Badge variant="outline">{item.curationDecision ?? "keep"}</Badge>
+                        <Badge variant="outline">standalone {item.standaloneValue ?? "unknown"}</Badge>
+                      </div>
                       <MathMarkdown content={getPrimaryCardPreview(item)} className="bg-transparent p-0 text-sm text-slate-600" />
                     </div>
                   </TableCell>
@@ -302,8 +313,8 @@ function matchesFilters(item: RevisionItem, filters: { type: string; cardPurpose
     (filters.standaloneValue === "all" || item.standaloneValue === filters.standaloneValue) &&
     (!filters.lowLatexOnly || hasLowLatexQuality(item)) &&
     (!filters.section || item.section?.toLowerCase().includes(filters.section.toLowerCase())) &&
-    (!filters.tag || item.tags.some((tag) => tag.toLowerCase().includes(filters.tag.toLowerCase()))) &&
-    (!filters.source || item.sourceFile.toLowerCase().includes(filters.source.toLowerCase()));
+    (!filters.tag || (item.tags ?? []).some((tag) => tag.toLowerCase().includes(filters.tag.toLowerCase()))) &&
+    (!filters.source || (item.sourceFile ?? "").toLowerCase().includes(filters.source.toLowerCase()));
 }
 
 function toggleSelection(id: string, selected: boolean, setSelected: Dispatch<SetStateAction<string[]>>) {

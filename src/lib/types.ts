@@ -84,6 +84,7 @@ export type RevisionCandidateLabel =
   | "Corollary"
   | "Remark"
   | "Example"
+  | "Question"
   | "Proof"
   | "Formula"
   | "Assumption"

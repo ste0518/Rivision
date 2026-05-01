@@ -2,7 +2,6 @@ import { NextResponse } from "next/server";
 import { runLlmExtractionPipeline } from "@/lib/llm/pipeline";
 import type { LlmPipelineSettings } from "@/lib/llm/provider";
 import type { ParsedDocument } from "@/lib/types";
-
 export async function POST(request: Request) {
   try {
     const body = (await request.json()) as {
@@ -19,8 +18,8 @@ export async function POST(request: Request) {
     }
 
     const result = await runLlmExtractionPipeline({
-      notesDocuments: body.notesDocuments || [],
-      guidanceDocuments: body.guidanceDocuments || [],
+      notesDocuments: Array.isArray(body.notesDocuments) ? body.notesDocuments : [],
+      guidanceDocuments: Array.isArray(body.guidanceDocuments) ? body.guidanceDocuments : [],
       settings: body.settings,
     });
 

@@ -70,6 +70,8 @@ const centralTopicTerms = [
   "variogram",
   "kriging",
   "blup",
+  "matheron",
+  "estimator",
   "gaussian",
   "poisson",
   "conditional distribution",
@@ -252,7 +254,7 @@ export function createRevisionItemFromCandidate(candidate: CandidateRevisionBloc
     titleTopic: titleSplit.title,
   });
   const title = titleFromLabel(candidate.type, theoremNumber, titleSplit.title ?? conceptName, statement);
-  const proofRequired = theoremLike(candidate.type) ? classifyProofRequired(guidanceText, title, statement) : undefined;
+  const proofRequired = theoremLike(candidate.type) ? classifyProofRequired(guidanceText, title, statement, proof) : undefined;
   const cardPurpose = inferCardPurpose(candidate.type, title, statement, proofRequired);
 
   return {
@@ -762,9 +764,10 @@ function defaultTaskPrompt(type: RevisionItemType, purpose: RevisionItem["cardPu
   return "Recall the key statement.";
 }
 
-function classifyProofRequired(guidanceText: string, title: string, statement: string) {
+function classifyProofRequired(guidanceText: string, title: string, statement: string, proof?: string) {
   const guidance = guidanceText.toLowerCase();
   const haystack = `${title} ${statement}`.toLowerCase();
+  if (/\bnot examinable|non-examinable|not required\b/i.test(`${statement} ${proof ?? ""}`)) return false;
   if (!guidance.trim()) return undefined;
   if (/proofs?\s+(?:are\s+)?not required|proof\s+not required|without proof|only (?:know )?the statement/.test(guidance)) return false;
   if (/\b(prove|proof required|derive|show that)\b/.test(guidance)) {
@@ -813,7 +816,7 @@ function isImportantRemark(lower: string) {
 }
 
 function isMethodLike(lower: string) {
-  return /\b(set up|calculate|compute|algorithm|procedure|steps|solve|estimate|predict|derive|use)\b/.test(lower) ||
+  return /\b(set up|calculate|compute|algorithm|procedure|steps|solve|estimate|predict|derive|use|estimator)\b/.test(lower) ||
     /\bkriging system|likelihood|estimator|predictor\b/.test(lower);
 }
 
