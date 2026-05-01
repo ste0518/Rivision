@@ -11,6 +11,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { PageHeader } from "@/components/page-header";
 import { MathMarkdown } from "@/components/MathMarkdown";
 import { extractRevisionItems, generateManualExtractionPrompt, loadLlmPipelineSettings } from "@/lib/extraction";
+import { getPrimaryCardPreview, hasLowLatexQuality } from "@/lib/card-render";
 import { buildSegmentationDebug, segmentRevisionCandidates } from "@/lib/segmentation";
 import { validateRevisionItemsPayload, withValidation } from "@/lib/validation";
 import type { CuratedDeckResult, ExtractionVerificationReport, ParsedDocument, RevisionItem } from "@/lib/types";
@@ -36,8 +37,8 @@ export default function ExtractPage() {
   const candidates = useMemo(() => segmentRevisionCandidates(notesDocuments), [notesDocuments]);
   const segmentationDebug = useMemo(() => buildSegmentationDebug(notesDocuments), [notesDocuments]);
   const candidateSegmentationWarning = segmentationDebug.some((document) => document.warnings.length > 0);
-  const needsReviewItems = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && (item.curationStatus === "needs_review" || needsRepair(item))), [store.revisionItems]);
-  const normalItems = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && item.curationStatus !== "needs_review" && item.standaloneValue !== "low" && !needsRepair(item)), [store.revisionItems]);
+  const needsReviewItems = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && ((item.curationDecision ?? "keep") !== "keep" || needsRepair(item))), [store.revisionItems]);
+  const normalItems = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && (item.curationDecision ?? "keep") === "keep" && item.standaloneValue !== "low" && !needsRepair(item)), [store.revisionItems]);
   const failedDocuments = useMemo(
     () => allDocuments.filter((doc) => !doc.diagnostics.success || doc.diagnostics.extractionQuality === "failed" || !doc.fullText.trim()),
     [allDocuments],
@@ -344,13 +345,14 @@ export default function ExtractPage() {
                     <CardTitle className="text-base">{item.title}</CardTitle>
                     <div className="flex flex-wrap gap-2">
                       <Badge variant={item.importance}>{item.importance}</Badge>
-                      {item.extractionWarning || item.warnings?.length ? <Badge variant="unknown">check extraction</Badge> : null}
+                  {item.extractionWarning || item.warnings?.length ? <Badge variant="unknown">check extraction</Badge> : null}
+                  {hasLowLatexQuality(item) ? <Badge variant="unknown">Low LaTeX quality</Badge> : null}
                     </div>
                   </div>
                   <CardDescription>{item.type} · {item.cardPurpose} · {item.section || "section unknown"} · {item.sourceLocation || "source unknown"}</CardDescription>
                 </CardHeader>
                 <CardContent>
-                  <MathMarkdown content={previewText(item.statementLatex || item.statement)} className="bg-transparent p-0 text-sm text-slate-600" />
+                  <MathMarkdown content={previewText(getPrimaryCardPreview(item))} className="bg-transparent p-0 text-sm text-slate-600" />
                   <p className="mt-2 text-xs text-slate-500">confidence: {item.classificationConfidence || "unknown"} · standalone {item.standaloneValue ?? "unknown"} · purpose {item.cardPurpose}</p>
                   {item.relevanceReason ? <p className="mt-2 text-xs text-slate-500">{item.relevanceReason}</p> : null}
                   {item.guidanceReason ? <p className="mt-2 text-xs text-slate-500">{item.guidanceReason}</p> : null}

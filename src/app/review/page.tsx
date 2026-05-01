@@ -8,6 +8,7 @@ import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/
 import { MathText } from "@/components/math-text";
 import { PageHeader } from "@/components/page-header";
 import { isDue } from "@/lib/srs";
+import { hasLowLatexQuality } from "@/lib/card-render";
 import type { ReviewRating } from "@/lib/types";
 import { useStudyStore } from "@/hooks/use-study-store";
 const ratings: Array<[ReviewRating, string]> = [["again", "Again"], ["hard", "Hard"], ["good", "Good"], ["easy", "Easy"]];
@@ -16,9 +17,10 @@ export default function ReviewPage() {
   const [revealed, setRevealed] = useState(false);
   const [proofVisible, setProofVisible] = useState(false);
   const [deletedCardId, setDeletedCardId] = useState<string | null>(null);
+  const [includeNeedsReview, setIncludeNeedsReview] = useState(false);
   const dueCards = useMemo(
-    () => store.revisionItems.filter((item) => !item.isDeleted && item.curationStatus !== "needs_review" && item.standaloneValue !== "low" && item.importance !== "not_required" && !needsRepair(item) && isDue(item)),
-    [store.revisionItems],
+    () => store.revisionItems.filter((item) => !item.isDeleted && (includeNeedsReview || (item.curationDecision ?? "keep") === "keep") && item.standaloneValue !== "low" && item.importance !== "not_required" && !needsRepair(item) && isDue(item)),
+    [includeNeedsReview, store.revisionItems],
   );
   const card = dueCards[0];
   function rate(rating: ReviewRating) {
@@ -43,6 +45,10 @@ export default function ReviewPage() {
   return (
     <div>
       <PageHeader title="Flashcard revision" description="Answer from memory, reveal the extracted definition or theorem, then self-grade to schedule the next review." />
+      <label className="mb-4 flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={includeNeedsReview} onChange={(event) => setIncludeNeedsReview(event.target.checked)} />
+        Include needs review cards
+      </label>
       {deletedCardId ? (
         <div className="fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-lg bg-slate-950 px-4 py-3 text-sm text-white shadow-lg">
           <span>Card deleted</span>
@@ -66,6 +72,7 @@ export default function ReviewPage() {
               <Badge variant="outline">{card.cardPurpose}</Badge>
               <Badge variant={card.importance}>{card.importance}</Badge>
               {card.extractionWarning || card.warnings?.length ? <Badge variant="unknown">check extraction</Badge> : null}
+              {hasLowLatexQuality(card) ? <Badge variant="unknown">low LaTeX quality</Badge> : null}
             </div>
             <div className="pt-3">
               <MathText className="bg-transparent p-0 text-3xl font-semibold leading-tight tracking-tight text-slate-950">{card.cardFront}</MathText>

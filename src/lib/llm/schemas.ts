@@ -14,7 +14,7 @@ const revisionItemSchema = {
     taskPrompt: { type: "string" },
     cardPurpose: {
       type: "string",
-      enum: ["definition_recall", "theorem_statement", "proof_recall", "formula_recall", "method_steps", "conceptual_distinction", "application_condition", "calculation_template"],
+      enum: ["definition_recall", "theorem_statement", "proof_recall", "formula_recall", "method_steps", "conceptual_distinction", "application_condition", "calculation_template", "needs_review"],
     },
     curationStatus: { type: "string", enum: ["kept", "needs_review"] },
     statement: { type: "string" },
@@ -39,6 +39,8 @@ const revisionItemSchema = {
     answer: { type: "string" },
     answerLatex: { type: "string" },
     standaloneValue: { type: "string", enum: ["high", "medium", "low"] },
+    curationDecision: { type: "string", enum: ["keep", "needs_review", "reject"] },
+    curationReason: { type: "string" },
     parentItemId: { type: "string" },
     embeddedFormulas: { type: "array", items: { type: "string" } },
     relevanceReason: { type: "string" },

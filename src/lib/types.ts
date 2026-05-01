@@ -24,8 +24,10 @@ export type CardPurpose =
   | "method_steps"
   | "conceptual_distinction"
   | "application_condition"
-  | "calculation_template";
+  | "calculation_template"
+  | "needs_review";
 export type CurationStatus = "kept" | "needs_review";
+export type CurationDecision = "keep" | "needs_review" | "reject";
 export type RejectionCategory =
   | "bibliography_or_reference"
   | "ordinary_explanatory_text"
@@ -222,6 +224,8 @@ export type RevisionItem = {
   answer: string;
   answerLatex?: string;
   standaloneValue?: StandaloneValue;
+  curationDecision?: CurationDecision;
+  curationReason?: string;
   parentItemId?: string;
   embeddedFormulas?: string[];
   relevanceReason?: string;
@@ -236,6 +240,11 @@ export type RevisionItem = {
   dueAt?: string;
   lastReviewedAt?: string;
 };
+
+export interface LatexQualityReport {
+  score: "high" | "medium" | "low";
+  issues: string[];
+}
 
 export interface RejectedRevisionItem {
   id: string;
@@ -304,4 +313,5 @@ export const cardPurposes: CardPurpose[] = [
   "conceptual_distinction",
   "application_condition",
   "calculation_template",
+  "needs_review",
 ];

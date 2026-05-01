@@ -4,8 +4,10 @@ import {
   convertCommonMathToLatex,
   extractConceptName,
   extractNumber,
+  isGenericConceptName,
   splitProofFromStatement,
   theoremLike,
+  validateLatexQuality,
 } from "@/lib/revision-item-utils";
 import type {
   CandidateRelevanceScore,
@@ -128,14 +130,97 @@ export async function curateRevisionDeck({
   }
 
   const keptWithProofCards = addRequiredProofCards(keptItems, timestamp);
-  const curationReport = buildCurationReport(candidateBlocks, keptWithProofCards, rejectedItems);
+  const qualityGate = qualityGateRevisionItems(keptWithProofCards, guidanceDocuments);
+  const gatedRejectedItems = [
+    ...rejectedItems,
+    ...qualityGate.rejectedItems.map((item) =>
+      toRejectedItem(
+        {
+          candidate: {
+            id: item.id,
+            type: item.type,
+            label: "Other",
+            rawText: item.statement,
+            sourceFile: item.sourceFile,
+            startOffset: 0,
+            endOffset: item.statement.length,
+          } as CandidateRevisionBlock,
+          item,
+          score: item.relevanceScore ?? score(item.id, 1, 1, 1, 1, 1, "reject", item.curationReason ?? "Rejected by quality gate.", []),
+        },
+        "low_value",
+        item.curationReason ?? "Rejected by quality gate.",
+        "medium",
+      ),
+    ),
+  ];
+  const curationReport = buildCurationReport(candidateBlocks, [...qualityGate.keptItems, ...qualityGate.needsReviewItems], gatedRejectedItems);
 
   return {
-    keptItems: keptWithProofCards,
-    rejectedItems,
+    keptItems: [...qualityGate.keptItems, ...qualityGate.needsReviewItems],
+    rejectedItems: gatedRejectedItems,
     courseKnowledgeMap,
     curationReport,
   };
+}
+
+export function qualityGateRevisionItems(items: RevisionItem[], guidanceDocuments: ParsedDocument[]): {
+  keptItems: RevisionItem[];
+  needsReviewItems: RevisionItem[];
+  rejectedItems: RevisionItem[];
+} {
+  const guidanceText = guidanceDocuments.map((doc) => doc.fullText).join("\n\n").toLowerCase();
+  const keptItems: RevisionItem[] = [];
+  const needsReviewItems: RevisionItem[] = [];
+  const rejectedItems: RevisionItem[] = [];
+
+  for (const item of items) {
+    const lower = `${item.title}\n${item.statement}\n${item.answer}`.toLowerCase();
+    const latex = validateLatexQuality(item);
+    const genericConcept = isGenericConceptName(item.conceptName || item.cardFront);
+    const guidanceHit = Boolean(item.theoremNumber && guidanceText.includes(item.theoremNumber.toLowerCase())) || (item.conceptName ? guidanceText.includes(item.conceptName.toLowerCase()) : false);
+    const standalone = item.standaloneValue ?? "medium";
+
+    if (looksLikeBibliography(lower) || looksLikeParseNoise(lower) || /intermediate|hence|therefore/.test(lower) && item.type === "formula") {
+      rejectedItems.push({ ...item, curationDecision: "reject", curationReason: "Rejected as low-value/background/parse-noise content." });
+      continue;
+    }
+
+    if (genericConcept && !guidanceHit) {
+      needsReviewItems.push({ ...item, curationStatus: "needs_review", curationDecision: "needs_review", cardPurpose: "needs_review", curationReason: "Generic concept name requires manual rename." });
+      continue;
+    }
+
+    if (latex.score === "low") {
+      needsReviewItems.push({ ...item, curationStatus: "needs_review", curationDecision: "needs_review", cardPurpose: "needs_review", curationReason: "Low LaTeX quality." });
+      continue;
+    }
+
+    if (item.importance === "unknown") {
+      if (standalone === "high") {
+        keptItems.push({ ...item, curationDecision: "keep" });
+      } else if (standalone === "medium") {
+        needsReviewItems.push({ ...item, curationStatus: "needs_review", curationDecision: "needs_review", cardPurpose: "needs_review", curationReason: "Unknown guidance with medium standalone value." });
+      } else {
+        rejectedItems.push({ ...item, curationDecision: "reject", curationReason: "Unknown guidance with low standalone value." });
+      }
+      continue;
+    }
+
+    if (item.type === "formula" && standalone !== "high" && !guidanceHit) {
+      needsReviewItems.push({ ...item, curationStatus: "needs_review", curationDecision: "needs_review", cardPurpose: "needs_review", curationReason: "Formula standalone value is unclear." });
+      continue;
+    }
+
+    if (theoremLike(item.type) && item.importance !== "must_know" && !guidanceHit) {
+      needsReviewItems.push({ ...item, curationStatus: "needs_review", curationDecision: "needs_review", cardPurpose: "needs_review", curationReason: "Theorem-like statement not clearly central." });
+      continue;
+    }
+
+    keptItems.push({ ...item, curationStatus: "kept", curationDecision: "keep" });
+  }
+
+  return { keptItems, needsReviewItems, rejectedItems };
 }
 
 export function createRevisionItemFromCandidate(candidate: CandidateRevisionBlock, guidanceText: string, timestamp = new Date().toISOString()): RevisionItem {
@@ -186,6 +271,8 @@ export function createRevisionItemFromCandidate(candidate: CandidateRevisionBloc
     answer: buildAnswer(candidate.type, statement),
     answerLatex: convertCommonMathToLatex(buildAnswer(candidate.type, statement)),
     standaloneValue: candidate.type === "formula" ? "low" : "medium",
+    curationDecision: "needs_review",
+    curationReason: "Awaiting final deck quality gate.",
     relevanceReason: "Awaiting curation score.",
     createdAt: timestamp,
     updatedAt: timestamp,
@@ -213,6 +300,11 @@ export function scoreRevisionCandidate(candidate: CandidateRevisionBlock, item: 
   const centrality = conceptualCentrality(item, lower, evidence);
   const standalone = standaloneValueScore(item, lower, guidanceSupport, centrality);
   const examRelevance = asScore(Math.max(guidanceSupport, centrality >= 4 ? 4 : centrality, item.importance === "must_know" ? 5 : 0));
+  const genericConcept = isGenericConceptName(item.conceptName || item.cardFront);
+
+  if (genericConcept && guidanceSupport < 4) {
+    return score(candidate.id, examRelevance, standalone, centrality, guidanceSupport, 1, "needs_review", "Concept name is generic and should be manually resolved.", evidence);
+  }
 
   if (explicitlyNotRequired && guidanceSupport <= 2) {
     return score(candidate.id, 1, standalone, centrality, guidanceSupport, 1, "reject", "Guidance indicates this material is not required.", evidence);
@@ -273,6 +365,8 @@ function applyScoreToItem(item: RevisionItem, score: CandidateRelevanceScore, gu
     ...item,
     importance: importanceFromScore(score, item, guidanceText),
     curationStatus: score.keepDecision === "needs_review" ? "needs_review" : "kept",
+    curationDecision: score.keepDecision === "keep" ? "keep" : score.keepDecision === "needs_review" ? "needs_review" : "reject",
+    curationReason: score.reason,
     classificationConfidence: scoreConfidence(score),
     guidanceReason: score.evidence.length ? score.evidence.join(" ") : "No explicit guidance match found.",
     standaloneValue: score.standaloneFlashcardValue >= 4 ? "high" : score.standaloneFlashcardValue >= 3 ? "medium" : "low",

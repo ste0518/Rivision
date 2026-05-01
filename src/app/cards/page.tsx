@@ -14,6 +14,8 @@ import { Textarea } from "@/components/ui/textarea";
 import { CardForm } from "@/components/card-form";
 import { PageHeader } from "@/components/page-header";
 import { MathMarkdown } from "@/components/MathMarkdown";
+import { getPrimaryCardPreview, hasGenericConceptName, hasLowLatexQuality } from "@/lib/card-render";
+import { normalizeMathNotation } from "@/lib/revision-item-utils";
 import { exportRevisionItems, importRevisionItems } from "@/lib/storage";
 import { cardPurposes, importances, revisionItemTypes, type RevisionItem } from "@/lib/types";
 import { useStudyStore } from "@/hooks/use-study-store";
@@ -25,12 +27,12 @@ export default function CardsPage() {
   const [editing, setEditing] = useState<RevisionItem | undefined>();
   const [adding, setAdding] = useState(false);
   const [importText, setImportText] = useState("");
-  const [filters, setFilters] = useState({ type: "all", cardPurpose: "all", importance: "all", section: "", tag: "", source: "", showRejected: false, showDeleted: false });
+  const [filters, setFilters] = useState({ type: "all", cardPurpose: "all", importance: "all", curation: "kept", lowLatexOnly: false, section: "", tag: "", source: "", showRejected: false, showDeleted: false });
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedDeletedIds, setSelectedDeletedIds] = useState<string[]>([]);
   const [undo, setUndo] = useState<UndoState>(null);
 
-  const activeCards = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && item.curationStatus !== "needs_review" && item.standaloneValue !== "low" && !needsRepair(item)), [store.revisionItems]);
+  const activeCards = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted), [store.revisionItems]);
   const deletedCards = useMemo(() => store.revisionItems.filter((item) => item.isDeleted), [store.revisionItems]);
   const filtered = useMemo(() => activeCards.filter((item) => matchesFilters(item, filters)), [activeCards, filters]);
 
@@ -63,6 +65,19 @@ export default function CardsPage() {
     setUndo({ message: ids.length === 1 ? "Card restored" : `${ids.length} cards restored`, itemIds: ids, action: "restore" });
   }
 
+  function fixMath(ids: string[]) {
+    for (const id of ids) {
+      const item = store.revisionItems.find((candidate) => candidate.id === id);
+      if (!item) continue;
+      store.upsertRevisionItem({
+        ...item,
+        statementLatex: normalizeMathNotation(item.statement || ""),
+        answerLatex: normalizeMathNotation(item.answer || ""),
+        proofLatex: item.proof ? normalizeMathNotation(item.proof) : undefined,
+      });
+    }
+  }
+
   function handleUndo() {
     if (!undo) return;
     if (undo.action === "delete") store.restoreRevisionItems(undo.itemIds);
@@ -93,6 +108,12 @@ export default function CardsPage() {
             <option value="all">All importance</option>
             {importances.map((importance) => <option key={importance}>{importance}</option>)}
           </Select>
+          <Select value={filters.curation} onChange={(event) => setFilters({ ...filters, curation: event.target.value })}>
+            <option value="all">All curation</option>
+            <option value="kept">Kept</option>
+            <option value="needs_review">Needs review</option>
+            <option value="reject">Rejected (from cards list)</option>
+          </Select>
           <Input placeholder="Section" value={filters.section} onChange={(event) => setFilters({ ...filters, section: event.target.value })} />
           <Input placeholder="Tag" value={filters.tag} onChange={(event) => setFilters({ ...filters, tag: event.target.value })} />
           <Input placeholder="Source file" value={filters.source} onChange={(event) => setFilters({ ...filters, source: event.target.value })} />
@@ -104,6 +125,10 @@ export default function CardsPage() {
             <input type="checkbox" checked={filters.showDeleted} onChange={(event) => setFilters({ ...filters, showDeleted: event.target.checked })} />
             Show deleted
           </label>
+          <label className="flex items-center gap-2 text-sm">
+            <input type="checkbox" checked={filters.lowLatexOnly} onChange={(event) => setFilters({ ...filters, lowLatexOnly: event.target.checked })} />
+            Low LaTeX quality
+          </label>
         </CardContent>
       </Card>
 
@@ -112,6 +137,7 @@ export default function CardsPage() {
         <Button variant="outline" onClick={downloadJson}>Export JSON</Button>
         <Button variant="secondary" onClick={store.seedMockData}>Load mock data</Button>
         <Button variant="destructive" onClick={() => deleteCards(selectedIds)} disabled={selectedIds.length === 0}>Bulk delete selected</Button>
+        <Button variant="outline" onClick={() => fixMath(selectedIds)} disabled={selectedIds.length === 0}>Fix math</Button>
       </div>
 
       <Card className="mb-6">
@@ -150,15 +176,24 @@ export default function CardsPage() {
                     <div className="space-y-2">
                       <MathMarkdown content={item.cardFront} className="bg-transparent p-0 font-medium text-slate-950" />
                       <div className="text-xs text-slate-500">{item.displayTitle || item.title} · {item.type} · {item.cardPurpose} · {item.tags.join(", ")} · standalone {item.standaloneValue ?? "unknown"}</div>
-                      <MathMarkdown content={item.statementLatex || item.statement} className="bg-transparent p-0 text-sm text-slate-600" />
+                      <MathMarkdown content={getPrimaryCardPreview(item)} className="bg-transparent p-0 text-sm text-slate-600" />
                     </div>
                   </TableCell>
                   <TableCell><Badge variant={item.importance}>{item.importance}</Badge></TableCell>
                   <TableCell className="text-sm text-slate-600">{item.sourceLocation || "source unknown"}</TableCell>
-                  <TableCell>{item.warnings?.map((warning) => <Badge key={warning} className="mb-1 mr-1" variant="unknown">{warning}</Badge>)}</TableCell>
+                  <TableCell>
+                    {item.curationDecision === "needs_review" ? <Badge className="mb-1 mr-1" variant="unknown">Needs review</Badge> : null}
+                    {hasLowLatexQuality(item) ? <Badge className="mb-1 mr-1" variant="unknown">Low LaTeX quality</Badge> : null}
+                    {hasGenericConceptName(item) ? <Badge className="mb-1 mr-1" variant="unknown">Generic concept name</Badge> : null}
+                    {(item.standaloneValue ?? "medium") === "low" ? <Badge className="mb-1 mr-1" variant="unknown">Low standalone value</Badge> : null}
+                    {item.warnings?.map((warning) => <Badge key={warning} className="mb-1 mr-1" variant="unknown">{warning}</Badge>)}
+                  </TableCell>
                   <TableCell>
                     <div className="flex gap-2">
                       <Button size="sm" variant="outline" onClick={() => setEditing(item)}>Edit</Button>
+                      <Button size="sm" variant="outline" onClick={() => store.upsertRevisionItem({ ...item, curationDecision: "keep", curationStatus: "kept", cardPurpose: item.cardPurpose === "needs_review" ? "definition_recall" : item.cardPurpose })}>Mark keep</Button>
+                      <Button size="sm" variant="outline" onClick={() => store.upsertRevisionItem({ ...item, curationDecision: "needs_review", curationStatus: "needs_review", cardPurpose: "needs_review" })}>Needs review</Button>
+                      <Button size="sm" variant="outline" onClick={() => fixMath([item.id])}>Fix math</Button>
                       <Button size="sm" variant="destructive" onClick={() => deleteCards([item.id])}><Trash2 className="h-4 w-4" />Delete</Button>
                     </div>
                   </TableCell>
@@ -250,24 +285,12 @@ export default function CardsPage() {
   );
 }
 
-function needsRepair(item: RevisionItem) {
-  return Boolean(
-    item.extractionWarning ||
-      item.warnings?.some((warning) =>
-        warning.includes("Over-merged") ||
-        warning.includes("Source location is missing") ||
-        warning.includes("Question prompt") ||
-        warning.includes("Title is unusually long") ||
-        warning.includes("unrelated section") ||
-        warning.includes("multiple major label"),
-      ),
-  );
-}
-
-function matchesFilters(item: RevisionItem, filters: { type: string; cardPurpose: string; importance: string; section: string; tag: string; source: string }) {
+function matchesFilters(item: RevisionItem, filters: { type: string; cardPurpose: string; importance: string; curation: string; lowLatexOnly: boolean; section: string; tag: string; source: string }) {
   return (filters.type === "all" || item.type === filters.type) &&
     (filters.cardPurpose === "all" || item.cardPurpose === filters.cardPurpose) &&
     (filters.importance === "all" || item.importance === filters.importance) &&
+    (filters.curation === "all" || (item.curationDecision ?? "keep") === filters.curation) &&
+    (!filters.lowLatexOnly || hasLowLatexQuality(item)) &&
     (!filters.section || item.section?.toLowerCase().includes(filters.section.toLowerCase())) &&
     (!filters.tag || item.tags.some((tag) => tag.toLowerCase().includes(filters.tag.toLowerCase()))) &&
     (!filters.source || item.sourceFile.toLowerCase().includes(filters.source.toLowerCase()));

@@ -1,6 +1,6 @@
 import { createId } from "@/lib/utils";
 import { inferTopic, splitShortLeadingTitle, stripLeadingLabel } from "@/lib/segmentation";
-import type { RevisionCandidate, RevisionItem, RevisionItemType } from "@/lib/types";
+import type { LatexQualityReport, RevisionCandidate, RevisionItem, RevisionItemType } from "@/lib/types";
 
 const labelledItemRegex = /\b(Definition|Theorem|Lemma|Proposition|Corollary|Proof|Remark|Example|Assumption|Property|Algorithm|Formula)\s*(?:[A-Za-z]?\d+(?:\.\d+)*)?\b/g;
 const proofMarkerRegex = /\bProof(?:\s+of\s+(?:Theorem|Lemma|Proposition|Corollary)\s*[A-Za-z]?\d*(?:\.\d+)*)?\s*[:.]/i;
@@ -28,6 +28,9 @@ export function normaliseRevisionItem(item: RevisionItem): RevisionItem {
   const statementLatex = repairMathTextToLatex(item.statementLatex || statement);
   const proofLatex = proof ? repairMathTextToLatex(item.proofLatex || proof) : undefined;
   const answerLatex = repairMathTextToLatex(item.answerLatex || answer);
+  const latexReport = validateLatexQuality({ ...item, statementLatex, proofLatex, answerLatex } as RevisionItem);
+  const genericConcept = isGenericConceptName(conceptName);
+  const forceNeedsReview = latexReport.score === "low" || genericConcept;
 
   return {
     ...item,
@@ -39,7 +42,9 @@ export function normaliseRevisionItem(item: RevisionItem): RevisionItem {
     cardFront,
     taskPrompt,
     cardPurpose,
-    curationStatus: item.curationStatus ?? "kept",
+    curationStatus: item.curationStatus ?? ((item.curationDecision ?? (forceNeedsReview ? "needs_review" : "keep")) === "needs_review" ? "needs_review" : "kept"),
+    curationDecision: item.curationDecision ?? (forceNeedsReview ? "needs_review" : "keep"),
+    curationReason: item.curationReason ?? (genericConcept ? "Generic concept name requires manual review." : latexReport.score === "low" ? "Low LaTeX quality requires manual review." : undefined),
     statement,
     statementLatex,
     originalRawText,
@@ -52,6 +57,12 @@ export function normaliseRevisionItem(item: RevisionItem): RevisionItem {
     answer,
     answerLatex,
     classificationConfidence: item.classificationConfidence ?? (extractionWarning ? "low" : "medium"),
+    warnings: [
+      ...(item.warnings ?? []),
+      ...(genericConcept ? ["Generic concept name."] : []),
+      ...(latexReport.score === "low" ? ["Low LaTeX quality."] : []),
+      ...latexReport.issues,
+    ],
     createdAt: item.createdAt || now,
     updatedAt: item.updatedAt || now,
   };
@@ -93,16 +104,21 @@ export function buildQuestionPrompt(item: Pick<RevisionItem, "type" | "title" | 
 }
 
 export function convertCommonMathToLatex(value: string) {
-  return repairMathTextToLatex(value);
+  return normalizeMathNotation(value);
 }
 
 export function repairMathTextToLatex(value: string) {
+  return normalizeMathNotation(value);
+}
+
+export function normalizeMathNotation(value: string) {
   let text = cleanPlainText(value);
 
   text = text
     .replace(/\bnormal\s+distribution\b/gi, "normal distribution")
     .replace(/\bprobability\s+density\b/gi, "probability density")
-    .replace(/\bGaus\s*sian\b/gi, "Gaussian");
+    .replace(/\bGaus\s*sian\b/gi, "Gaussian")
+    .replace(/dis-\s*'\s*n\s*tribution/gi, "distribution");
 
   text = replaceOutsideInlineMath(
     text,
@@ -131,6 +147,8 @@ export function repairMathTextToLatex(value: string) {
   text = replaceOutsideInlineMath(text, /\bSigma\b/g, () => "\\Sigma");
   text = replaceOutsideInlineMath(text, /\bΣ\b/g, () => "\\Sigma");
   text = replaceOutsideInlineMath(text, /\bCov\b/g, () => "\\operatorname{Cov}");
+  text = replaceOutsideInlineMath(text, /\bmu\b/gi, () => "\\mu");
+  text = replaceOutsideInlineMath(text, /\brho\b/gi, () => "\\rho");
 
   text = replaceOutsideInlineMath(
     text,
@@ -146,6 +164,18 @@ export function repairMathTextToLatex(value: string) {
   );
   text = replaceOutsideInlineMath(text, /\ba\s+in\s+R\s*\^?\s*n\b/gi, () => "\\(a\\in\\mathbb{R}^n\\)", false);
 
+  text = replaceOutsideInlineMath(
+    text,
+    /\bF\s*t1\s*,\s*\.\.\.\s*,\s*tn\s*\(\s*x1\s*,\s*\.\.\.\s*,\s*xn\s*\)/gi,
+    () => "\\(F_{t_1,\\ldots,t_n}(x_1,\\ldots,x_n)\\)",
+    false,
+  );
+  text = replaceOutsideInlineMath(
+    text,
+    /\bP\s*\(\s*X\s*t1\s*<=\s*x1\s*,\s*\.\.\.\s*,\s*X\s*tn\s*<=\s*xn\s*\)/gi,
+    () => "\\(\\mathbb{P}(X_{t_1}\\le x_1,\\ldots,X_{t_n}\\le x_n)\\)",
+    false,
+  );
   text = replaceOutsideInlineMath(
     text,
     /\bX\s*=\s*\(\s*X\s*_?\s*t\s*\)\s*(?:_\{\s*t\s*(?:in|∈|\\in)\s*T\s*\}|\s*t\s*(?:in|∈)\s*T)/gi,
@@ -176,15 +206,26 @@ export function repairMathTextToLatex(value: string) {
   text = replaceOutsideInlineMath(text, /\bX\s+j\b/g, () => "\\(X_j\\)", false);
   text = replaceOutsideInlineMath(text, /\bXi\b/g, () => "\\(X_i\\)", false);
   text = replaceOutsideInlineMath(text, /\bXj\b/g, () => "\\(X_j\\)", false);
+  text = replaceOutsideInlineMath(text, /\bXt1\b/g, () => "\\(X_{t_1}\\)", false);
+  text = replaceOutsideInlineMath(text, /\bXtn\b/g, () => "\\(X_{t_n}\\)", false);
+  text = replaceOutsideInlineMath(text, /\bX1\b/g, () => "\\(X_1\\)", false);
+  text = replaceOutsideInlineMath(text, /\bXn\b/g, () => "\\(X_n\\)", false);
+  text = replaceOutsideInlineMath(text, /\bt1\b/g, () => "\\(t_1\\)", false);
+  text = replaceOutsideInlineMath(text, /\btn\b/g, () => "\\(t_n\\)", false);
+  text = replaceOutsideInlineMath(text, /\bx1\b/g, () => "\\(x_1\\)", false);
+  text = replaceOutsideInlineMath(text, /\bxn\b/g, () => "\\(x_n\\)", false);
   text = replaceOutsideInlineMath(text, /\bt\s+in\s+T\b/g, () => "\\(t\\in T\\)", false);
   text = replaceOutsideInlineMath(text, /\bt\s*∈\s*T\b/g, () => "\\(t\\in T\\)", false);
+  text = replaceOutsideInlineMath(text, /\bT\s+subset\s+R\^?d\b/gi, () => "\\(T\\subset\\mathbb{R}^d\\)", false);
+  text = replaceOutsideInlineMath(text, /\bx\s+in\s+R\b/gi, () => "\\(x\\in\\mathbb{R}\\)", false);
   text = replaceOutsideInlineMath(text, /\bR\^([A-Za-z0-9]+)\b/g, (_match, power) => `\\mathbb{R}^${power}`);
   text = replaceOutsideInlineMath(text, /\bR\s+d\b/g, () => "\\mathbb{R}^d");
   text = replaceOutsideInlineMath(text, /\bR\s+n\b/g, () => "\\mathbb{R}^n");
   text = replaceOutsideInlineMath(text, /\bsigma\^2\b/gi, () => "\\sigma^2");
   text = replaceOutsideInlineMath(text, /\bsigma\b/gi, () => "\\sigma");
-  text = replaceOutsideInlineMath(text, /\bmu\b/gi, () => "\\mu");
   text = replaceOutsideInlineMath(text, /\bgamma\b/gi, () => "\\gamma");
+  text = replaceOutsideInlineMath(text, /\bsum_i\s*=\s*1\^n\s*a_iX_i\b/gi, () => "\\sum_{i=1}^n a_iX_i");
+  text = text.replace(/\\\(\s*\\\(/g, "\\(").replace(/\\\)\s*\\\)/g, "\\)");
 
   return text;
 }
@@ -196,6 +237,23 @@ function isInsideInlineMath(source: string, offset: number) {
 }
 
 export const toLatexText = convertCommonMathToLatex;
+
+export function validateLatexQuality(item: RevisionItem): LatexQualityReport {
+  const target = `${item.statementLatex || ""}\n${item.answerLatex || ""}\n${item.proofLatex || ""}`.trim();
+  const issues: string[] = [];
+  if (!target) return { score: "low", issues: ["Missing LaTeX content."] };
+  if (/\bXt1\b|\bXtn\b/.test(target)) issues.push("Contains raw Xt1/Xtn tokens.");
+  if (/\bX1\b|\bXn\b/.test(target)) issues.push("Contains raw X1/Xn tokens in math context.");
+  if (/\bR\s+[dn]\b/.test(target)) issues.push("Contains raw R d / R n notation.");
+  if (/\bSigma\b/.test(target)) issues.push("Contains raw Sigma token.");
+  if (/\bsum_i\b/.test(target)) issues.push("Contains raw sum_i notation.");
+  if (/dis-\s*/i.test(target)) issues.push("Contains broken hyphenation.");
+  const openCount = (target.match(/\\\(/g) ?? []).length;
+  const closeCount = (target.match(/\\\)/g) ?? []).length;
+  if (openCount !== closeCount) issues.push("Unmatched inline math delimiters.");
+  const score: LatexQualityReport["score"] = issues.length >= 3 ? "low" : issues.length > 0 ? "medium" : "high";
+  return { score, issues };
+}
 
 function replaceOutsideInlineMath(
   source: string,
@@ -265,6 +323,9 @@ export function extractConceptName(candidate: RevisionCandidate | undefined, ite
     const stationarity = statement.match(/^(?:A|An|The)\s+[^.!?]{1,80}?\s+is\s+(weakly|strictly|intrinsically|second-order)\s+stationary\s+if\b/i);
     if (stationarity) return capitaliseConcept(`${stationarity[1].replace(/ly$/i, "")} stationarity`);
 
+    const grfMatch = statement.match(/\b(?:is|are)\s+(?:a|an|the)?\s*Gaussian random field\b/i);
+    if (grfMatch) return "Gaussian random field";
+
     const articleMatch = statement.match(/^(?:A|An|The)\s+([A-Za-z][A-Za-z\s-]{1,60}?)(?:\s*\([^)]{0,120}\)\s*['’]?)?\s+(?:is|are|has|means|denotes|consists|refers)\b/i);
     if (articleMatch) return capitaliseConcept(normaliseConceptPhrase(articleMatch[1]) || explicitTitleConcept || "Definition");
 
@@ -272,12 +333,19 @@ export function extractConceptName(candidate: RevisionCandidate | undefined, ite
     if (processMatch) return capitaliseConcept(normaliseConceptPhrase(processMatch[1]) || explicitTitleConcept || "Process");
 
     const sayMatch = statement.match(/\bWe say that\b[^.!?]{0,120}?\bis\s+(.+?)(?:\s+if\b|[.;,:]|$)/i);
-    if (sayMatch) return capitaliseConcept(normaliseConceptPhrase(sayMatch[1]) || explicitTitleConcept || "Definition");
+    if (sayMatch) {
+      const normalized = normaliseConceptPhrase(sayMatch[1]);
+      if (/weakly stationary/i.test(normalized)) return "Weak stationarity";
+      if (/strictly stationary/i.test(normalized)) return "Strict stationarity";
+      if (/isotropic/i.test(normalized)) return "Isotropy";
+      return capitaliseConcept(normalized || explicitTitleConcept || "Definition");
+    }
 
     const calledMatch = statement.match(/\bis called\s+(.+?)(?:\s+if\b|[.;,:]|$)/i);
     if (calledMatch) return capitaliseConcept(normaliseConceptPhrase(calledMatch[1]) || explicitTitleConcept || "Definition");
 
-    return capitaliseConcept(explicitTitleConcept || inferTopic("definition", statement) || "Definition");
+    const inferred = capitaliseConcept(explicitTitleConcept || inferTopic("definition", statement) || "Definition");
+    return isGenericConceptName(inferred) ? (number ? `Definition ${number}` : "Definition") : inferred;
   }
 
   if (theoremLike(item.type)) {
@@ -291,7 +359,8 @@ export function extractConceptName(candidate: RevisionCandidate | undefined, ite
     const formulaTitle = explicitTitleConcept && explicitTitleConcept.toLowerCase() !== "formula" ? explicitTitleConcept : undefined;
     const namedFormula = statement.match(/\b(?:formula|equation)\s+for\s+([^.:;,]+)/i)?.[1] ??
       statement.match(/\b(?:The\s+)?(semivariogram|covariance function|BLUP|kriging predictor)\b/i)?.[1];
-    return capitaliseConcept(normaliseConceptPhrase(formulaTitle || namedFormula || "Formula"));
+    const formulaName = capitaliseConcept(normaliseConceptPhrase(formulaTitle || namedFormula || "Formula"));
+    return isGenericConceptName(formulaName) ? (number ? `Formula ${number}` : "Formula") : formulaName;
   }
 
   if (item.type === "proof") {
@@ -474,7 +543,13 @@ function isUsableConceptName(value: string | undefined) {
   if (trimmed.length > 80 || trimmed.split(/\s+/).length > 8) return false;
   if (/^(state|prove|explain|write down)\b/i.test(trimmed)) return false;
   if (/[,;:]|\\\(|\)|\.\.\.|…/.test(trimmed)) return false;
+  if (isGenericConceptName(trimmed)) return false;
   return true;
+}
+
+export function isGenericConceptName(value: string | undefined) {
+  if (!value) return false;
+  return /^(definition|theorem|formula|remark|example)$/i.test(value.trim());
 }
 
 function capitalise(value: string) {
