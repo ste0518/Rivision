@@ -1,5 +1,6 @@
 import assert from "node:assert/strict";
 import { segmentRevisionCandidates } from "../src/lib/segmentation";
+import { buildCourseMap, detectCourseType, extractRawCandidates, parseDocuments, runCoursePackBuilder } from "../src/lib/course-builder";
 import { extractRevisionItems } from "../src/lib/extraction";
 import { normalizeCuratedRevisionResult, normalizeRevisionItem } from "../src/lib/normalization";
 import { filterRevisionItemsByRelevance } from "../src/lib/relevance";
@@ -273,6 +274,14 @@ async function run() {
 
   const timeSeriesCandidates = segmentRevisionCandidates([timeSeriesFixtureDocument]);
   assert.ok(timeSeriesCandidates.length > 40, `expected > 40 candidates, got ${timeSeriesCandidates.length}`);
+  const timeSeriesParsed = parseDocuments({ notesDocuments: [timeSeriesFixtureDocument], guidanceDocuments: [] });
+  assert.equal(detectCourseType(timeSeriesParsed), "time_series");
+  const richTimeSeriesCandidates = extractRawCandidates(timeSeriesParsed, "time_series");
+  assert.ok(richTimeSeriesCandidates.length > 40, `expected > 40 rich candidates, got ${richTimeSeriesCandidates.length}`);
+  const timeSeriesCourseMap = buildCourseMap(timeSeriesParsed, "time_series", richTimeSeriesCandidates);
+  for (const expected of ["Strict stationarity", "Second-order stationarity", "White noise process", "MA(q) process", "AR(p) process", "ARMA(p,q)", "ARCH(p)", "ARIMA(p,d,q)", "General Linear Process", "Stationarity root condition", "Invertibility root condition", "Spectral representation theorem", "Spectral density function", "Periodogram", "Direct spectral estimator", "Tapering trade-off", "Ljung-Box test", "Forecasting"]) {
+    assert.ok(timeSeriesCourseMap.topics.some((topic) => topic.name === expected), `time-series course map should detect ${expected}`);
+  }
   const timeSeriesExtraction = await extractRevisionItems({
     notesDocuments: [timeSeriesFixtureDocument],
     guidanceDocuments: [],
@@ -284,6 +293,13 @@ async function run() {
   assert.ok(kept.every((item) => !/^(Example|Worked example|Definition|Formula|Properties and Notation|Chapter \d+)/i.test(item.conceptName ?? "")));
   assert.ok(kept.every((item) => !/[ϖςϱ↑↓↖]/.test(`${item.statementLatex ?? ""} ${item.answerLatex ?? ""}`)));
   assert.ok(kept.some((item) => /MA\(q\)|AR\(p\)|ARMA\(p,q\)|ARCH\(p\)|ARIMA\(p,d,q\)|Ljung-Box|periodogram|spectral density|forecasting/i.test(`${item.conceptName ?? ""} ${item.title} ${item.statement}`)));
+
+  const spatialParsed = parseDocuments({ notesDocuments: [spatialStatisticsFixtureDocument], guidanceDocuments: [spatialStatisticsGuidanceDocument] });
+  assert.equal(detectCourseType(spatialParsed), "spatial_statistics");
+  const spatialCourseBuilder = await runCoursePackBuilder({ notesDocuments: [spatialStatisticsFixtureDocument], guidanceDocuments: [spatialStatisticsGuidanceDocument] });
+  for (const expected of ["Random field", "Gaussian random field", "Weak stationarity", "Strict stationarity", "Intrinsic stationarity", "Semivariogram", "Isotropy", "Anisotropy", "Kriging"]) {
+    assert.ok(spatialCourseBuilder.courseMap?.topics.some((topic) => topic.name === expected), `spatial course map should detect ${expected}`);
+  }
 
   console.log("Extraction regression passed.");
 }

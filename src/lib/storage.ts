@@ -1,6 +1,6 @@
 import { migrateStoredCards, normalizeCuratedRevisionResult } from "@/lib/normalization";
 import { inferStudyFileRole } from "@/lib/course-files";
-import type { CourseKnowledgeMap, CourseStructureMap, CurationReport, EmbeddedRevisionItem, ExamPriorityMap, GuidanceFile, RejectedRevisionItem, RevisionItem, RevisionPack, ReviewSession, StudyFile } from "@/lib/types";
+import type { AssessmentMap, CourseKnowledgeMap, CourseMap, CourseStructureMap, CurationReport, EmbeddedRevisionItem, ExamPriorityMap, GuidanceFile, RejectedRevisionItem, RevisionItem, RevisionPack, ReviewSession, StudyFile } from "@/lib/types";
 
 export type StudyState = {
   notesFiles: StudyFile[];
@@ -9,8 +9,10 @@ export type StudyState = {
   rejectedItems: RejectedRevisionItem[];
   embeddedItems: EmbeddedRevisionItem[];
   reviewSessions: ReviewSession[];
+  courseMap?: CourseMap;
   courseStructureMap?: CourseStructureMap;
   courseKnowledgeMap?: CourseKnowledgeMap;
+  assessmentMap?: AssessmentMap;
   examPriorityMap?: ExamPriorityMap;
   revisionPack?: RevisionPack;
   curationReport?: CurationReport;
@@ -33,8 +35,10 @@ export function loadStudyState(): StudyState {
       rejectedItems: normalizedCuration.rejectedItems,
       embeddedItems: normalizedCuration.embeddedItems,
       reviewSessions: Array.isArray(parsed.reviewSessions) ? parsed.reviewSessions : [],
+      courseMap: parsed.courseMap,
       courseStructureMap: parsed.courseStructureMap ? normalizedCuration.courseStructureMap : undefined,
       courseKnowledgeMap: parsed.courseKnowledgeMap ? normalizedCuration.courseKnowledgeMap : undefined,
+      assessmentMap: parsed.assessmentMap,
       examPriorityMap: parsed.examPriorityMap ? normalizedCuration.examPriorityMap : undefined,
       revisionPack: parsed.revisionPack ? normalizedCuration.revisionPack : undefined,
       curationReport: parsed.curationReport ? normalizedCuration.curationReport : undefined,

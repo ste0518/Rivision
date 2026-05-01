@@ -345,7 +345,7 @@ export function validateLatexQuality(item: RevisionItem): LatexQualityReport {
   if (/\brho\b|\bgamma\b/.test(target)) issues.push("Contains raw rho/gamma token.");
   if (/\bPn\s*i\s*=\s*1\b|\bsum_i\b/.test(target)) issues.push("Contains raw summation notation.");
   if (/\uFFFE/.test(target)) issues.push("Contains PDF extraction artefact.");
-  if (/\bXt\b|\bXt\+/.test(target)) issues.push("Contains raw Xt tokens.");
+  if (/\bXt\b|\bXt\+|\bXt↑1/.test(target)) issues.push("Contains raw Xt tokens.");
   if (/\bsω\b|\bϑ\b|\bς\b|\bϖ\b|\bϱ\b|↑|↓|↖/.test(target)) issues.push("Contains unresolved time-series symbol artefacts.");
   if (/dis-\s*/i.test(target)) issues.push("Contains broken hyphenation.");
   const openCount = (target.match(/\\\(/g) ?? []).length;
@@ -368,12 +368,22 @@ function normalizeTimeSeriesMath(source: string) {
   let text = source;
   text = text
     .replace(/￾/g, "")
-    .replace(/\b\{Xt\}/g, "\\(\\{X_t\\}\\)")
-    .replace(/\bXt\b/g, "\\(X_t\\)")
-    .replace(/\bXt\+ω\b/g, "\\(X_{t+\\omega}\\)")
     .replace(/\bcov\{Xt,\s*Xt\+ω\}/gi, "\\(\\operatorname{cov}(X_t,X_{t+\\omega})\\)")
     .replace(/\bE\{Xt\}/g, "\\(\\mathbb{E}\\{X_t\\}\\)")
     .replace(/\bvar\{Xt\}/gi, "\\(\\operatorname{var}(X_t)\\)")
+    .replace(/\bXt\s*=\s*ς\s*Xt↑1\s*\+\s*ϱt\b/g, "\\(X_t=\\phi X_{t-1}+\\varepsilon_t\\)")
+    .replace(/\bXt\s*=\s*φ\s*Xt-1\s*\+\s*εt\b/g, "\\(X_t=\\phi X_{t-1}+\\varepsilon_t\\)")
+    .replace(/\bΦ\(B\)\s*Xt\s*=\s*Θ\(B\)\s*ϱt\b/g, "\\(\\Phi(B)X_t=\\Theta(B)\\varepsilon_t\\)")
+    .replace(/\bΦ\(B\)\s*Xt\s*=\s*Θ\(B\)\s*εt\b/g, "\\(\\Phi(B)X_t=\\Theta(B)\\varepsilon_t\\)")
+    .replace(/\bXt\+ω\b/g, "\\(X_{t+\\omega}\\)")
+    .replace(/\bXt↑1\b/g, "\\(X_{t-1}\\)")
+    .replace(/\b\{Xt\}/g, "\\(\\{X_t\\}\\)")
+    .replace(/\bXt\b/g, "\\(X_t\\)")
+    .replace(/\bϱt\b/g, "\\(\\varepsilon_t\\)")
+    .replace(/\bς1,p\b/g, "\\(\\phi_{1,p}\\)")
+    .replace(/\bϖ1,q\b/g, "\\(\\theta_{1,q}\\)")
+    .replace(/\bsω\b/g, "\\(s_\\omega\\)")
+    .replace(/\bϑω\b/g, "\\(\\rho_\\omega\\)")
     .replace(/\bMA\(q\)\b/g, "\\(\\operatorname{MA}(q)\\)")
     .replace(/\bAR\(p\)\b/g, "\\(\\operatorname{AR}(p)\\)")
     .replace(/\bARMA\(p,q\)\b/g, "\\(\\operatorname{ARMA}(p,q)\\)")
@@ -381,14 +391,16 @@ function normalizeTimeSeriesMath(source: string) {
     .replace(/\bρk\s*=\s*sk\/s0\b/g, "\\(\\rho_k=s_k/s_0\\)");
 
   text = text.replace(/\bXt\s*=\s*εt\s*-\s*θ\s*εt-1\b/g, "\\(X_t=\\varepsilon_t-\\theta\\varepsilon_{t-1}\\)");
-  text = text.replace(/\bXt\s*=\s*φ\s*Xt-1\s*\+\s*εt\b/g, "\\(X_t=\\phi X_{t-1}+\\varepsilon_t\\)");
-  text = text.replace(/\bΦ\(B\)\s*Xt\s*=\s*Θ\(B\)\s*εt\b/g, "\\(\\Phi(B)X_t=\\Theta(B)\\varepsilon_t\\)");
 
   if (/cov\{Xt,\s*Xt\+/.test(source) && /ω/.test(source) && !/\\tau/.test(text)) {
     text = text.replace(/\bω\b/g, "\\omega");
   }
-  if (/sω/.test(source) || /ϑω/.test(source)) {
-    text = text.replace(/sω/g, "s_\\omega").replace(/ϑω/g, "\\rho_\\omega");
+  if (/[ϱςϖϑ]/.test(source)) {
+    text = text
+      .replace(/ϱ/g, "\\varepsilon")
+      .replace(/ς/g, "\\phi")
+      .replace(/ϖ/g, "\\theta")
+      .replace(/ϑ/g, "\\rho");
   }
   return text;
 }
@@ -560,6 +572,7 @@ function inferCardPurpose(type: RevisionItemType, title: string, statement: stri
   const lower = `${title} ${statement}`.toLowerCase();
   if (type === "proof" || proofRequired) return "proof_recall";
   if (type === "definition") {
+    if (/\b(?:ma\(|ar\(|arma|arima|arch|white noise|general linear process)\b/.test(lower)) return "model_definition";
     if (/\b(vs|versus|difference|distinction|strict|weak)\b/.test(lower) && /\bstationarity|stationary\b/.test(lower)) return "conceptual_distinction";
     return "definition_recall";
   }
@@ -568,13 +581,21 @@ function inferCardPurpose(type: RevisionItemType, title: string, statement: stri
     if (/\bkriging system|ordinary kriging|set up|calculate|solve\b/.test(lower)) return "calculation_template";
     return "formula_recall";
   }
-  if (type === "algorithm") return "method_steps";
-  if (/\bcondition|applies|valid|when can|if and only if\b/.test(lower)) return "application_condition";
+  if (type === "algorithm") {
+    if (/\bljung-?box|test statistic|hypotheses\b/.test(lower)) return "test_statistic";
+    return "method_steps";
+  }
+  if (/\bljung-?box|test statistic|hypotheses\b/.test(lower)) return "test_statistic";
+  if (/\bcondition|applies|valid|when can|if and only if|roots outside\b/.test(lower)) return "condition_recall";
   if (/\b(vs|versus|difference|distinction|compare|strict|weak)\b/.test(lower)) return "conceptual_distinction";
   return "definition_recall";
 }
 
 function buildTaskPrompt(type: RevisionItemType, proofRequired: boolean, purpose: RevisionItem["cardPurpose"]) {
+  if (purpose === "model_definition") return "Write the model and key properties.";
+  if (purpose === "condition_recall") return "State the condition and when it applies.";
+  if (purpose === "test_statistic") return "State the hypotheses, statistic, and decision rule.";
+  if (purpose === "worked_example_pattern") return "Recall the problem type and solution pattern.";
   if (purpose === "conceptual_distinction") return "Explain the difference and implication relationship.";
   if (purpose === "calculation_template") return "Set up the calculation template.";
   if (purpose === "method_steps") return "Recall the method steps.";
@@ -590,6 +611,10 @@ function specificTaskPrompt(conceptName: string | undefined) {
   if (conceptName === "Covariance function validity") return "State the positive semi-definiteness condition.";
   if (conceptName === "Simple Kriging") return "State the BLUP predictor and mean squared prediction error.";
   if (conceptName === "Ordinary Kriging") return "State the BLUP predictor and mean squared prediction error.";
+  if (conceptName === "Second-order stationarity") return "Recall the definition and equivalent ACVS condition.";
+  if (conceptName === "AR(p) process" || conceptName === "AR(p) stationarity condition") return "State the root condition.";
+  if (conceptName === "MA(q) process") return "Write the model and ACVS support.";
+  if (conceptName === "Ljung-Box test") return "State the hypotheses, statistic, and decision rule.";
   return undefined;
 }
 

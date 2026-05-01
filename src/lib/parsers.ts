@@ -26,7 +26,7 @@ export async function parsePdfFile(file: File): Promise<ParsedDocument> {
   const errors: string[] = [];
 
   try {
-    const [{ getDocument, GlobalWorkerOptions }, arrayBuffer] = await Promise.all([
+    const [{ getDocument, GlobalWorkerOptions, OPS }, arrayBuffer] = await Promise.all([
       import("pdfjs-dist/legacy/build/pdf.mjs"),
       file.arrayBuffer(),
     ]);
@@ -41,9 +41,22 @@ export async function parsePdfFile(file: File): Promise<ParsedDocument> {
 
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
       const page = await pdf.getPage(pageNumber);
-      const textContent = await page.getTextContent();
+      const [textContent, operatorList] = await Promise.all([
+        page.getTextContent(),
+        page.getOperatorList().catch(() => undefined),
+      ]);
       const text = repairObviousTextExtractionIssues(reconstructPdfPageText(textContent.items));
-      pages.push({ pageNumber, text, charCount: text.length });
+      const imageObjectCount = countImageObjects(operatorList, OPS);
+      const visualHeavy = imageObjectCount >= 3 || text.length < MIN_PDF_CHARS_PER_PAGE;
+      pages.push({
+        pageNumber,
+        text,
+        charCount: text.length,
+        imageObjectCount,
+        visualHeavy,
+        textQuality: text.length < MIN_PDF_CHARS_PER_PAGE ? "low" : text.length < 300 ? "medium" : "high",
+        warnings: visualHeavy ? ["This page contains diagrams/handwritten annotations; text extraction may miss content."] : [],
+      });
     }
 
     const fullText = renderPages(file.name, pages);
@@ -53,6 +66,9 @@ export async function parsePdfFile(file: File): Promise<ParsedDocument> {
     const likelyScannedPdf = pageCount > 0 && avgCharsPerPage < MIN_PDF_CHARS_PER_PAGE;
     if (likelyScannedPdf) {
       warnings.push("This PDF may be scanned or image-based. Text extraction returned very little content.");
+    }
+    if (pages.some((page) => page.visualHeavy)) {
+      warnings.push("Some pages contain diagrams/handwritten annotations; text extraction may miss content. Use AI vision selectively if available.");
     }
 
     const parsed = finalizeParsedDocument({
@@ -155,6 +171,18 @@ function renderPdfLine(items: Array<{ str: string; x: number; width: number }>) 
 
 function estimateTextWidth(text: string) {
   return Math.max(text.length * 4, 1);
+}
+
+function countImageObjects(operatorList: unknown, ops: unknown) {
+  if (!operatorList || typeof operatorList !== "object" || !("fnArray" in operatorList) || !Array.isArray(operatorList.fnArray)) return 0;
+  const maybeOps = ops && typeof ops === "object" ? ops as Record<string, unknown> : {};
+  const imageOps = new Set([
+    maybeOps.paintImageXObject,
+    maybeOps.paintInlineImageXObject,
+    maybeOps.paintJpegXObject,
+    maybeOps.paintImageMaskXObject,
+  ].filter((value): value is number => typeof value === "number"));
+  return operatorList.fnArray.filter((fn) => imageOps.has(fn)).length;
 }
 
 export async function parseDocxFile(file: File): Promise<ParsedDocument> {

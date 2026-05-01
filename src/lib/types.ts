@@ -23,6 +23,7 @@ export type StudyFileRole =
   | "problem_sheet"
   | "solution_sheet"
   | "formula_sheet"
+  | "mark_scheme"
   | "other";
 export type PriorityLabel = "very_high" | "high" | "medium" | "low" | "unknown";
 export type RevisionPackCategory =
@@ -32,17 +33,25 @@ export type RevisionPackCategory =
   | "formulasToKnow"
   | "methodsAndTemplates"
   | "conceptualDistinctions"
+  | "modelsToKnow"
+  | "conditionsAndEquivalences"
+  | "testStatisticsAndDiagnostics"
+  | "workedExamplePatterns"
   | "needsReview"
   | "rejected";
 export type CardPurpose =
   | "definition_recall"
+  | "model_definition"
+  | "condition_recall"
   | "theorem_statement"
   | "proof_recall"
   | "formula_recall"
   | "method_steps"
+  | "test_statistic"
   | "conceptual_distinction"
   | "application_condition"
   | "calculation_template"
+  | "worked_example_pattern"
   | "background_context"
   | "needs_review";
 export type CurationStatus = "kept" | "needs_review";
@@ -67,11 +76,14 @@ export type RevisionCandidateKind =
   | "condition"
   | "formula"
   | "method"
+  | "method_steps"
   | "worked_example"
   | "calculation_template"
   | "conceptual_distinction"
   | "test_statistic"
   | "summary_table"
+  | "warning_or_exam_trap"
+  | "background_context"
   | "ordinary_text"
   | "parse_noise";
 export type MathNormalizationProfile =
@@ -80,6 +92,34 @@ export type MathNormalizationProfile =
   | "spatial_statistics"
   | "financial_math"
   | "auto";
+export type CourseType =
+  | "time_series"
+  | "spatial_statistics"
+  | "financial_math"
+  | "statistics"
+  | "probability"
+  | "linear_algebra"
+  | "calculus"
+  | "machine_learning"
+  | "generic_math"
+  | "unknown";
+export type CourseTopicType =
+  | "definition"
+  | "model"
+  | "condition"
+  | "formula"
+  | "method"
+  | "test"
+  | "conceptual_distinction"
+  | "worked_example"
+  | "background";
+export type CourseFormulaRole =
+  | "definition"
+  | "model_equation"
+  | "estimator"
+  | "test_statistic"
+  | "condition"
+  | "intermediate_derivation";
 export type Importance = RevisionImportance;
 export type ReviewRating = "again" | "hard" | "good" | "easy";
 
@@ -87,6 +127,10 @@ export type ParsedPage = {
   pageNumber: number;
   text: string;
   charCount: number;
+  visualHeavy?: boolean;
+  imageObjectCount?: number;
+  textQuality?: "high" | "medium" | "low";
+  warnings?: string[];
 };
 
 export type ParsedSection = {
@@ -189,10 +233,14 @@ export interface ProofPolicySummary {
 
 export interface CourseTopic {
   name: string;
+  aliases?: string[];
   section?: string;
+  sectionNumber?: string;
   relatedItems: string[];
   importance: "core" | "supporting" | "background" | "unknown";
   evidence: string[];
+  sourceLocations?: SourceLocation[];
+  type?: CourseTopicType;
   likelyExamUse:
     | "definition_recall"
     | "theorem_statement"
@@ -200,17 +248,92 @@ export interface CourseTopic {
     | "calculation"
     | "derivation"
     | "conceptual_explanation"
+    | "model_interpretation"
+    | "mixed"
     | "not_likely";
 }
 
 export interface CourseSection {
+  number?: string;
   sectionNumber?: string;
   title: string;
   sourceFile: string;
   pageStart?: number;
   pageEnd?: number;
   summary: string;
+  detectedImportance?: "core" | "supporting" | "background" | "unknown";
   likelyImportance: "core" | "supporting" | "background" | "unknown";
+}
+
+export interface SourceLocation {
+  sourceFile: string;
+  fileRole: StudyFileRole;
+  pageNumber?: number;
+  section?: string;
+  excerpt?: string;
+}
+
+export interface CourseChapter {
+  number?: string;
+  title: string;
+  pageStart?: number;
+  pageEnd?: number;
+  sections: CourseSection[];
+}
+
+export interface CourseModelFamily {
+  name: string;
+  notation?: string;
+  definition?: string;
+  assumptions?: string[];
+  keyProperties?: string[];
+  relatedFormulas?: string[];
+  sourceLocations: SourceLocation[];
+}
+
+export interface CourseMethod {
+  name: string;
+  purpose: string;
+  steps: string[];
+  sourceLocations: SourceLocation[];
+}
+
+export interface CourseFormula {
+  name: string;
+  formulaLatex: string;
+  role: CourseFormulaRole;
+  standaloneValue: StandaloneValue;
+  sourceLocations: SourceLocation[];
+}
+
+export interface CourseTest {
+  name: string;
+  hypotheses?: string[];
+  statisticLatex?: string;
+  decisionRule?: string;
+  assumptions?: string[];
+  sourceLocations: SourceLocation[];
+}
+
+export interface WorkedExamplePattern {
+  name: string;
+  problemType: string;
+  requiredSteps: string[];
+  relatedTopics: string[];
+  sourceLocations: SourceLocation[];
+}
+
+export interface CourseMap {
+  courseTitle?: string;
+  courseType: CourseType;
+  chapters: CourseChapter[];
+  topics: CourseTopic[];
+  modelFamilies: CourseModelFamily[];
+  methods: CourseMethod[];
+  formulas: CourseFormula[];
+  tests: CourseTest[];
+  workedExamples: WorkedExamplePattern[];
+  parseWarnings: string[];
 }
 
 export interface CourseStructureMap {
@@ -251,8 +374,11 @@ export interface EvidenceSignal {
 export interface ExamTopicPriority {
   topicName: string;
   sectionNumbers?: string[];
+  priorityScore?: number;
+  priorityLabel?: PriorityLabel;
   priority: PriorityLabel;
   evidence: EvidenceSignal[];
+  likelyAssessmentModes?: CardPurpose[];
   likelyAssessmentMode:
     | "definition_recall"
     | "theorem_statement"
@@ -262,14 +388,59 @@ export interface ExamTopicPriority {
     | "conceptual_explanation"
     | "model_interpretation"
     | "mixed";
+  reason?: string;
 }
 
 export interface RecurringQuestionType {
   name: string;
   description: string;
   relatedTopics: string[];
+  sourceLocations?: SourceLocation[];
   evidence: EvidenceSignal[];
   cardPurposesSuggested: CardPurpose[];
+  suggestedCardPurposes?: CardPurpose[];
+  priorityBoost?: number;
+}
+
+export interface TopicFrequency {
+  topicName: string;
+  count: number;
+  sourceBreakdown: Record<StudyFileRole, number>;
+  examples: SourceLocation[];
+}
+
+export interface RequiredProofSignal {
+  theoremOrResultName: string;
+  evidence: SourceLocation[];
+  priorityBoost: number;
+}
+
+export interface CalculationSignal {
+  methodName: string;
+  evidence: SourceLocation[];
+  requiredSteps: string[];
+  priorityBoost: number;
+}
+
+export interface FormulaRecallSignal {
+  formulaName: string;
+  evidence: SourceLocation[];
+  priorityBoost: number;
+}
+
+export interface ConceptualSignal {
+  distinctionName: string;
+  evidence: SourceLocation[];
+  priorityBoost: number;
+}
+
+export interface AssessmentMap {
+  recurringQuestionTypes: RecurringQuestionType[];
+  topicFrequency: TopicFrequency[];
+  proofSignals: RequiredProofSignal[];
+  calculationSignals: CalculationSignal[];
+  formulaRecallSignals: FormulaRecallSignal[];
+  conceptualSignals: ConceptualSignal[];
 }
 
 export interface RequiredItemSignal {
@@ -294,6 +465,10 @@ export interface ConceptualDistinctionSignal {
 
 export interface ExamPriorityMap {
   topics: ExamTopicPriority[];
+  formulas?: ExamFormulaPriority[];
+  methods?: ExamMethodPriority[];
+  proofs?: ExamProofPriority[];
+  conceptualDistinctionsPriority?: ExamConceptPriority[];
   recurringQuestionTypes: RecurringQuestionType[];
   requiredDefinitions: RequiredItemSignal[];
   requiredTheorems: RequiredItemSignal[];
@@ -302,6 +477,39 @@ export interface ExamPriorityMap {
   calculationTemplates: CalculationTemplateSignal[];
   conceptualDistinctions: ConceptualDistinctionSignal[];
   notes: string[];
+}
+
+export interface ExamFormulaPriority {
+  formulaName: string;
+  priorityScore: number;
+  priorityLabel: PriorityLabel;
+  evidence: SourceLocation[];
+  reason: string;
+}
+
+export interface ExamMethodPriority {
+  methodName: string;
+  priorityScore: number;
+  priorityLabel: PriorityLabel;
+  evidence: SourceLocation[];
+  likelyAssessmentModes: CardPurpose[];
+  reason: string;
+}
+
+export interface ExamProofPriority {
+  theoremOrResultName: string;
+  priorityScore: number;
+  priorityLabel: PriorityLabel;
+  evidence: SourceLocation[];
+  reason: string;
+}
+
+export interface ExamConceptPriority {
+  distinctionName: string;
+  priorityScore: number;
+  priorityLabel: PriorityLabel;
+  evidence: SourceLocation[];
+  reason: string;
 }
 
 export interface CurationReport {
@@ -315,6 +523,16 @@ export interface CurationReport {
   formulaRejectedCount: number;
   mainTopics: string[];
   weakParsingWarnings: string[];
+  pipelineStages?: Array<{
+    name: string;
+    status: "complete" | "warning" | "error";
+    detail: string;
+  }>;
+  courseType?: CourseType;
+  packCompletenessScore?: number;
+  candidateCoverageScore?: number;
+  latexQualityScore?: number;
+  assessmentEvidenceCoverage?: number;
   notes: string[];
 }
 
@@ -418,8 +636,10 @@ export interface CuratedRevisionResult {
   needsReviewItems: RevisionItem[];
   rejectedItems: RejectedRevisionItem[];
   embeddedItems: EmbeddedRevisionItem[];
+  courseMap?: CourseMap;
   courseStructureMap: CourseStructureMap;
   courseKnowledgeMap: CourseKnowledgeMap;
+  assessmentMap?: AssessmentMap;
   examPriorityMap: ExamPriorityMap;
   revisionPack: RevisionPack;
   curationReport: CurationReport;
@@ -430,15 +650,25 @@ export type CuratedDeckResult = CuratedRevisionResult;
 export type ReviewSession = { id: string; itemId: string; rating: ReviewRating; reviewedAt: string; };
 export interface RevisionPack {
   overview: string;
+  courseType?: CourseType;
+  topPriorityTopics?: ExamTopicPriority[];
   topTopics: ExamTopicPriority[];
+  coreDefinitions?: RevisionItem[];
   mustKnowDefinitions: RevisionItem[];
+  modelsToKnow?: RevisionItem[];
+  conditionsAndEquivalences?: RevisionItem[];
+  keyFormulas?: RevisionItem[];
   theoremStatements: RevisionItem[];
+  testStatisticsAndDiagnostics?: RevisionItem[];
   proofsToKnow: RevisionItem[];
+  proofCards?: RevisionItem[];
   formulasToKnow: RevisionItem[];
   methodsAndTemplates: RevisionItem[];
   conceptualDistinctions: RevisionItem[];
+  workedExamplePatterns?: RevisionItem[];
   needsReview: RevisionItem[];
   rejected: RejectedRevisionItem[];
+  embedded?: EmbeddedRevisionItem[];
 }
 
 export type ExtractionVerificationReport = {
@@ -479,18 +709,22 @@ export const revisionItemTypes: RevisionItemType[] = [
   "other",
 ];
 export const importances: RevisionImportance[] = ["must_know", "partial", "not_required", "unknown"];
-export const studyFileRoles: StudyFileRole[] = ["lecture_notes", "exam_guidance", "past_paper", "problem_sheet", "solution_sheet", "formula_sheet", "other"];
+export const studyFileRoles: StudyFileRole[] = ["lecture_notes", "exam_guidance", "past_paper", "problem_sheet", "solution_sheet", "formula_sheet", "mark_scheme", "other"];
 export const priorityLabels: PriorityLabel[] = ["very_high", "high", "medium", "low", "unknown"];
-export const revisionPackCategories: RevisionPackCategory[] = ["mustKnowDefinitions", "theoremStatements", "proofsToKnow", "formulasToKnow", "methodsAndTemplates", "conceptualDistinctions", "needsReview", "rejected"];
+export const revisionPackCategories: RevisionPackCategory[] = ["mustKnowDefinitions", "theoremStatements", "proofsToKnow", "formulasToKnow", "methodsAndTemplates", "conceptualDistinctions", "modelsToKnow", "conditionsAndEquivalences", "testStatisticsAndDiagnostics", "workedExamplePatterns", "needsReview", "rejected"];
 export const cardPurposes: CardPurpose[] = [
   "definition_recall",
+  "model_definition",
+  "condition_recall",
   "theorem_statement",
   "proof_recall",
   "formula_recall",
   "method_steps",
+  "test_statistic",
   "conceptual_distinction",
   "application_condition",
   "calculation_template",
+  "worked_example_pattern",
   "background_context",
   "needs_review",
 ];

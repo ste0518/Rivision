@@ -25,13 +25,13 @@ import { createId } from "@/lib/utils";
 
 const revisionItemTypes: RevisionItemType[] = ["definition", "theorem", "lemma", "proposition", "corollary", "formula", "proof", "algorithm", "example", "remark", "assumption", "property", "other"];
 const importances: RevisionImportance[] = ["must_know", "partial", "not_required", "unknown"];
-const cardPurposes: CardPurpose[] = ["definition_recall", "theorem_statement", "proof_recall", "formula_recall", "method_steps", "conceptual_distinction", "application_condition", "calculation_template", "background_context", "needs_review"];
+const cardPurposes: CardPurpose[] = ["definition_recall", "model_definition", "condition_recall", "theorem_statement", "proof_recall", "formula_recall", "method_steps", "test_statistic", "conceptual_distinction", "application_condition", "calculation_template", "worked_example_pattern", "background_context", "needs_review"];
 const decisions: CurationDecision[] = ["keep", "needs_review", "reject", "embed_in_parent"];
 const statuses: CurationStatus[] = ["kept", "needs_review"];
 const standaloneValues: StandaloneValue[] = ["high", "medium", "low"];
 const confidenceValues: ClassificationConfidence[] = ["high", "medium", "low"];
 const priorityLabels: PriorityLabel[] = ["very_high", "high", "medium", "low", "unknown"];
-const revisionPackCategories: RevisionPackCategory[] = ["mustKnowDefinitions", "theoremStatements", "proofsToKnow", "formulasToKnow", "methodsAndTemplates", "conceptualDistinctions", "needsReview", "rejected"];
+const revisionPackCategories: RevisionPackCategory[] = ["mustKnowDefinitions", "theoremStatements", "proofsToKnow", "formulasToKnow", "methodsAndTemplates", "conceptualDistinctions", "modelsToKnow", "conditionsAndEquivalences", "testStatisticsAndDiagnostics", "workedExamplePatterns", "needsReview", "rejected"];
 const rejectionCategories: RejectionCategory[] = ["bibliography_or_reference", "ordinary_explanatory_text", "formula_not_standalone", "intermediate_proof_step", "duplicate", "too_broad", "not_examinable", "background_only", "low_value", "parse_noise"];
 
 export function normalizeRevisionItem(raw: unknown): RevisionItem {
@@ -195,7 +195,7 @@ function normalizeCourseStructureMap(raw: unknown): CourseStructureMap {
       relatedItems: stringArray(topic.relatedItems),
       importance: enumValue(topic.importance, ["core", "supporting", "background", "unknown"] as const, "unknown"),
       evidence: stringArray(topic.evidence),
-      likelyExamUse: enumValue(topic.likelyExamUse, ["definition_recall", "theorem_statement", "proof", "calculation", "derivation", "conceptual_explanation", "not_likely"] as const, "not_likely"),
+      likelyExamUse: enumValue(topic.likelyExamUse, ["definition_recall", "theorem_statement", "proof", "calculation", "derivation", "conceptual_explanation", "model_interpretation", "mixed", "not_likely"] as const, "not_likely"),
     }] : []) : [],
     detectedItems: [],
   };
@@ -241,6 +241,16 @@ function normalizeCurationReport(raw: unknown, keptCount: number, needsReviewCou
     formulaRejectedCount: numberValue(value.formulaRejectedCount) ?? 0,
     mainTopics: stringArray(value.mainTopics),
     weakParsingWarnings: stringArray(value.weakParsingWarnings),
+    pipelineStages: Array.isArray(value.pipelineStages) ? value.pipelineStages.flatMap((stage) => isRecord(stage) ? [{
+      name: stringValue(stage.name) || "Pipeline stage",
+      status: enumValue(stage.status, ["complete", "warning", "error"] as const, "complete"),
+      detail: stringValue(stage.detail),
+    }] : []) : undefined,
+    courseType: enumValue(value.courseType, ["time_series", "spatial_statistics", "financial_math", "statistics", "probability", "linear_algebra", "calculus", "machine_learning", "generic_math", "unknown"] as const, undefined),
+    packCompletenessScore: numberValue(value.packCompletenessScore),
+    candidateCoverageScore: numberValue(value.candidateCoverageScore),
+    latexQualityScore: numberValue(value.latexQualityScore),
+    assessmentEvidenceCoverage: numberValue(value.assessmentEvidenceCoverage),
     notes: stringArray(value.notes),
   };
 }
@@ -251,7 +261,7 @@ function normalizeEvidenceSignals(raw: unknown) {
     if (!isRecord(item)) return [];
     return [{
       sourceFile: stringValue(item.sourceFile) || "Unknown source",
-      sourceRole: enumValue(item.sourceRole, ["lecture_notes", "exam_guidance", "past_paper", "problem_sheet", "solution_sheet", "formula_sheet", "other"] as const, "other"),
+      sourceRole: enumValue(item.sourceRole, ["lecture_notes", "exam_guidance", "past_paper", "problem_sheet", "solution_sheet", "formula_sheet", "mark_scheme", "other"] as const, "other"),
       pageNumber: numberValue(item.pageNumber),
       excerpt: stringValue(item.excerpt),
       explanation: stringValue(item.explanation),
@@ -265,9 +275,13 @@ function normalizeExamPriorityMap(raw: unknown): ExamPriorityMap {
     topics: Array.isArray(raw.topics) ? raw.topics.flatMap((topic) => isRecord(topic) ? [{
       topicName: stringValue(topic.topicName) || "Unknown topic",
       sectionNumbers: stringArray(topic.sectionNumbers),
-      priority: enumValue(topic.priority, priorityLabels, "unknown"),
+      priorityScore: numberValue(topic.priorityScore),
+      priorityLabel: enumValue(topic.priorityLabel, priorityLabels, undefined),
+      priority: enumValue(topic.priority, priorityLabels, enumValue(topic.priorityLabel, priorityLabels, "unknown")),
       evidence: normalizeEvidenceSignals(topic.evidence),
+      likelyAssessmentModes: stringArray(topic.likelyAssessmentModes).filter((purpose): purpose is CardPurpose => cardPurposes.includes(purpose as CardPurpose)),
       likelyAssessmentMode: enumValue(topic.likelyAssessmentMode, ["definition_recall", "theorem_statement", "proof", "calculation", "derivation", "conceptual_explanation", "model_interpretation", "mixed"] as const, "mixed"),
+      reason: optionalString(topic.reason),
     }] : []) : [],
     recurringQuestionTypes: Array.isArray(raw.recurringQuestionTypes) ? raw.recurringQuestionTypes.flatMap((item) => isRecord(item) ? [{
       name: stringValue(item.name) || "Question type",
@@ -309,15 +323,25 @@ function normalizeRevisionPack(raw: unknown, keptItems: RevisionItem[], needsRev
   if (!isRecord(raw)) return buildRevisionPack({ keptItems, needsReviewItems, rejectedItems, examPriorityMap });
   return {
     overview: stringValue(raw.overview) || "Revision pack.",
+    courseType: enumValue(raw.courseType, ["time_series", "spatial_statistics", "financial_math", "statistics", "probability", "linear_algebra", "calculus", "machine_learning", "generic_math", "unknown"] as const, undefined),
+    topPriorityTopics: normalizeExamPriorityMap({ topics: raw.topPriorityTopics }).topics,
     topTopics: normalizeExamPriorityMap({ topics: raw.topTopics }).topics,
+    coreDefinitions: migrateStoredCards(raw.coreDefinitions),
     mustKnowDefinitions: migrateStoredCards(raw.mustKnowDefinitions),
+    modelsToKnow: migrateStoredCards(raw.modelsToKnow),
+    conditionsAndEquivalences: migrateStoredCards(raw.conditionsAndEquivalences),
+    keyFormulas: migrateStoredCards(raw.keyFormulas),
     theoremStatements: migrateStoredCards(raw.theoremStatements),
+    testStatisticsAndDiagnostics: migrateStoredCards(raw.testStatisticsAndDiagnostics),
     proofsToKnow: migrateStoredCards(raw.proofsToKnow),
+    proofCards: migrateStoredCards(raw.proofCards),
     formulasToKnow: migrateStoredCards(raw.formulasToKnow),
     methodsAndTemplates: migrateStoredCards(raw.methodsAndTemplates),
     conceptualDistinctions: migrateStoredCards(raw.conceptualDistinctions),
+    workedExamplePatterns: migrateStoredCards(raw.workedExamplePatterns),
     needsReview: migrateStoredCards(raw.needsReview),
     rejected: normalizeRejectedItems(raw.rejected),
+    embedded: normalizeEmbeddedItems(raw.embedded),
   };
 }
 

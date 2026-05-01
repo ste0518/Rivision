@@ -5,19 +5,22 @@ You will receive:
 2. Pre-segmented candidate items.
 3. Parsed exam guidance.
 
-Your task is not to extract everything.
-Your task is to identify the material that a student should actively revise for the exam.
+Your task is not to turn raw candidates directly into cards.
+First build a course-level revision pack, then generate high-quality cards from that pack.
 
 Use only the supplied notes and guidance.
 Do not use external knowledge.
 
 Analyse the course structure:
+- detect the course type
+- treat candidates as raw material, not final cards
 - identify core topics
 - identify required sections
 - identify definitions and theorem statements likely to be examinable
 - identify which proofs are required
 - identify which formulas are central enough to be standalone flashcards
 - identify methods and conceptual distinctions
+- use past papers, problem sheets, solutions, mark schemes, and guidance as assessment evidence
 
 Return strict JSON matching the provided schema.
 
@@ -51,6 +54,8 @@ Otherwise attach proof to the theorem as optional content.
 For definitions:
 Keep core definitions in required or central sections.
 Make cardFront the concept name, not an instruction sentence.
+
+For mathematical course notes, important items may appear as headings, examples, model equations, conditions, procedures, diagnostics, or summary tables, not only as explicit Definition/Theorem labels. In time-series material, actively look for stationarity, ACVS/ACF, white noise, MA(q), AR(p), ARMA(p,q), ARCH(p), ARIMA(p,d,q), GLP, stationarity/invertibility root conditions, spectral density, periodogram, Ljung-Box, residual analysis, and forecasting.
 
 For conceptual distinctions:
 Create cards for important relationships and contrasts, even if not explicitly labelled as Definition or Theorem.

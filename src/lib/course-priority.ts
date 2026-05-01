@@ -44,6 +44,7 @@ const roleWeight: Record<StudyFileRole, number> = {
   problem_sheet: 3,
   solution_sheet: 3,
   formula_sheet: 2,
+  mark_scheme: 4,
   other: 1,
 };
 
@@ -133,6 +134,10 @@ export async function buildExamPriorityMap(input: PriorityInput): Promise<ExamPr
 export function emptyExamPriorityMap(): ExamPriorityMap {
   return {
     topics: [],
+    formulas: [],
+    methods: [],
+    proofs: [],
+    conceptualDistinctionsPriority: [],
     recurringQuestionTypes: [],
     requiredDefinitions: [],
     requiredTheorems: [],
@@ -147,11 +152,15 @@ export function emptyExamPriorityMap(): ExamPriorityMap {
 export function buildRevisionPack(result: Pick<CuratedRevisionResult, "keptItems" | "needsReviewItems" | "rejectedItems" | "examPriorityMap">): RevisionPack {
   const active = result.keptItems.filter((item) => (item.curationDecision ?? "keep") === "keep");
   const definitions = active.filter((item) => item.type === "definition");
+  const models = active.filter((item) => item.cardPurpose === "model_definition" || item.candidateKind === "model_definition");
+  const conditions = active.filter((item) => item.cardPurpose === "condition_recall" || item.candidateKind === "condition" || item.cardPurpose === "application_condition");
   const theorems = active.filter((item) => ["theorem", "lemma", "proposition", "corollary"].includes(item.type));
   const proofs = active.filter((item) => item.type === "proof" || item.cardPurpose === "proof_recall");
   const formulas = active.filter((item) => item.type === "formula" || item.cardPurpose === "formula_recall");
   const methods = active.filter((item) => item.cardPurpose === "calculation_template" || item.cardPurpose === "method_steps" || item.type === "algorithm");
+  const tests = active.filter((item) => item.cardPurpose === "test_statistic" || item.candidateKind === "test_statistic");
   const distinctions = active.filter((item) => item.cardPurpose === "conceptual_distinction");
+  const workedExamples = active.filter((item) => item.cardPurpose === "worked_example_pattern" || item.candidateKind === "worked_example");
   const topTopics = result.examPriorityMap.topics.filter((topic) => topic.priority === "very_high" || topic.priority === "high").slice(0, 12);
 
   return {
@@ -159,12 +168,20 @@ export function buildRevisionPack(result: Pick<CuratedRevisionResult, "keptItems
       ? `Revision pack prioritises ${topTopics.map((topic) => topic.topicName).join(", ")} based on guidance, past papers, problem sheets, and solutions.`
       : "Revision pack built from lecture-note structure with limited assessment evidence.",
     topTopics,
+    topPriorityTopics: topTopics,
+    coreDefinitions: definitions,
     mustKnowDefinitions: definitions,
+    modelsToKnow: models,
+    conditionsAndEquivalences: conditions,
+    keyFormulas: formulas,
     theoremStatements: theorems,
+    testStatisticsAndDiagnostics: tests,
     proofsToKnow: proofs,
+    proofCards: proofs,
     formulasToKnow: formulas,
     methodsAndTemplates: methods,
     conceptualDistinctions: distinctions,
+    workedExamplePatterns: workedExamples,
     needsReview: result.needsReviewItems,
     rejected: result.rejectedItems,
   };
@@ -172,6 +189,10 @@ export function buildRevisionPack(result: Pick<CuratedRevisionResult, "keptItems
 
 export function revisionPackCategoryForItem(item: RevisionItem): RevisionItem["revisionPackCategory"] {
   if (item.curationDecision === "needs_review" || item.cardPurpose === "needs_review") return "needsReview";
+  if (item.cardPurpose === "model_definition" || item.candidateKind === "model_definition") return "modelsToKnow";
+  if (item.cardPurpose === "condition_recall" || item.candidateKind === "condition" || item.cardPurpose === "application_condition") return "conditionsAndEquivalences";
+  if (item.cardPurpose === "test_statistic" || item.candidateKind === "test_statistic") return "testStatisticsAndDiagnostics";
+  if (item.cardPurpose === "worked_example_pattern" || item.candidateKind === "worked_example") return "workedExamplePatterns";
   if (item.type === "definition") return "mustKnowDefinitions";
   if (["theorem", "lemma", "proposition", "corollary"].includes(item.type)) return "theoremStatements";
   if (item.type === "proof" || item.cardPurpose === "proof_recall") return "proofsToKnow";

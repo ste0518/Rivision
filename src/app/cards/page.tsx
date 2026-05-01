@@ -28,7 +28,7 @@ export default function CardsPage() {
   const [adding, setAdding] = useState(false);
   const [importText, setImportText] = useState("");
   const [importError, setImportError] = useState("");
-  const [filters, setFilters] = useState({ type: "all", cardPurpose: "all", packCategory: "all", importance: "all", curation: "keep", standaloneValue: "all", lowLatexOnly: false, section: "", tag: "", source: "", showRejected: false, showDeleted: false });
+  const [filters, setFilters] = useState({ type: "all", cardPurpose: "all", packCategory: "all", importance: "all", priority: "all", curation: "keep", standaloneValue: "all", lowLatexOnly: false, section: "", tag: "", source: "", showRejected: false, showDeleted: false });
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedDeletedIds, setSelectedDeletedIds] = useState<string[]>([]);
   const [undo, setUndo] = useState<UndoState>(null);
@@ -140,6 +140,14 @@ export default function CardsPage() {
           <Select value={filters.importance} onChange={(event) => setFilters({ ...filters, importance: event.target.value })}>
             <option value="all">All importance</option>
             {importances.map((importance) => <option key={importance}>{importance}</option>)}
+          </Select>
+          <Select value={filters.priority} onChange={(event) => setFilters({ ...filters, priority: event.target.value })}>
+            <option value="all">All priorities</option>
+            <option value="very_high">Very high priority</option>
+            <option value="high">High priority</option>
+            <option value="medium">Medium priority</option>
+            <option value="low">Low priority</option>
+            <option value="unknown">Unknown priority</option>
           </Select>
           <Select value={filters.curation} onChange={(event) => setFilters({ ...filters, curation: event.target.value })}>
             <option value="all">All curation</option>
@@ -336,11 +344,12 @@ export default function CardsPage() {
   );
 }
 
-function matchesFilters(item: RevisionItem, filters: { type: string; cardPurpose: string; packCategory: string; importance: string; curation: string; standaloneValue: string; lowLatexOnly: boolean; section: string; tag: string; source: string }) {
+function matchesFilters(item: RevisionItem, filters: { type: string; cardPurpose: string; packCategory: string; importance: string; priority: string; curation: string; standaloneValue: string; lowLatexOnly: boolean; section: string; tag: string; source: string }) {
   return (filters.type === "all" || item.type === filters.type) &&
     (filters.cardPurpose === "all" || item.cardPurpose === filters.cardPurpose) &&
     (filters.packCategory === "all" || item.revisionPackCategory === filters.packCategory) &&
     (filters.importance === "all" || item.importance === filters.importance) &&
+    (filters.priority === "all" || item.priorityLabel === filters.priority) &&
     (filters.curation === "all" || (item.curationDecision ?? "keep") === filters.curation) &&
     (filters.standaloneValue === "all" || item.standaloneValue === filters.standaloneValue) &&
     (!filters.lowLatexOnly || hasLowLatexQuality(item)) &&

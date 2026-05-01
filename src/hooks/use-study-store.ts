@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { createMockRevisionItems } from "@/lib/mock-data";
 import { emptyStudyState, loadStudyState, resetStudyStateStorage, saveStudyState, type StudyState } from "@/lib/storage";
-import type { CourseKnowledgeMap, CourseStructureMap, CurationReport, EmbeddedRevisionItem, ExamPriorityMap, GuidanceFile, RejectedRevisionItem, RevisionItem, RevisionPack, ReviewRating, ReviewSession, StudyFile } from "@/lib/types";
+import type { AssessmentMap, CourseKnowledgeMap, CourseMap, CourseStructureMap, CurationReport, EmbeddedRevisionItem, ExamPriorityMap, GuidanceFile, RejectedRevisionItem, RevisionItem, RevisionPack, ReviewRating, ReviewSession, StudyFile } from "@/lib/types";
 import { applyReviewRating } from "@/lib/srs";
 import { withValidation } from "@/lib/validation";
 
@@ -35,14 +35,16 @@ export function useStudyStore() {
     },
     removeNotesFile(id: string) { setState((current) => ({ ...current, notesFiles: current.notesFiles.filter((file) => file.id !== id) })); },
     removeGuidanceFile(id: string) { setState((current) => ({ ...current, guidanceFiles: current.guidanceFiles.filter((file) => file.id !== id) })); },
-    setRevisionItems(items: RevisionItem[], rejectedItems?: RejectedRevisionItem[], curation?: { embeddedItems?: EmbeddedRevisionItem[]; courseStructureMap?: CourseStructureMap; courseKnowledgeMap?: CourseKnowledgeMap; examPriorityMap?: ExamPriorityMap; revisionPack?: RevisionPack; curationReport?: CurationReport }) {
+    setRevisionItems(items: RevisionItem[], rejectedItems?: RejectedRevisionItem[], curation?: { embeddedItems?: EmbeddedRevisionItem[]; courseMap?: CourseMap; courseStructureMap?: CourseStructureMap; courseKnowledgeMap?: CourseKnowledgeMap; assessmentMap?: AssessmentMap; examPriorityMap?: ExamPriorityMap; revisionPack?: RevisionPack; curationReport?: CurationReport }) {
       setState((current) => ({
         ...current,
         revisionItems: items.map(withValidation),
         rejectedItems: rejectedItems ?? current.rejectedItems,
         embeddedItems: curation?.embeddedItems ?? current.embeddedItems,
+        courseMap: curation?.courseMap ?? current.courseMap,
         courseStructureMap: curation?.courseStructureMap ?? current.courseStructureMap,
         courseKnowledgeMap: curation?.courseKnowledgeMap ?? current.courseKnowledgeMap,
+        assessmentMap: curation?.assessmentMap ?? current.assessmentMap,
         examPriorityMap: curation?.examPriorityMap ?? current.examPriorityMap,
         revisionPack: curation?.revisionPack ?? current.revisionPack,
         curationReport: curation?.curationReport ?? current.curationReport,

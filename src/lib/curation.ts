@@ -532,6 +532,10 @@ function scoreExamPriority(
     priorityScore += 20;
     reasons.push("Core definition, theorem, or method in lecture notes.");
   }
+  if (theoremLike(item.type) && item.theoremNumber) {
+    priorityScore = Math.max(priorityScore, 45);
+    reasons.push("Numbered theorem-like result is retained for review when assessment evidence is absent.");
+  }
 
   if (matchingTemplates.length > 0) {
     priorityScore += item.type === "formula" ? 35 : 20;
@@ -557,13 +561,16 @@ function scoreExamPriority(
   priorityScore = Math.max(0, Math.min(100, Math.round(priorityScore)));
   const label = priorityLabelFromScore(priorityScore);
   const genericConcept = isGenericConceptName(item.conceptName || item.cardFront);
+  const formulaTooWeak = item.type === "formula" && priorityScore < 65;
   const decision: RevisionItem["curationDecision"] = genericConcept
     ? "needs_review"
-    : priorityScore >= 65
-      ? "keep"
-      : priorityScore >= 40
-        ? "needs_review"
-        : "reject";
+    : formulaTooWeak
+      ? priorityScore >= 45 ? "needs_review" : "reject"
+      : priorityScore >= 70 || (item.type === "definition" && relevanceScore.conceptualCentrality >= 4)
+        ? "keep"
+        : priorityScore >= 45
+          ? "needs_review"
+          : "reject";
 
   return {
     score: priorityScore,
@@ -583,7 +590,7 @@ function applyExamPriorityToItem(item: RevisionItem, priority: ExamPriorityScore
     evidenceSignals: priority.evidence,
     whyThisCardMatters: priority.reasons.join(" "),
     revisionPackCategory: category,
-    importance: priority.score >= 65 ? "must_know" : priority.score >= 40 ? "partial" : item.importance,
+    importance: priority.score >= 70 ? "must_know" : priority.score >= 45 ? "partial" : item.importance,
     curationDecision: priority.decision,
     curationStatus: priority.decision === "needs_review" ? "needs_review" : "kept",
     cardPurpose: item.cardPurpose,
@@ -953,10 +960,12 @@ function titleFromLabel(type: RevisionItemType, number: string | undefined, expl
 
 function inferCardPurpose(type: RevisionItemType, title: string, statement: string, proofRequired?: boolean, candidateKind?: RevisionItem["candidateKind"]): RevisionItem["cardPurpose"] {
   const lower = `${title} ${statement}`.toLowerCase();
-  if (candidateKind === "calculation_template" || candidateKind === "worked_example") return "calculation_template";
-  if (candidateKind === "test_statistic") return "application_condition";
+  if (candidateKind === "calculation_template") return "calculation_template";
+  if (candidateKind === "worked_example") return "worked_example_pattern";
+  if (candidateKind === "test_statistic") return "test_statistic";
   if (candidateKind === "conceptual_distinction") return "conceptual_distinction";
-  if (candidateKind === "condition") return "application_condition";
+  if (candidateKind === "condition") return "condition_recall";
+  if (candidateKind === "model_definition") return "model_definition";
   if (type === "proof" || proofRequired) return "proof_recall";
   if (type === "definition") {
     if (/\b(vs|versus|difference|distinction|strict|weak)\b/.test(lower) && /\bstationarity|stationary\b/.test(lower)) return "conceptual_distinction";
@@ -968,13 +977,17 @@ function inferCardPurpose(type: RevisionItemType, title: string, statement: stri
     return "formula_recall";
   }
   if (type === "algorithm") return "method_steps";
-  if (/\bcondition|applies|valid|when can|if and only if\b/.test(lower)) return "application_condition";
+  if (/\bcondition|applies|valid|when can|if and only if\b/.test(lower)) return "condition_recall";
   if (/\b(vs|versus|difference|distinction|compare|strict|weak)\b/.test(lower)) return "conceptual_distinction";
   if (isMethodLike(lower)) return "calculation_template";
   return "definition_recall";
 }
 
 function defaultTaskPrompt(type: RevisionItemType, purpose: RevisionItem["cardPurpose"], proofRequired: boolean | undefined) {
+  if (purpose === "model_definition") return "Write the model and key properties.";
+  if (purpose === "condition_recall") return "State the condition and when it applies.";
+  if (purpose === "test_statistic") return "State the hypotheses, statistic, and decision rule.";
+  if (purpose === "worked_example_pattern") return "Recall the problem type and solution pattern.";
   if (purpose === "conceptual_distinction") return "Explain the difference and implication relationship.";
   if (purpose === "calculation_template") return "Set up the calculation template.";
   if (purpose === "method_steps") return "Recall the method steps.";

@@ -57,7 +57,7 @@ function ExtractPageContent() {
   const guidanceDocuments = useMemo(() => allParsedDocuments.filter((document) => document.role === "exam_guidance"), [allParsedDocuments]);
   const pastPaperDocuments = useMemo(() => allParsedDocuments.filter((document) => document.role === "past_paper"), [allParsedDocuments]);
   const problemSheetDocuments = useMemo(() => allParsedDocuments.filter((document) => document.role === "problem_sheet"), [allParsedDocuments]);
-  const solutionDocuments = useMemo(() => allParsedDocuments.filter((document) => document.role === "solution_sheet"), [allParsedDocuments]);
+  const solutionDocuments = useMemo(() => allParsedDocuments.filter((document) => document.role === "solution_sheet" || document.role === "mark_scheme"), [allParsedDocuments]);
   const notesText = useMemo(() => notesDocuments.map((file) => file.fullText).join("\n\n"), [notesDocuments]);
   const guidanceText = useMemo(() => guidanceDocuments.map((file) => file.fullText).join("\n\n"), [guidanceDocuments]);
   const sourceFile = useMemo(() => uploadedFiles.map((file) => file.name).join(", ") || "Mock notes", [uploadedFiles]);
@@ -68,7 +68,9 @@ function ExtractPageContent() {
   const needsReviewItems = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && ((item.curationDecision ?? "keep") !== "keep" || needsRepair(item))), [store.revisionItems]);
   const normalItems = useMemo(() => store.revisionItems.filter((item) => !item.isDeleted && (item.curationDecision ?? "keep") === "keep" && item.standaloneValue !== "low" && !needsRepair(item)), [store.revisionItems]);
   const parsedPageCount = useMemo(() => allDocuments.reduce((total, doc) => total + (doc.pages?.length ?? 0), 0), [allDocuments]);
-  const likelyUnderExtraction = parsedPageCount > 50 && candidates.length < 30;
+  const likelyUnderExtraction = parsedPageCount > 50 && candidates.length < 40;
+  const noAssessmentEvidence = pastPaperDocuments.length === 0 && problemSheetDocuments.length === 0 && guidanceDocuments.length === 0;
+  const lowLatexCount = useMemo(() => store.revisionItems.filter((item) => hasLowLatexQuality(item)).length, [store.revisionItems]);
   const topCourseTopics = useMemo(
     () => store.curationReport?.mainTopics?.length
       ? store.curationReport.mainTopics
@@ -106,8 +108,10 @@ function ExtractPageContent() {
       const result = await extractRevisionItems({ notesDocuments, guidanceDocuments, pastPaperDocuments, problemSheetDocuments, solutionDocuments, sourceFile });
       store.setRevisionItems(result.items, result.rejectedItems, {
         embeddedItems: result.embeddedItems,
+        courseMap: result.courseMap,
         courseStructureMap: result.courseStructureMap,
         courseKnowledgeMap: result.courseKnowledgeMap,
+        assessmentMap: result.assessmentMap,
         examPriorityMap: result.examPriorityMap,
         revisionPack: result.revisionPack,
         curationReport: result.curationReport,
@@ -145,8 +149,10 @@ function ExtractPageContent() {
         manualDeck?.rejectedItems ?? [],
         manualDeck ? {
           embeddedItems: manualDeck.embeddedItems,
+          courseMap: manualDeck.courseMap,
           courseStructureMap: manualDeck.courseStructureMap,
           courseKnowledgeMap: manualDeck.courseKnowledgeMap,
+          assessmentMap: manualDeck.assessmentMap,
           examPriorityMap: manualDeck.examPriorityMap,
           revisionPack: manualDeck.revisionPack,
           curationReport: manualDeck.curationReport,
@@ -295,7 +301,12 @@ function ExtractPageContent() {
           )}
           {likelyUnderExtraction ? (
             <p className="rounded border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
-              Candidate detection is likely under-extracting. Try AI mode or enable heading-based extraction.
+              Candidate detection is likely under-extracting: parsed pages &gt; 50 but raw candidates &lt; 40.
+            </p>
+          ) : null}
+          {noAssessmentEvidence ? (
+            <p className="rounded border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
+              No past papers, problem sheets, or guidance uploaded. Priorities are lecture-based only.
             </p>
           ) : null}
         </CardContent>
@@ -311,8 +322,10 @@ function ExtractPageContent() {
           </CardHeader>
           <CardContent className="space-y-2 text-sm text-slate-600">
             <p><strong>Top course topics:</strong> {topCourseTopics.length ? topCourseTopics.join(", ") : "None detected yet."}</p>
-            <p><strong>Top priority topics:</strong> {(store.examPriorityMap?.topics ?? []).slice(0, 6).map((topic) => `${topic.topicName} (${topic.priority})`).join(", ") || "None detected yet."}</p>
+            <p><strong>Course type:</strong> {store.courseMap?.courseType ?? store.revisionPack?.courseType ?? store.curationReport.courseType ?? "unknown"}</p>
+            <p><strong>Top priority topics:</strong> {(store.examPriorityMap?.topics ?? []).slice(0, 6).map((topic) => `${topic.topicName} (${topic.priorityLabel ?? topic.priority}${typeof topic.priorityScore === "number" ? ` ${topic.priorityScore}` : ""})`).join(", ") || "None detected yet."}</p>
             {store.revisionPack ? <p><strong>Revision pack:</strong> {store.revisionPack.overview}</p> : null}
+            <p><strong>Quality:</strong> pack completeness {store.curationReport.packCompletenessScore ?? 0}%, candidate coverage {store.curationReport.candidateCoverageScore ?? 0}%, LaTeX quality {store.curationReport.latexQualityScore ?? (lowLatexCount ? "needs review" : "unknown")}.</p>
             <p><strong>Formula policy:</strong> {store.courseKnowledgeMap?.formulaPolicy.standaloneFormulaRule ?? "Only named, central, examinable formulas become standalone cards."} {store.curationReport.formulaKeptCount} kept / {store.curationReport.formulaRejectedCount} rejected from {store.curationReport.formulaCandidates} formula candidate(s).</p>
             <p><strong>Proof policy:</strong> {store.courseKnowledgeMap?.proofPolicy.proofCardRule ?? "Create proof cards only when proof is required."}</p>
             {store.curationReport.embeddedCount > 0 ? <p><strong>Embedded content:</strong> {store.curationReport.embeddedCount} supporting item(s) were attached to parent cards instead of entering review.</p> : null}
@@ -322,6 +335,19 @@ function ExtractPageContent() {
               </div>
             ) : null}
             {store.curationReport.notes.map((note) => <p key={note}>{note}</p>)}
+            {store.curationReport.pipelineStages?.length ? (
+              <div className="mt-3 grid gap-2 md:grid-cols-3">
+                {store.curationReport.pipelineStages.map((stage, index) => (
+                  <div key={`${stage.name}-${index}`} className="rounded border bg-white p-2">
+                    <div className="flex items-center justify-between gap-2">
+                      <strong>{index + 1}. {stage.name}</strong>
+                      <Badge variant={stage.status === "warning" ? "unknown" : stage.status === "error" ? "not_required" : "outline"}>{stage.status}</Badge>
+                    </div>
+                    <p className="text-xs text-slate-500">{stage.detail}</p>
+                  </div>
+                ))}
+              </div>
+            ) : null}
           </CardContent>
         </Card>
       ) : null}
@@ -343,10 +369,12 @@ function ExtractPageContent() {
 
             <div className="grid gap-3 rounded-lg border bg-slate-50 p-3 text-sm md:grid-cols-3">
               <PackCount label="Must-know definitions" value={store.revisionPack?.mustKnowDefinitions.length ?? 0} />
-              <PackCount label="Theorem statements" value={store.revisionPack?.theoremStatements.length ?? 0} />
-              <PackCount label="Required proofs" value={store.revisionPack?.proofsToKnow.length ?? 0} />
-              <PackCount label="Core formulas" value={store.revisionPack?.formulasToKnow.length ?? 0} />
-              <PackCount label="Problem templates" value={store.revisionPack?.methodsAndTemplates.length ?? 0} />
+              <PackCount label="Models to know" value={store.revisionPack?.modelsToKnow?.length ?? 0} />
+              <PackCount label="Conditions and equivalences" value={store.revisionPack?.conditionsAndEquivalences?.length ?? 0} />
+              <PackCount label="Key formulas" value={store.revisionPack?.keyFormulas?.length ?? store.revisionPack?.formulasToKnow.length ?? 0} />
+              <PackCount label="Calculation templates" value={store.revisionPack?.methodsAndTemplates.length ?? 0} />
+              <PackCount label="Tests and diagnostics" value={store.revisionPack?.testStatisticsAndDiagnostics?.length ?? 0} />
+              <PackCount label="Worked example patterns" value={store.revisionPack?.workedExamplePatterns?.length ?? 0} />
               <PackCount label="Conceptual distinctions" value={store.revisionPack?.conceptualDistinctions.length ?? 0} />
             </div>
 
@@ -415,9 +443,9 @@ function ExtractPageContent() {
                 <div>
                   <p className="mb-2 font-medium">Major topics</p>
                   <div className="flex flex-wrap gap-2">
-                    {(store.courseStructureMap?.topics ?? []).map((topic) => (
+                    {(store.courseMap?.topics ?? store.courseStructureMap?.topics ?? []).map((topic) => (
                       <Badge key={topic.name} variant={topic.importance === "core" ? "must_know" : topic.importance === "supporting" ? "partial" : "outline"}>
-                        {topic.name} · {topic.likelyExamUse}
+                        {topic.name} · {topic.type ?? topic.likelyExamUse}
                       </Badge>
                     ))}
                   </div>

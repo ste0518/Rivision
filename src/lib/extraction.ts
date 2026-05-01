@@ -1,11 +1,11 @@
-import { curateRevisionDeck } from "@/lib/curation";
-import { buildExamPriorityMap, buildRevisionPack, emptyExamPriorityMap } from "@/lib/course-priority";
+import { runCoursePackBuilder } from "@/lib/course-builder";
+import { buildRevisionPack, emptyExamPriorityMap } from "@/lib/course-priority";
 import { defaultLlmPipelineSettings, type LlmPipelineSettings } from "@/lib/llm/provider";
 import { extractionSystemPrompt } from "@/lib/llm/prompts";
 import { normalizeCuratedRevisionResult } from "@/lib/normalization";
-import { attachProofsToPreviousTheorem, segmentRevisionCandidates } from "@/lib/segmentation";
 import type {
   CourseKnowledgeMap,
+  CourseMap,
   CourseStructureMap,
   CurationReport,
   CuratedDeckResult,
@@ -13,6 +13,7 @@ import type {
   ExamPriorityMap,
   ExtractionPipelineMode,
   ExtractionVerificationReport,
+  AssessmentMap,
   ParsedDocument,
   RejectedRevisionItem,
   RevisionPack,
@@ -35,8 +36,10 @@ export type ExtractRevisionItemsResult = {
   rejectedItems: RejectedRevisionItem[];
   embeddedItems: EmbeddedRevisionItem[];
   verification: ExtractionVerificationReport;
+  courseMap?: CourseMap;
   courseStructureMap: CourseStructureMap;
   courseKnowledgeMap: CourseKnowledgeMap;
+  assessmentMap?: AssessmentMap;
   examPriorityMap: ExamPriorityMap;
   revisionPack: RevisionPack;
   curationReport: CurationReport;
@@ -76,8 +79,10 @@ export async function extractRevisionItems({
         needsReviewItems: processed.needsReviewItems,
         rejectedItems: processed.rejectedItems,
         embeddedItems: llmResult.embeddedItems ?? [],
+        courseMap: llmResult.courseMap,
         courseStructureMap: llmResult.courseStructureMap ?? emptyCourseStructureMap(),
         courseKnowledgeMap: llmResult.courseKnowledgeMap ?? emptyCourseKnowledgeMap(),
+        assessmentMap: llmResult.assessmentMap,
         examPriorityMap: llmResult.examPriorityMap ?? emptyExamPriorityMap(),
         revisionPack: llmResult.revisionPack ?? buildRevisionPack({ keptItems: processed.items, needsReviewItems: processed.needsReviewItems, rejectedItems: processed.rejectedItems, examPriorityMap: llmResult.examPriorityMap ?? emptyExamPriorityMap() }),
         curationReport: llmResult.curationReport ?? emptyCurationReport(0, processed.items.length, processed.needsReviewItems.length, processed.rejectedItems.length, llmResult.embeddedItems?.length ?? 0),
@@ -99,8 +104,10 @@ export async function extractRevisionItems({
       needsReviewItems: processed.needsReviewItems,
       rejectedItems: processed.rejectedItems,
       embeddedItems: curated.embeddedItems,
+      courseMap: curated.courseMap,
       courseStructureMap: curated.courseStructureMap,
       courseKnowledgeMap: curated.courseKnowledgeMap,
+      assessmentMap: curated.assessmentMap,
       examPriorityMap: curated.examPriorityMap,
       revisionPack: curated.revisionPack,
       curationReport: {
@@ -236,9 +243,7 @@ async function deterministicCurate(
 ): Promise<CuratedDeckResult> {
   if (mode !== "local_rules_only" && mode !== "ai_key_revision_analysis" && mode !== "openai_api" && mode !== "cheap_scan_then_verify") return emptyCuratedDeck();
   if (!notesText.trim() || notesText.includes("[PDF placeholder]") || notesText.includes("[DOCX placeholder]")) return emptyCuratedDeck();
-  const candidates = attachProofsToPreviousTheorem(segmentRevisionCandidates(notesDocuments));
-  const examPriorityMap = await buildExamPriorityMap({ notesDocuments, guidanceDocuments, pastPaperDocuments, problemSheetDocuments, solutionDocuments });
-  return curateRevisionDeck({ candidates, guidanceDocuments, parsedNotes: notesDocuments, pastPaperDocuments, problemSheetDocuments, solutionDocuments, examPriorityMap });
+  return runCoursePackBuilder({ notesDocuments, guidanceDocuments, pastPaperDocuments, problemSheetDocuments, solutionDocuments });
 }
 
 function postProcessRevisionItems(items: RevisionItem[], needsReviewItems: RevisionItem[], rejectedItems: RejectedRevisionItem[]) {
@@ -343,6 +348,7 @@ function normalizeParsedDocuments(documents: unknown): ParsedDocument[] {
     return [{
       sourceFile: typeof value.sourceFile === "string" && value.sourceFile.trim() ? value.sourceFile : "Unknown source",
       fileType: value.fileType ?? "unknown",
+      role: value.role,
       fullText,
       pages: Array.isArray(value.pages) ? value.pages : [],
       sections: Array.isArray(value.sections) ? value.sections : [],

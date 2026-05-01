@@ -18,17 +18,19 @@ export default function ReviewPage() {
   const [proofVisible, setProofVisible] = useState(false);
   const [deletedCardId, setDeletedCardId] = useState<string | null>(null);
   const [includeNeedsReview, setIncludeNeedsReview] = useState(false);
+  const [includeMediumPriority, setIncludeMediumPriority] = useState(false);
   const dueCards = useMemo(
     () => store.revisionItems.filter((item) =>
       !item.isDeleted &&
       (item.curationDecision ?? "keep") !== "reject" &&
       (includeNeedsReview || (item.curationDecision ?? "keep") === "keep") &&
+      (includeMediumPriority || item.priorityLabel === "very_high" || item.priorityLabel === "high" || item.priorityScore >= 70) &&
       item.standaloneValue !== "low" &&
       item.importance !== "not_required" &&
       !needsRepair(item) &&
       isDue(item),
     ),
-    [includeNeedsReview, store.revisionItems],
+    [includeMediumPriority, includeNeedsReview, store.revisionItems],
   );
   const card = dueCards[0];
   function rate(rating: ReviewRating) {
@@ -56,6 +58,10 @@ export default function ReviewPage() {
       <label className="mb-4 flex items-center gap-2 text-sm">
         <input type="checkbox" checked={includeNeedsReview} onChange={(event) => setIncludeNeedsReview(event.target.checked)} />
         Include needs review cards
+      </label>
+      <label className="mb-4 flex items-center gap-2 text-sm">
+        <input type="checkbox" checked={includeMediumPriority} onChange={(event) => setIncludeMediumPriority(event.target.checked)} />
+        Include medium-priority kept cards
       </label>
       {deletedCardId ? (
         <div className="fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-lg bg-slate-950 px-4 py-3 text-sm text-white shadow-lg">
