@@ -49,6 +49,11 @@ const roleWeight: Record<StudyFileRole, number> = {
 };
 
 const topicSeeds: TopicSeed[] = [
+  seed("Monte Carlo integration", ["monte carlo integration", "mc estimator"], "calculation", ["definition_recall", "formula_recall", "calculation_template"]),
+  seed("Importance sampling", ["importance sampling", "proposal distribution", "importance weights", "is estimator"], "calculation", ["definition_recall", "formula_recall", "method_steps"]),
+  seed("Self-normalised importance sampling", ["self-normalised importance sampling", "self-normalized importance sampling", "snis"], "calculation", ["formula_recall", "method_steps"]),
+  seed("Monte Carlo variance", ["mc variance", "empirical variance", "error rate", "sqrt n"], "theorem_statement", ["formula_recall", "proof_recall"]),
+  seed("Worked Monte Carlo examples", ["estimating pi", "tail probability", "rare event", "rayleigh", "cauchy"], "calculation", ["worked_example_pattern", "calculation_template"]),
   seed("Random field", ["random field", "stochastic process indexed"], "definition_recall", ["definition_recall"]),
   seed("Gaussian random field", ["gaussian random field", "grf"], "mixed", ["definition_recall", "calculation_template"]),
   seed("Random vector", ["random vector", "multivariate normal"], "definition_recall", ["definition_recall"]),

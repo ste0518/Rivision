@@ -26,12 +26,28 @@ export function normaliseRevisionItem(item: RevisionItem): RevisionItem {
   const cardPurpose = item.cardPurpose ?? inferCardPurpose(correctedType, title, statement, proofRequired);
   const taskPrompt = specificTaskPrompt(conceptName) ?? item.taskPrompt ?? buildTaskPrompt(correctedType, Boolean(proofRequired), cardPurpose);
   const answer = cleanAnswer(correctedType, statement, item.answer);
-  const statementLatex = repairMathTextToLatex(item.statementLatex || statement);
-  const proofLatex = proof ? repairMathTextToLatex(item.proofLatex || proof) : undefined;
-  const answerLatex = repairMathTextToLatex(item.answerLatex || answer);
+  const mathContext = `${conceptName} ${title} ${statement} ${answer} ${proof ?? ""}`;
+  const mathProfile = resolveMathProfile(item.mathNormalizationProfile ?? "auto", mathContext);
+  const statementLatex = repairMathTextToLatex(item.statementLatex || statement, mathProfile, mathContext);
+  const proofLatex = proof ? repairMathTextToLatex(item.proofLatex || proof, mathProfile, mathContext) : undefined;
+  const answerLatex = repairMathTextToLatex(item.answerLatex || answer, mathProfile, mathContext);
   const latexReport = validateLatexQuality({ ...item, statementLatex, proofLatex, answerLatex } as RevisionItem);
   const genericConcept = isGenericConceptName(conceptName);
-  const forceNeedsReview = latexReport.score === "low" || genericConcept;
+  const lowQualityIssues = detectLowQualityCardIssues({
+    ...item,
+    type: correctedType,
+    title,
+    conceptName,
+    cardFront,
+    statement,
+    statementLatex,
+    answer,
+    answerLatex,
+    proofLatex,
+    originalRawText,
+  });
+  const forceNeedsReview = latexReport.score === "low" || genericConcept || lowQualityIssues.length > 0;
+  const resolvedPurpose = forceNeedsReview ? "needs_review" : cardPurpose;
 
   return {
     ...item,
@@ -42,10 +58,10 @@ export function normaliseRevisionItem(item: RevisionItem): RevisionItem {
     displayTitle,
     cardFront,
     taskPrompt,
-    cardPurpose,
-    curationStatus: item.curationStatus ?? ((item.curationDecision ?? (forceNeedsReview ? "needs_review" : "keep")) === "needs_review" ? "needs_review" : "kept"),
-    curationDecision: item.curationDecision ?? (forceNeedsReview ? "needs_review" : "keep"),
-    curationReason: item.curationReason ?? (genericConcept ? "Generic concept name requires manual review." : latexReport.score === "low" ? "Low LaTeX quality requires manual review." : undefined),
+    cardPurpose: resolvedPurpose,
+    curationStatus: forceNeedsReview ? "needs_review" : item.curationStatus ?? ((item.curationDecision ?? "keep") === "needs_review" ? "needs_review" : "kept"),
+    curationDecision: forceNeedsReview ? "needs_review" : item.curationDecision ?? "keep",
+    curationReason: item.curationReason ?? (genericConcept ? "Generic concept name requires manual review." : latexReport.score === "low" ? "Low LaTeX quality requires manual review." : lowQualityIssues[0]),
     statement,
     statementLatex,
     originalRawText,
@@ -61,14 +77,17 @@ export function normaliseRevisionItem(item: RevisionItem): RevisionItem {
     priorityLabel: item.priorityLabel ?? priorityLabelFromScore(item.priorityScore ?? 0),
     evidenceSignals: item.evidenceSignals ?? [],
     whyThisCardMatters: item.whyThisCardMatters ?? item.relevanceReason ?? item.curationReason ?? "Needs priority evidence.",
-    revisionPackCategory: item.revisionPackCategory ?? revisionPackCategoryForItem({ ...item, type: correctedType, cardPurpose }),
+    revisionPackCategory: forceNeedsReview ? "needsReview" : item.revisionPackCategory ?? revisionPackCategoryForItem({ ...item, type: correctedType, cardPurpose: resolvedPurpose }),
     classificationConfidence: item.classificationConfidence ?? (extractionWarning ? "low" : "medium"),
     warnings: [
       ...(item.warnings ?? []),
       ...(genericConcept ? ["Generic concept name."] : []),
       ...(latexReport.score === "low" ? ["Low LaTeX quality."] : []),
+      ...lowQualityIssues,
       ...latexReport.issues,
     ],
+    latexQuality: lowQualityIssues.length || latexReport.score === "low" ? "low" : item.latexQuality ?? latexReport.score,
+    mathNormalizationProfile: mathProfile,
     createdAt: item.createdAt || now,
     updatedAt: item.updatedAt || now,
   };
@@ -319,6 +338,9 @@ export function normalizeMathNotation(value: string, profile: MathNormalizationP
   text = replaceOutsideInlineMath(text, /\bK[′']\s*Σ\s*[-−]\s*1\b/g, () => "\\(K'\\Sigma^{-1}\\)", false);
   text = replaceOutsideInlineMath(text, /ρ\s*\(\s*t0\s*,\s*t0\s*\)/g, () => "\\(\\rho(t_0,t_0)\\)", false);
   text = text.replace(/\\\(\s*\\\(/g, "\\(").replace(/\\\)\s*\\\)/g, "\\)");
+  if (resolvedProfile === "monte_carlo_sampling") {
+    text = normalizeMonteCarloSamplingMath(text);
+  }
   if (resolvedProfile === "time_series") {
     text = normalizeTimeSeriesMath(text);
   }
@@ -338,6 +360,7 @@ export function validateLatexQuality(item: RevisionItem): LatexQualityReport {
   const target = `${item.statementLatex || ""}\n${item.answerLatex || ""}\n${item.proofLatex || ""}`.trim();
   const issues: string[] = [];
   if (!target) return { score: "low", issues: ["Missing LaTeX content."] };
+  issues.push(...detectBrokenMathIssues(target));
   if (/\bXt1\b|\bXtn\b/.test(target)) issues.push("Contains raw Xt1/Xtn tokens.");
   if (/\bX1\b|\bXn\b/.test(target)) issues.push("Contains raw X1/Xn tokens in math context.");
   if (/\bR\s+[dn]\b/.test(target)) issues.push("Contains raw R d / R n notation.");
@@ -355,13 +378,78 @@ export function validateLatexQuality(item: RevisionItem): LatexQualityReport {
   return { score, issues };
 }
 
+export function detectLowQualityCardIssues(item: Partial<RevisionItem>): string[] {
+  const text = `${item.cardFront ?? ""}\n${item.taskPrompt ?? ""}\n${item.statement ?? ""}\n${item.statementLatex ?? ""}\n${item.answer ?? ""}\n${item.answerLatex ?? ""}\n${item.proof ?? ""}\n${item.proofLatex ?? ""}`;
+  const issues = new Set<string>();
+  for (const issue of detectBrokenMathIssues(text)) issues.add(issue);
+  if ((item.answer ?? "").length > 1800) issues.add("Answer is longer than 1800 characters.");
+  if ((item.statement ?? "").length > 2500 || (item.answer ?? "").length > 2500) issues.add("Needs splitting: source text is too long for a normal card.");
+  if (/^(proof|formula|remark|definition|example)$/i.test((item.cardFront ?? "").trim())) issues.add("Card front is too generic.");
+  if (/\boffsets?\s+\d+|startOffset|endOffset|label regex|candidate length|raw candidate|segmentation diagnostics/i.test(text)) issues.add("Contains raw extraction diagnostics.");
+  return Array.from(issues);
+}
+
+function detectBrokenMathIssues(target: string): string[] {
+  const issues: string[] = [];
+  if (/[ϕ]/.test(target)) issues.push("Contains raw phi extraction artefacts.");
+  if (/ϕˆ|p\?|p¯\?|δXi|\bN\s+i\s*=\s*1\b/.test(target)) issues.push("Contains raw Monte Carlo math artefacts.");
+  if (/\?\[|∑N\s+1\s+N|varp\?/i.test(target)) issues.push("Contains broken math notation.");
+  if (/\\operatorname\{varp\?\}|\\mathrm\{MC\?/.test(target)) issues.push("Contains unresolved estimator notation.");
+  return issues;
+}
+
 function resolveMathProfile(profile: MathNormalizationProfile, hint: string): Exclude<MathNormalizationProfile, "auto"> {
   if (profile !== "auto") return profile;
   const lower = hint.toLowerCase();
+  if (/\b(monte carlo|importance sampling|self[-\s]?normalised|self[-\s]?normalized|proposal distribution|importance weights?|snis|mc estimator|is estimator|estimator)\b/.test(lower)) return "monte_carlo_sampling";
   if (/\b(arima|arma|ar\(|ma\(|autocovariance|autocorrelation|periodogram|spectral density|ljung-box|stationarity)\b/.test(lower)) return "time_series";
   if (/\b(semivariogram|kriging|spatial|random field|covariance function)\b/.test(lower)) return "spatial_statistics";
   if (/\b(option|portfolio|volatility|black-scholes|martingale)\b/.test(lower)) return "financial_math";
   return "generic";
+}
+
+function normalizeMonteCarloSamplingMath(source: string) {
+  let text = source;
+  const replacements: Array<[RegExp, string]> = [
+    [/\bϕˆ_N_MC\b/g, "\\(\\hat\\phi^N_{\\mathrm{MC}}\\)"],
+    [/\bϕˆ_N_IS\b/g, "\\(\\hat\\phi^N_{\\mathrm{IS}}\\)"],
+    [/\bϕˆ_N_SNIS\b/g, "\\(\\hat\\phi^N_{\\mathrm{SNIS}}\\)"],
+    [/\b(?:phi|ϕ)\s*hat\s*\^?\s*N\s*_\s*MC\b/gi, "\\(\\hat\\phi^N_{\\mathrm{MC}}\\)"],
+    [/\b(?:phi|ϕ)\s*hat\s*\^?\s*N\s*_\s*IS\b/gi, "\\(\\hat\\phi^N_{\\mathrm{IS}}\\)"],
+    [/\b(?:phi|ϕ)\s*hat\s*\^?\s*N\s*_\s*SNIS\b/gi, "\\(\\hat\\phi^N_{\\mathrm{SNIS}}\\)"],
+    [/\bEp\?/g, "\\(\\mathbb{E}_{p^\\star}\\)"],
+    [/\bEq\b/g, "\\(\\mathbb{E}_q\\)"],
+    [/\bvarp\?/gi, "\\(\\operatorname{var}_{p^\\star}\\)"],
+    [/\bvarq\b/gi, "\\(\\operatorname{var}_q\\)"],
+    [/\bp¯\?/g, "\\(\\bar p^\\star\\)"],
+    [/\bp\?/g, "\\(p^\\star\\)"],
+    [/\bϕ¯\b/g, "\\(\\bar\\phi\\)"],
+    [/\bϕˆ\b/g, "\\(\\hat\\phi\\)"],
+    [/\bϕ\b/g, "\\(\\phi\\)"],
+    [/\bδ_?x\b/g, "\\(\\delta_x\\)"],
+    [/\bδXi\b/g, "\\(\\delta_{X_i}\\)"],
+    [/\b1A\s*\(\s*x\s*\)/g, "\\(\\mathbf 1_A(x)\\)"],
+    [/\b1\s*\{\s*x\s*>\s*2\s*\}\s*\(\s*x\s*\)/g, "\\(\\mathbf 1_{\\{x>2\\}}(x)\\)"],
+    [/\bXi\b/g, "\\(X_i\\)"],
+    [/\bX\s*\(\s*i\s*\)/g, "\\(X^{(i)}\\)"],
+    [/\bwi\b/g, "\\(w_i\\)"],
+    [/\bWi\b/g, "\\(W_i\\)"],
+    [/\bw¯i\b/g, "\\(\\bar w_i\\)"],
+    [/\bN\s+i\s*=\s*1\b/g, "\\(\\sum_{i=1}^N\\)"],
+    [/\bO\s*\(\s*1\s*\/\s*√\s*N\s*\)/g, "\\(O(1/\\sqrt N)\\)"],
+  ];
+  for (const [regex, replacement] of replacements) text = replaceOutsideInlineMath(text, regex, () => replacement, false);
+  text = replaceOutsideInlineMath(
+    text,
+    /(?:\^?N\s*)?_\{\s*mathrm\{(MC|IS|SNIS)\}\s*\}/g,
+    (_match, estimator: string) => `^N_{\\mathrm{${estimator}}}`,
+    false,
+  );
+  text = text
+    .replace(/\\\(\s*\\\(/g, "\\(")
+    .replace(/\\\)\s*\\\)/g, "\\)")
+    .replace(/\$\\\(([\s\S]*?)\\\)\$/g, "$$$1$");
+  return text;
 }
 
 function normalizeTimeSeriesMath(source: string) {

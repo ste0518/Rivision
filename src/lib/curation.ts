@@ -13,6 +13,7 @@ import {
   isGenericConceptName,
   splitProofFromStatement,
   theoremLike,
+  detectLowQualityCardIssues,
   validateLatexQuality,
 } from "@/lib/revision-item-utils";
 import type {
@@ -53,6 +54,18 @@ type ScoredCandidate = {
 };
 
 const centralFormulaTerms = [
+  "monte carlo estimator",
+  "mc estimator",
+  "mc variance",
+  "empirical variance estimate",
+  "importance sampling estimator",
+  "is estimator",
+  "is variance",
+  "optimal proposal",
+  "self-normalised importance sampling",
+  "self-normalized importance sampling",
+  "snis estimator",
+  "snis mse bound",
   "semivariogram",
   "variogram",
   "covariance function",
@@ -81,6 +94,15 @@ const centralFormulaTerms = [
 ];
 
 const centralTopicTerms = [
+  "monte carlo integration",
+  "test function",
+  "empirical distribution",
+  "dirac delta measure",
+  "importance sampling",
+  "proposal distribution",
+  "importance weights",
+  "self-normalised importance sampling",
+  "self-normalized importance sampling",
   "random field",
   "random vector",
   "stationarity",
@@ -197,7 +219,8 @@ export async function curateRevisionDeck({
   }
 
   const keptWithProofCards = addRequiredProofCards(keptItems, timestamp);
-  const qualityGate = qualityGateRevisionItems(keptWithProofCards, [...guidanceDocuments, ...pastPaperDocuments, ...problemSheetDocuments, ...solutionDocuments]);
+  const cardReadyItems = splitLongRevisionItems(keptWithProofCards, timestamp);
+  const qualityGate = qualityGateRevisionItems(cardReadyItems, [...guidanceDocuments, ...pastPaperDocuments, ...problemSheetDocuments, ...solutionDocuments]);
   const gatedRejectedItems = [
     ...rejectedItems,
     ...qualityGate.rejectedItems.map((item) =>
@@ -255,6 +278,7 @@ export function qualityGateRevisionItems(items: RevisionItem[], guidanceDocument
   for (const item of items) {
     const lower = `${item.title}\n${item.statement}\n${item.answer}`.toLowerCase();
     const latex = validateLatexQuality(item);
+    const lowQualityIssues = detectLowQualityCardIssues(item);
     const genericConcept = isGenericConceptName(item.conceptName || item.cardFront);
     const guidanceHit = Boolean(item.theoremNumber && guidanceText.includes(item.theoremNumber.toLowerCase())) || (item.conceptName ? guidanceText.includes(item.conceptName.toLowerCase()) : false);
     const standalone = item.standaloneValue ?? "medium";
@@ -269,8 +293,17 @@ export function qualityGateRevisionItems(items: RevisionItem[], guidanceDocument
       continue;
     }
 
-    if (latex.score === "low") {
-      needsReviewItems.push({ ...item, curationStatus: "needs_review", curationDecision: "needs_review", cardPurpose: "needs_review", curationReason: "Low LaTeX quality." });
+    if (latex.score === "low" || lowQualityIssues.length > 0) {
+      needsReviewItems.push({
+        ...item,
+        curationStatus: "needs_review",
+        curationDecision: "needs_review",
+        cardPurpose: "needs_review",
+        revisionPackCategory: "needsReview",
+        latexQuality: "low",
+        curationReason: lowQualityIssues[0] ?? "Low LaTeX quality.",
+        warnings: Array.from(new Set([...(item.warnings ?? []), ...lowQualityIssues, ...latex.issues])),
+      });
       continue;
     }
 
@@ -651,6 +684,93 @@ function addRequiredProofCards(items: RevisionItem[], timestamp: string) {
     });
   }
   return output;
+}
+
+function splitLongRevisionItems(items: RevisionItem[], timestamp: string) {
+  return items.flatMap((item) => {
+    const longest = Math.max(item.statement.length, item.answer.length, item.originalRawText?.length ?? 0);
+    if (longest <= 1200) return [item];
+    const subcards = buildSubcardsFromLongItem(item, timestamp);
+    if (subcards.length === 0) {
+      return [{
+        ...item,
+        curationStatus: "needs_review" as const,
+        curationDecision: "needs_review" as const,
+        cardPurpose: "needs_review" as const,
+        revisionPackCategory: "needsReview" as const,
+        curationReason: longest > 2500 ? "Needs splitting: source candidate is too long for a normal card." : "Long card needs manual review.",
+        warnings: Array.from(new Set([...(item.warnings ?? []), longest > 2500 ? "Needs splitting: candidate length exceeds 2500 characters." : "Candidate length exceeds 1200 characters."])),
+      }];
+    }
+    return subcards;
+  });
+}
+
+function buildSubcardsFromLongItem(item: RevisionItem, timestamp: string): RevisionItem[] {
+  const source = item.answer || item.statement || item.originalRawText || "";
+  const paragraphs = source.split(/(?<=[.!?])\s+|\n+/).map((part) => part.trim()).filter((part) => part.length >= 40);
+  const specs: Array<{ suffix: string; purpose: RevisionItem["cardPurpose"]; type: RevisionItemType; prompt: string; category?: RevisionItem["revisionPackCategory"]; match: RegExp }> = [
+    { suffix: "concept", purpose: "definition_recall", type: "definition", prompt: "Explain what it is and what problem it solves.", category: "mustKnowDefinitions", match: /\b(defin|problem|integral|expectation|distribution|sampling)\b/i },
+    { suffix: "formula", purpose: "formula_recall", type: "formula", prompt: "Write down the key formula.", category: "formulasToKnow", match: /[=∑\\sum]|estimator|variance|mean squared|mse|O\(1/i },
+    { suffix: "proof idea", purpose: "proof_recall", type: "proof", prompt: "Give the short proof idea.", category: "proofsToKnow", match: /\b(proof|unbiased|variance|show|derive|because|expectation)\b/i },
+    { suffix: "method", purpose: "method_steps", type: "algorithm", prompt: "Recall the method steps.", category: "methodsAndTemplates", match: /\b(algorithm|step|choose|sample|compute|estimate|use)\b/i },
+    { suffix: "example template", purpose: "worked_example_pattern", type: "example", prompt: "Recall the worked example template.", category: "workedExamplePatterns", match: /\b(example|estimate|probability|tail|pi|π|rare|marginal|cauchy|rayleigh)\b/i },
+  ];
+  const used = new Set<number>();
+  const cards: RevisionItem[] = [];
+
+  for (const spec of specs) {
+    const index = paragraphs.findIndex((paragraph, paragraphIndex) => !used.has(paragraphIndex) && spec.match.test(paragraph));
+    if (index === -1) continue;
+    used.add(index);
+    const answer = capCardAnswer(paragraphs[index]);
+    cards.push({
+      ...item,
+      id: createId("card"),
+      type: spec.type,
+      title: `${item.cardFront}: ${spec.suffix}`,
+      displayTitle: `${item.cardFront}: ${spec.suffix}`,
+      conceptName: `${item.cardFront}: ${spec.suffix}`,
+      cardFront: `${item.cardFront}: ${spec.suffix}`,
+      taskPrompt: spec.prompt,
+      cardPurpose: spec.purpose,
+      statement: answer,
+      statementLatex: convertCommonMathToLatex(answer, "auto", `${item.cardFront} ${answer}`),
+      answer,
+      answerLatex: convertCommonMathToLatex(answer, "auto", `${item.cardFront} ${answer}`),
+      proof: undefined,
+      proofLatex: undefined,
+      parentItemId: item.id,
+      curationDecision: "keep",
+      curationStatus: "kept",
+      revisionPackCategory: spec.category,
+      curationReason: `Split from long candidate "${item.cardFront}" into a focused ${spec.suffix} card.`,
+      warnings: Array.from(new Set([...(item.warnings ?? []), "Split from long candidate."])),
+      createdAt: timestamp,
+      updatedAt: timestamp,
+    });
+  }
+
+  if (cards.length === 0 && source.trim()) {
+    const answer = capCardAnswer(source);
+    cards.push({
+      ...item,
+      statement: answer,
+      statementLatex: convertCommonMathToLatex(answer, "auto", `${item.cardFront} ${answer}`),
+      answer,
+      answerLatex: convertCommonMathToLatex(answer, "auto", `${item.cardFront} ${answer}`),
+      curationReason: `Trimmed long candidate "${item.cardFront}" into a focused review card.`,
+      warnings: Array.from(new Set([...(item.warnings ?? []), "Trimmed from long candidate."])),
+      updatedAt: timestamp,
+    });
+  }
+
+  return cards;
+}
+
+function capCardAnswer(value: string) {
+  const cleaned = clean(value);
+  return cleaned.length > 1100 ? `${cleaned.slice(0, 1100).replace(/\s+\S*$/, "")}.` : cleaned;
 }
 
 function buildCourseKnowledgeMap(guidanceText: string, notesText: string): CourseKnowledgeMap {
@@ -1034,7 +1154,7 @@ function isDefinitionStatement(lower: string) {
 function isStandaloneFormula(lower: string) {
   return centralFormulaTerms.some((term) => lower.includes(term)) ||
     /\bformula for\b/.test(lower) ||
-    /\b(is|are|defined by|given by)\b/.test(lower) && /\b(semivariogram|variogram|kriging|blup|likelihood|intensity|covariance)\b/.test(lower);
+    /\b(is|are|defined by|given by)\b/.test(lower) && /\b(monte carlo|importance sampling|snis|estimator|variance|semivariogram|variogram|kriging|blup|likelihood|intensity|covariance)\b/.test(lower);
 }
 
 function isLowValueFormula(lower: string, guidanceSupport: number) {
@@ -1052,7 +1172,7 @@ function isImportantRemark(lower: string) {
 
 function isMethodLike(lower: string) {
   return /\b(set up|calculate|compute|algorithm|procedure|steps|solve|estimate|predict|derive|use|estimator)\b/.test(lower) ||
-    /\bkriging system|likelihood|estimator|predictor\b/.test(lower);
+    /\bimportance sampling|monte carlo|rare events?|kriging system|likelihood|estimator|predictor\b/.test(lower);
 }
 
 function looksLikeBibliography(text: string) {
@@ -1086,7 +1206,7 @@ function buildAnswer(type: RevisionItemType, statement: string) {
 
 function inferTags(type: RevisionItemType, text: string) {
   const tags = new Set<string>([type]);
-  for (const keyword of ["stationarity", "covariance", "variogram", "semivariogram", "kriging", "blup", "proof", "formula", "theorem", "algorithm", "poisson", "gaussian"]) {
+  for (const keyword of ["monte carlo", "importance sampling", "snis", "estimator", "variance", "stationarity", "covariance", "variogram", "semivariogram", "kriging", "blup", "proof", "formula", "theorem", "algorithm", "poisson", "gaussian"]) {
     if (text.toLowerCase().includes(keyword)) tags.add(keyword);
   }
   return Array.from(tags);

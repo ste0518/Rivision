@@ -127,6 +127,7 @@ export type StorageUsageEstimate = {
 
 export type StorageSettings = {
   persistDebugData: boolean;
+  interfaceMode: "simple" | "advanced";
 };
 
 type LocalStudyPointer = {
@@ -172,7 +173,7 @@ const evidenceLimit = 500;
 const debugPreviewLimit = 300;
 const localStorageValueLimitBytes = 100 * 1024;
 const appLocalStorageLimitBytes = 200 * 1024;
-const defaultStorageSettings: StorageSettings = { persistDebugData: false };
+const defaultStorageSettings: StorageSettings = { persistDebugData: false, interfaceMode: "simple" };
 
 class RivisionDatabase extends Dexie {
   projects!: Table<StudyProject, string>;

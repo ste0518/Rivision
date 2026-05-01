@@ -3,16 +3,15 @@ import OpenAI from "openai";
 import { NextResponse } from "next/server";
 
 const prompt = `Convert this extracted lecture-note text into clean Markdown with LaTeX math.
-Preserve the meaning exactly.
+Preserve the exact mathematical meaning.
 Do not add new content.
-Do not simplify the mathematics.
 Repair obvious PDF extraction artefacts.
 Return only the corrected Markdown.`;
 
 export async function POST(request: Request) {
   try {
     if (!process.env.OPENAI_API_KEY) {
-      return NextResponse.json({ error: "AI math cleanup requires OPENAI_API_KEY. You can still use local Fix math." }, { status: 400 });
+      return NextResponse.json({ error: "AI math cleanup requires API key." }, { status: 400 });
     }
 
     const body = (await request.json()) as { text?: string };

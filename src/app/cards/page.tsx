@@ -28,7 +28,10 @@ export default function CardsPage() {
   const [adding, setAdding] = useState(false);
   const [importText, setImportText] = useState("");
   const [importError, setImportError] = useState("");
-  const [filters, setFilters] = useState({ type: "all", cardPurpose: "all", packCategory: "all", importance: "all", priority: "all", curation: "keep", standaloneValue: "all", lowLatexOnly: false, section: "", tag: "", source: "", showRejected: false, showDeleted: false });
+  const [filters, setFilters] = useState(() => {
+    const params = typeof window === "undefined" ? new URLSearchParams() : new URLSearchParams(window.location.search);
+    return { type: "all", cardPurpose: "all", packCategory: "all", importance: "all", priority: "all", curation: params.get("curation") ?? "keep", standaloneValue: "all", lowLatexOnly: false, section: "", tag: "", source: "", showRejected: false, showDeleted: false };
+  });
   const [selectedIds, setSelectedIds] = useState<string[]>([]);
   const [selectedDeletedIds, setSelectedDeletedIds] = useState<string[]>([]);
   const [undo, setUndo] = useState<UndoState>(null);
@@ -184,7 +187,7 @@ export default function CardsPage() {
         <Button variant="outline" onClick={downloadJson}>Export JSON</Button>
         <Button variant="secondary" onClick={store.seedMockData}>Load mock data</Button>
         <Button variant="destructive" onClick={() => deleteCards(selectedIds)} disabled={selectedIds.length === 0}>Bulk delete selected</Button>
-        <Button variant="outline" onClick={() => fixMath(selectedIds)} disabled={selectedIds.length === 0}>Fix math</Button>
+        <Button variant="outline" onClick={() => fixMath(selectedIds)} disabled={selectedIds.length === 0}>Fix math for selected cards</Button>
         <Button variant="outline" onClick={() => { const item = store.revisionItems.find((candidate) => candidate.id === selectedIds[0]); if (item) void aiCleanMath(item); }} disabled={selectedIds.length !== 1}>AI clean math</Button>
       </div>
       {mathStatus ? <p className="mb-4 text-sm text-slate-600">{mathStatus}</p> : null}

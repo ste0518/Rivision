@@ -5,7 +5,7 @@ import { usePathname } from "next/navigation";
 import { BookOpenCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 
-const nav = [["Dashboard", "/dashboard"], ["Upload", "/upload"], ["Extract", "/extract"], ["Cards", "/cards"], ["Review", "/review"], ["Quiz", "/quiz"], ["Settings", "/settings"], ["Storage", "/settings/storage"]];
+const nav = [["Dashboard", "/dashboard"], ["Upload", "/upload"], ["Extract", "/extract"], ["Pack", "/pack"], ["Cards", "/cards"], ["Review", "/review"], ["Quiz", "/quiz"], ["Settings", "/settings"], ["Storage", "/settings/storage"]];
 
 export function AppShell({ children }: { children: React.ReactNode }) {
   const pathname = usePathname();

@@ -5,32 +5,40 @@ import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/card";
+import { Select } from "@/components/ui/select";
 import { MathText } from "@/components/math-text";
 import { PageHeader } from "@/components/page-header";
 import { isDue } from "@/lib/srs";
 import { hasLowLatexQuality } from "@/lib/card-render";
-import type { ReviewRating } from "@/lib/types";
+import { normalizeMathNotation } from "@/lib/revision-item-utils";
+import { revisionPackCategories, type ReviewRating, type RevisionItem } from "@/lib/types";
 import { useStudyStore } from "@/hooks/use-study-store";
 const ratings: Array<[ReviewRating, string]> = [["again", "Again"], ["hard", "Hard"], ["good", "Good"], ["easy", "Easy"]];
 export default function ReviewPage() {
   const store = useStudyStore();
   const [revealed, setRevealed] = useState(false);
   const [proofVisible, setProofVisible] = useState(false);
+  const [sourceVisible, setSourceVisible] = useState(false);
   const [deletedCardId, setDeletedCardId] = useState<string | null>(null);
   const [includeNeedsReview, setIncludeNeedsReview] = useState(false);
   const [includeMediumPriority, setIncludeMediumPriority] = useState(false);
+  const [categoryFilter, setCategoryFilter] = useState("all");
+  const [mathStatus, setMathStatus] = useState("");
+  const requestedCardId = typeof window === "undefined" ? "" : new URLSearchParams(window.location.search).get("card") ?? "";
   const dueCards = useMemo(
     () => store.revisionItems.filter((item) =>
       !item.isDeleted &&
       (item.curationDecision ?? "keep") !== "reject" &&
       (includeNeedsReview || (item.curationDecision ?? "keep") === "keep") &&
       (includeMediumPriority || item.priorityLabel === "very_high" || item.priorityLabel === "high" || item.priorityScore >= 70) &&
+      (categoryFilter === "all" || item.revisionPackCategory === categoryFilter) &&
       item.standaloneValue !== "low" &&
+      item.answer.length <= 1800 &&
       item.importance !== "not_required" &&
       !needsRepair(item) &&
-      isDue(item),
+      (requestedCardId ? item.id === requestedCardId : isDue(item)),
     ),
-    [includeMediumPriority, includeNeedsReview, store.revisionItems],
+    [categoryFilter, includeMediumPriority, includeNeedsReview, requestedCardId, store.revisionItems],
   );
   const card = dueCards[0];
   function rate(rating: ReviewRating) {
@@ -38,6 +46,7 @@ export default function ReviewPage() {
     store.reviewItem(card.id, rating);
     setRevealed(false);
     setProofVisible(false);
+    setSourceVisible(false);
   }
   function deleteCurrentCard() {
     if (!card) return;
@@ -45,6 +54,7 @@ export default function ReviewPage() {
     setDeletedCardId(card.id);
     setRevealed(false);
     setProofVisible(false);
+    setSourceVisible(false);
   }
   function undoDelete() {
     if (!deletedCardId) return;
@@ -52,17 +62,60 @@ export default function ReviewPage() {
     setDeletedCardId(null);
   }
 
+  function fixCurrentMath() {
+    if (!card) return;
+    store.upsertRevisionItem({
+      ...card,
+      statementLatex: normalizeMathNotation(card.statement, card.mathNormalizationProfile ?? "auto", card.cardFront),
+      answerLatex: normalizeMathNotation(card.answer, card.mathNormalizationProfile ?? "auto", card.cardFront),
+      proofLatex: card.proof ? normalizeMathNotation(card.proof, card.mathNormalizationProfile ?? "auto", card.cardFront) : undefined,
+      latexQuality: "medium",
+      updatedAt: new Date().toISOString(),
+    });
+    setMathStatus("Math cleaned locally.");
+  }
+
+  async function aiCleanCurrentMath() {
+    if (!card) return;
+    setMathStatus("");
+    const response = await fetch("/api/ai-clean-math", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ text: `${card.statement}\n\n${card.answer}\n\n${card.proof ?? ""}`.trim() }),
+    });
+    const payload = (await response.json()) as { markdown?: string; error?: string; issues?: string[]; latexQuality?: RevisionItem["latexQuality"] };
+    if (!response.ok || !payload.markdown) {
+      setMathStatus(payload.error || "AI math cleanup failed.");
+      return;
+    }
+    store.upsertRevisionItem({
+      ...card,
+      answerLatex: payload.markdown,
+      latexQuality: payload.latexQuality ?? (payload.issues?.length ? "low" : "high"),
+      warnings: [...(card.warnings ?? []), ...(payload.issues ?? [])],
+      updatedAt: new Date().toISOString(),
+    });
+    setMathStatus(payload.issues?.length ? "AI cleaned math, but KaTeX still reported issues." : "AI cleaned math.");
+  }
+
   return (
     <div>
-      <PageHeader title="Flashcard revision" description="Answer from memory, reveal the extracted definition or theorem, then self-grade to schedule the next review." />
-      <label className="mb-4 flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={includeNeedsReview} onChange={(event) => setIncludeNeedsReview(event.target.checked)} />
-        Include needs review cards
-      </label>
-      <label className="mb-4 flex items-center gap-2 text-sm">
-        <input type="checkbox" checked={includeMediumPriority} onChange={(event) => setIncludeMediumPriority(event.target.checked)} />
-        Include medium-priority kept cards
-      </label>
+      <PageHeader title="Flashcard revision" description="Answer from memory, reveal a clean answer, then self-grade." />
+      <div className="mb-4 flex flex-wrap items-center gap-3">
+        <Select className="max-w-xs" value={categoryFilter} onChange={(event) => setCategoryFilter(event.target.value)}>
+          <option value="all">All categories</option>
+          {revisionPackCategories.filter((category) => category !== "rejected").map((category) => <option key={category} value={category}>{category}</option>)}
+        </Select>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={includeNeedsReview} onChange={(event) => setIncludeNeedsReview(event.target.checked)} />
+          Include needs review
+        </label>
+        <label className="flex items-center gap-2 text-sm">
+          <input type="checkbox" checked={includeMediumPriority} onChange={(event) => setIncludeMediumPriority(event.target.checked)} />
+          Include medium priority
+        </label>
+      </div>
+      {mathStatus ? <p className="mb-4 text-sm text-slate-600">{mathStatus}</p> : null}
       {deletedCardId ? (
         <div className="fixed bottom-6 left-1/2 z-50 flex -translate-x-1/2 items-center gap-3 rounded-lg bg-slate-950 px-4 py-3 text-sm text-white shadow-lg">
           <span>Card deleted</span>
@@ -81,9 +134,7 @@ export default function ReviewPage() {
         <Card className="mx-auto max-w-3xl">
           <CardHeader>
             <div className="flex flex-wrap items-center gap-2">
-              <Badge variant="outline">{displayLabel(card)}</Badge>
-              <Badge variant="outline">{card.type}</Badge>
-              <Badge variant="outline">{card.cardPurpose}</Badge>
+              <Badge variant="outline">{card.revisionPackCategory ?? card.type}</Badge>
               <Badge variant={card.importance}>{card.importance}</Badge>
               {card.extractionWarning || card.warnings?.length ? <Badge variant="unknown">check extraction</Badge> : null}
               {hasLowLatexQuality(card) ? <Badge variant="unknown">low LaTeX quality</Badge> : null}
@@ -113,11 +164,14 @@ export default function ReviewPage() {
                     {proofVisible ? <MathText className="bg-white">{card.proofLatex || card.proof}</MathText> : null}
                   </div>
                 ) : null}
-                <div className="rounded-lg border border-slate-200 p-4 text-sm text-slate-600">
-                  <p><strong>Source:</strong> {card.sourceLocation || "source unknown"}</p>
-                  {card.guidanceReason ? <p><strong>Guidance:</strong> {card.guidanceReason}</p> : null}
-                  {card.extractionWarning ? <p className="text-amber-700"><strong>Warning:</strong> {card.extractionWarning}</p> : null}
-                </div>
+                <details className="rounded-lg border border-slate-200 p-4 text-sm text-slate-600" open={sourceVisible} onToggle={(event) => setSourceVisible(event.currentTarget.open)}>
+                  <summary className="cursor-pointer font-medium text-slate-800">Show source</summary>
+                  <div className="mt-3 space-y-1">
+                    <p><strong>Source:</strong> {card.sourceLocation || "source unknown"}</p>
+                    {card.guidanceReason ? <p><strong>Guidance:</strong> {card.guidanceReason}</p> : null}
+                    {card.extractionWarning ? <p className="text-amber-700"><strong>Warning:</strong> {card.extractionWarning}</p> : null}
+                  </div>
+                </details>
                 <div className="grid gap-2 sm:grid-cols-4">
                   {ratings.map(([value, label]) => (
                     <Button key={value} variant={value === "again" ? "destructive" : value === "easy" ? "default" : "outline"} onClick={() => rate(value)}>
@@ -125,8 +179,12 @@ export default function ReviewPage() {
                     </Button>
                   ))}
                 </div>
-                <div className="flex justify-end">
-                  <Button variant="outline" onClick={deleteCurrentCard}>Delete card</Button>
+                <div className="flex flex-wrap justify-end gap-2">
+                  <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50" href="/cards">Edit</Link>
+                  <Button variant="outline" onClick={deleteCurrentCard}>Delete</Button>
+                  <Button variant="outline" onClick={() => rate("hard")}>Skip</Button>
+                  <Button variant="outline" onClick={fixCurrentMath}>Fix math</Button>
+                  <Button variant="outline" onClick={() => void aiCleanCurrentMath()}>AI clean math</Button>
                 </div>
               </>
             )}
@@ -151,7 +209,3 @@ function needsRepair(item: { extractionWarning?: string; warnings?: string[] }) 
   );
 }
 
-function displayLabel(card: { type: string; theoremNumber?: string; sourceLocation?: string; displayTitle?: string }) {
-  if (card.theoremNumber) return `${card.type.charAt(0).toUpperCase()}${card.type.slice(1)} ${card.theoremNumber}`;
-  return card.sourceLocation || card.displayTitle || "source unknown";
-}

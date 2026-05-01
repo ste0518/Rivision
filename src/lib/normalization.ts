@@ -246,7 +246,7 @@ function normalizeCurationReport(raw: unknown, keptCount: number, needsReviewCou
       status: enumValue(stage.status, ["complete", "warning", "error"] as const, "complete"),
       detail: stringValue(stage.detail),
     }] : []) : undefined,
-    courseType: enumValue(value.courseType, ["time_series", "spatial_statistics", "financial_math", "statistics", "probability", "linear_algebra", "calculus", "machine_learning", "generic_math", "unknown"] as const, undefined),
+    courseType: enumValue(value.courseType, ["monte_carlo_sampling", "time_series", "spatial_statistics", "financial_math", "statistics", "probability", "linear_algebra", "calculus", "machine_learning", "generic_math", "unknown"] as const, undefined),
     packCompletenessScore: numberValue(value.packCompletenessScore),
     candidateCoverageScore: numberValue(value.candidateCoverageScore),
     latexQualityScore: numberValue(value.latexQualityScore),
@@ -323,7 +323,7 @@ function normalizeRevisionPack(raw: unknown, keptItems: RevisionItem[], needsRev
   if (!isRecord(raw)) return buildRevisionPack({ keptItems, needsReviewItems, rejectedItems, examPriorityMap });
   return {
     overview: stringValue(raw.overview) || "Revision pack.",
-    courseType: enumValue(raw.courseType, ["time_series", "spatial_statistics", "financial_math", "statistics", "probability", "linear_algebra", "calculus", "machine_learning", "generic_math", "unknown"] as const, undefined),
+    courseType: enumValue(raw.courseType, ["monte_carlo_sampling", "time_series", "spatial_statistics", "financial_math", "statistics", "probability", "linear_algebra", "calculus", "machine_learning", "generic_math", "unknown"] as const, undefined),
     topPriorityTopics: normalizeExamPriorityMap({ topics: raw.topPriorityTopics }).topics,
     topTopics: normalizeExamPriorityMap({ topics: raw.topTopics }).topics,
     coreDefinitions: migrateStoredCards(raw.coreDefinitions),

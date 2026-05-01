@@ -120,6 +120,7 @@ export function parseDocuments(input: CoursePackBuilderInput): ParsedDocument[] 
 export function detectCourseType(parsedDocuments: ParsedDocument[]): CourseType {
   const text = parsedDocuments.map((doc) => `${doc.sourceFile}\n${doc.fullText.slice(0, 20000)}`).join("\n").toLowerCase();
   const scores: Record<CourseType, number> = {
+    monte_carlo_sampling: scoreTerms(text, ["monte carlo integration", "importance sampling", "self-normalised importance sampling", "self-normalized importance sampling", "proposal distribution", "importance weights", "mc estimator", "snis estimator"]),
     time_series: scoreTerms(text, ["time series", "stationary process", "autocovariance", "autocorrelation", "ar(p)", "ma(q)", "arma", "arima", "arch", "spectral density", "periodogram", "ljung-box", "forecasting"]),
     spatial_statistics: scoreTerms(text, ["spatial statistics", "random field", "semivariogram", "variogram", "kriging", "isotropy", "anisotropy", "point process", "sar", "car", "mrf"]),
     financial_math: scoreTerms(text, ["black-scholes", "option", "portfolio", "martingale", "volatility", "arbitrage"]),
@@ -338,7 +339,7 @@ export function generateFlashcardsFromRevisionPack(revisionPack: CuratedDeckResu
 }
 
 export function validateLatexAndContentQuality(items: RevisionItem[], courseType: CourseType): RevisionItem[] {
-  const profile = courseType === "time_series" || courseType === "spatial_statistics" || courseType === "financial_math" ? courseType : "generic";
+  const profile = courseType === "monte_carlo_sampling" || courseType === "time_series" || courseType === "spatial_statistics" || courseType === "financial_math" ? courseType : "generic";
   return items.map((item) => {
     const statementLatex = convertCommonMathToLatex(item.statementLatex || item.statement, profile, `${item.cardFront} ${item.statement}`);
     const answerLatex = convertCommonMathToLatex(item.answerLatex || item.answer, profile, `${item.cardFront} ${item.answer}`);
@@ -376,9 +377,148 @@ export async function runCoursePackBuilder(input: CoursePackBuilderInput): Promi
     solutionDocuments: parsedDocuments.filter((doc) => doc.role === "solution_sheet" || doc.role === "mark_scheme"),
     examPriorityMap,
   });
-  const qualityItems = validateLatexAndContentQuality(curated.keptItems, courseType);
+  const seededKeptItems = courseType === "monte_carlo_sampling" ? mergeMonteCarloStudyCards(curated.keptItems, parsedDocuments) : curated.keptItems;
+  const qualityItems = validateLatexAndContentQuality(seededKeptItems, courseType);
   const qualityNeedsReview = validateLatexAndContentQuality(curated.needsReviewItems, courseType);
   return saveResult(curateRevisionPack({ ...curated, keptItems: qualityItems, needsReviewItems: qualityNeedsReview }, courseMap, assessmentMap, examPriorityMap));
+}
+
+function mergeMonteCarloStudyCards(existing: RevisionItem[], parsedDocuments: ParsedDocument[]): RevisionItem[] {
+  const text = parsedDocuments.map((document) => document.fullText).join("\n\n").toLowerCase();
+  if (!/\bmonte carlo integration|importance sampling|self[-\s]?normalised importance sampling|self[-\s]?normalized importance sampling\b/.test(text)) return existing;
+  const existingKeys = new Set(existing.map((item) => normaliseKey(item.cardFront || item.title)));
+  const sourceFile = parsedDocuments.find((document) => document.role === "lecture_notes" || document.role === "other")?.sourceFile ?? parsedDocuments[0]?.sourceFile ?? "Uploaded notes";
+  const now = new Date().toISOString();
+  const cards = monteCarloSeedSpecs().flatMap((spec) => {
+    if (existingKeys.has(normaliseKey(spec.front))) return [];
+    const answer = convertCommonMathToLatex(spec.answer, "monte_carlo_sampling", spec.front);
+    return [{
+      id: createId("card"),
+      type: spec.type,
+      candidateKind: spec.kind,
+      title: spec.front,
+      conceptName: spec.front,
+      displayTitle: spec.front,
+      cardFront: spec.front,
+      taskPrompt: spec.prompt,
+      statement: spec.answer,
+      statementLatex: answer,
+      originalRawText: spec.answer,
+      sourceFile,
+      sourceLocation: spec.sourceHint,
+      pageNumber: firstPageForTerms(parsedDocuments, spec.terms),
+      tags: ["monte carlo", spec.category, spec.purpose],
+      importance: spec.importance,
+      cardPurpose: spec.purpose,
+      curationStatus: "kept",
+      classificationConfidence: "medium",
+      guidanceReason: "Added by the Monte Carlo sampling revision profile.",
+      questionPrompt: spec.prompt,
+      answer: spec.answer,
+      answerLatex: answer,
+      standaloneValue: "high",
+      curationDecision: "keep",
+      curationReason: "Core Monte Carlo sampling revision card.",
+      latexQuality: "high",
+      priorityScore: spec.importance === "must_know" ? 85 : 70,
+      priorityLabel: spec.importance === "must_know" ? "very_high" : "high",
+      evidenceSignals: [],
+      whyThisCardMatters: "Core Monte Carlo integration or importance sampling item for exam revision.",
+      revisionPackCategory: spec.category,
+      mathNormalizationProfile: "monte_carlo_sampling",
+      createdAt: now,
+      updatedAt: now,
+      reviewCount: 0,
+    } satisfies RevisionItem];
+  });
+  return [...existing, ...cards];
+}
+
+function monteCarloSeedSpecs(): Array<{
+  front: string;
+  prompt: string;
+  answer: string;
+  type: RevisionItem["type"];
+  purpose: RevisionItem["cardPurpose"];
+  kind: RevisionItem["candidateKind"];
+  category: NonNullable<RevisionItem["revisionPackCategory"]>;
+  importance: RevisionItem["importance"];
+  terms: string[];
+  sourceHint: string;
+}> {
+  return [
+    conceptSpec("Monte Carlo integration", "Explain what problem it solves and what quantity is estimated.", "Monte Carlo integration estimates an integral or expectation by sampling. If \\(X_i\\sim p^\\star\\), the target is \\(\\bar\\phi=\\mathbb{E}_{p^\\star}[\\phi(X)]\\).", ["monte carlo integration"]),
+    conceptSpec("Test function", "Explain the role of the test function.", "The test function \\(\\phi\\) maps simulated values to the quantity whose expectation is wanted, such as an indicator for a probability or a payoff/integrand.", ["test function"]),
+    conceptSpec("Empirical distribution", "State the empirical distribution from Monte Carlo samples.", "The empirical distribution places mass \\(1/N\\) at each sample: \\(\\hat p_N=\\frac{1}{N}\\sum_{i=1}^N\\delta_{X_i}\\).", ["empirical distribution"]),
+    conceptSpec("Dirac delta measure", "Explain what \\(\\delta_x\\) represents.", "The Dirac delta measure \\(\\delta_x\\) puts all mass at the point \\(x\\), so integrating a test function gives \\(\\int \phi(u)\\,\\delta_x(du)=\\phi(x)\\).", ["dirac", "delta"]),
+    conceptSpec("Importance sampling", "Explain why importance sampling changes the sampling distribution.", "Importance sampling estimates an expectation under \\(p^\\star\\) by sampling from a proposal \\(q\\) and reweighting with \\(w(x)=p^\\star(x)/q(x)\\). It is useful when direct Monte Carlo is inefficient.", ["importance sampling"]),
+    conceptSpec("Proposal distribution", "State what makes a proposal distribution valid/useful.", "A proposal \\(q\\) must cover the important support of the target/integrand. It should put samples where \\(|\\phi(x)|p^\\star(x)\\) is large while keeping weights stable.", ["proposal distribution"]),
+    conceptSpec("Importance weights", "Define importance weights.", "Importance weights correct for sampling from \\(q\\) rather than \\(p^\\star\\): \\(w_i=w(X_i)=p^\\star(X_i)/q(X_i)\\).", ["importance weights", "weights"]),
+    conceptSpec("Self-normalised importance sampling", "Explain when SNIS is used.", "Self-normalised importance sampling uses normalised weights when the target density is known only up to a constant: \\(W_i=w_i/\\sum_{j=1}^N w_j\\), then estimate \\(\\sum_i W_i\\phi(X_i)\\).", ["self-normalised", "self-normalized", "snis"]),
+    formulaSpec("MC estimator", "Write down the estimator.", "\\[\\hat\\phi^N_{\\mathrm{MC}}=\\frac{1}{N}\\sum_{i=1}^N\\phi(X_i).\\]", ["mc estimator", "monte carlo estimator"]),
+    formulaSpec("MC variance", "Write down the variance of the MC estimator.", "\\[\\operatorname{var}_{p^\\star}(\\hat\\phi^N_{\\mathrm{MC}})=\\frac{1}{N}\\operatorname{var}_{p^\\star}(\\phi(X)).\\]", ["mc variance", "variance"]),
+    formulaSpec("Empirical variance estimate", "Write down the empirical variance estimate.", "\\[\\widehat{\\operatorname{var}}(\\hat\\phi^N_{\\mathrm{MC}})=\\frac{1}{N(N-1)}\\sum_{i=1}^N\\left(\\phi(X_i)-\\hat\\phi^N_{\\mathrm{MC}}\\right)^2.\\]", ["empirical variance"]),
+    formulaSpec("Error rate \\(O(1/\\sqrt N)\\)", "State the Monte Carlo error rate.", "Monte Carlo standard error decreases at rate \\(O(1/\\sqrt N)\\), so reducing error by a factor of 10 usually needs about 100 times as many samples.", ["error rate", "sqrt"]),
+    formulaSpec("IS estimator", "Write down the importance sampling estimator.", "\\[\\hat\\phi^N_{\\mathrm{IS}}=\\frac{1}{N}\\sum_{i=1}^N\\phi(X_i)w(X_i),\\qquad X_i\\sim q.\\]", ["is estimator", "importance sampling estimator"]),
+    formulaSpec("IS variance", "Write down the variance of the IS estimator.", "\\[\\operatorname{var}_{q}(\\hat\\phi^N_{\\mathrm{IS}})=\\frac{1}{N}\\operatorname{var}_{q}(\\phi(X)w(X)).\\]", ["is variance"]),
+    formulaSpec("Optimal proposal", "State the minimum-variance proposal idea.", "For estimating \\(\\bar\\phi\\), a variance-minimising proposal is proportional to \\(|\\phi(x)-\\bar\\phi|p^\\star(x)\\) when available; in practice choose \\(q\\) to mimic the important part of the integrand.", ["optimal proposal", "minimum variance"]),
+    formulaSpec("SNIS estimator", "Write down the self-normalised estimator.", "\\[\\hat\\phi^N_{\\mathrm{SNIS}}=\\sum_{i=1}^N W_i\\phi(X_i),\\qquad W_i=\\frac{w_i}{\\sum_{j=1}^N w_j}.\\]", ["snis estimator", "self-normalised"]),
+    formulaSpec("SNIS MSE bound", "State what the SNIS MSE bound controls.", "The SNIS MSE bound controls the error from using normalised weights and depends on the variability of the unnormalised weights and weighted test function.", ["snis mse", "mse bound"]),
+    algorithmSpec("Basic importance sampling", "Recall the basic importance sampling algorithm.", "Choose proposal \\(q\\), draw \\(X_i\\sim q\\), compute weights \\(w_i=p^\\star(X_i)/q(X_i)\\), then average \\(\\phi(X_i)w_i\\).", ["importance sampling algorithm"]),
+    algorithmSpec("Self-normalised importance sampling", "Recall the SNIS algorithm.", "Draw \\(X_i\\sim q\\), compute unnormalised weights \\(w_i\\), normalise \\(W_i=w_i/\\sum_j w_j\\), then estimate \\(\\sum_i W_i\\phi(X_i)\\).", ["self-normalised importance sampling algorithm", "snis algorithm"]),
+    proofSpec("MC unbiasedness", "Prove that \\(\\mathbb{E}_{p^\\star}[\\hat\\phi^N_{\\mathrm{MC}}]=\\bar\\phi\\).", "Use linearity of expectation: \\(\\mathbb{E}[\\hat\\phi^N_{\\mathrm{MC}}]=\\frac{1}{N}\\sum_i\\mathbb{E}_{p^\\star}[\\phi(X_i)]=\\bar\\phi\\).", ["unbiasedness"]),
+    proofSpec("MC variance", "Prove the variance formula for the MC estimator.", "Use independence: the variance of the average is \\(1/N^2\\) times the sum of the individual variances, giving \\(\\operatorname{var}(\\hat\\phi^N_{\\mathrm{MC}})=\\operatorname{var}(\\phi(X))/N\\).", ["variance"]),
+    proofSpec("IS unbiasedness", "Prove unbiasedness of the IS estimator.", "With \\(X\\sim q\\), \\(\\mathbb{E}_q[\\phi(X)w(X)]=\\int \\phi(x)p^\\star(x)dx=\\bar\\phi\\), then average independent terms.", ["is unbiasedness"]),
+    proofSpec("IS variance", "Prove the IS variance formula.", "Apply independence to \\(Y_i=\\phi(X_i)w(X_i)\\): \\(\\operatorname{var}(N^{-1}\\sum_iY_i)=\\operatorname{var}_q(Y)/N\\).", ["is variance"]),
+    methodSpec("Estimate an integral with MC", "Choose the random variable and estimator.", "Write the integral as \\(\\mathbb{E}_{p^\\star}[\\phi(X)]\\), simulate \\(X_i\\sim p^\\star\\), then use \\(N^{-1}\\sum_i\\phi(X_i)\\).", ["estimate an integral"]),
+    methodSpec("Estimate a probability with MC", "Choose the test function and estimator.", "Use \\(\\phi(x)=\\mathbf 1_A(x)\\), then estimate \\(\\mathbb{P}(X\\in A)\\approx N^{-1}\\sum_{i=1}^N\\mathbf 1_A(X_i)\\).", ["estimate a probability"]),
+    methodSpec("Estimate a marginal likelihood with MC", "Set up the Monte Carlo estimate.", "Express the marginal likelihood as an expectation under a convenient distribution, sample from that distribution, and average the resulting likelihood contribution or importance-weighted contribution.", ["marginal likelihood"]),
+    methodSpec("Use IS for rare events", "Explain how to choose the proposal.", "For rare events, choose \\(q\\) to sample more often inside the rare region, then correct with weights so the estimator remains targeted at the original probability.", ["rare event"]),
+    methodSpec("Diagnose infinite variance in IS", "State the warning signs.", "Inspect whether \\(\\phi(X)w(X)\\) has heavy tails under \\(q\\). Very unstable or extreme weights indicate high or infinite variance.", ["infinite variance"]),
+    methodSpec("Choose an optimal proposal within a family", "Recall the practical optimisation template.", "Pick a parametric family \\(q_\\theta\\), derive or estimate the variance of \\(\\phi(X)w_\theta(X)\\), then choose \\(\\theta\\) that minimises it.", ["optimal proposal"]),
+    exampleSpec("Estimating \\(\\pi\\)", "Frame the problem as estimating an area/probability.", "Sample points in a square and use the indicator of falling inside the unit circle; multiply the estimated area/probability by the relevant geometric constant.", ["pi", "π"]),
+    exampleSpec("Estimating \\(P(X>2)\\)", "Set up the tail probability estimator.", "Use \\(\\phi(x)=\\mathbf 1_{\\{x>2\\}}(x)\\). Direct MC estimates the sample fraction; IS shifts sampling toward the tail and reweights.", ["p(x>2)", "tail probability"]),
+    exampleSpec("Cauchy variance reduction", "Recall the variance-reduction template.", "Choose a proposal that better matches the important tail/shape than direct sampling, then compare the variance of weighted estimates against direct MC.", ["cauchy"]),
+    exampleSpec("Exponential proposal for rare-event IS", "Set up the rare-event IS proposal.", "Use an exponential-type proposal tilted toward the rare tail, compute likelihood ratio weights, and average the weighted event indicators.", ["exponential proposal"]),
+    exampleSpec("Rayleigh IS exam-style problem", "Recall the exam-style solution template.", "Identify the target probability/expectation, choose the proposed Rayleigh or comparison distribution, compute weights, then form the weighted estimator and variance comparison.", ["rayleigh"]),
+  ];
+}
+
+function conceptSpec(front: string, prompt: string, answer: string, terms: string[]) {
+  return { front, prompt, answer, terms, type: "definition" as const, purpose: "definition_recall" as const, kind: "implicit_definition" as const, category: "mustKnowDefinitions" as const, importance: "must_know" as const, sourceHint: "Monte Carlo Integration" };
+}
+
+function formulaSpec(front: string, prompt: string, answer: string, terms: string[]) {
+  return { front, prompt, answer, terms, type: "formula" as const, purpose: "formula_recall" as const, kind: "formula" as const, category: "formulasToKnow" as const, importance: "must_know" as const, sourceHint: "Monte Carlo formulas" };
+}
+
+function algorithmSpec(front: string, prompt: string, answer: string, terms: string[]) {
+  return { front, prompt, answer, terms, type: "algorithm" as const, purpose: "method_steps" as const, kind: "method_steps" as const, category: "methodsAndTemplates" as const, importance: "must_know" as const, sourceHint: "Monte Carlo algorithms" };
+}
+
+function proofSpec(front: string, prompt: string, answer: string, terms: string[]) {
+  return { front, prompt, answer, terms, type: "proof" as const, purpose: "proof_recall" as const, kind: "theorem_statement" as const, category: "proofsToKnow" as const, importance: "partial" as const, sourceHint: "Monte Carlo proofs" };
+}
+
+function methodSpec(front: string, prompt: string, answer: string, terms: string[]) {
+  return { front, prompt, answer, terms, type: "example" as const, purpose: "calculation_template" as const, kind: "calculation_template" as const, category: "methodsAndTemplates" as const, importance: "partial" as const, sourceHint: "Monte Carlo methods" };
+}
+
+function exampleSpec(front: string, prompt: string, answer: string, terms: string[]) {
+  return { front, prompt, answer, terms, type: "example" as const, purpose: "worked_example_pattern" as const, kind: "worked_example" as const, category: "workedExamplePatterns" as const, importance: "partial" as const, sourceHint: "Monte Carlo worked examples" };
+}
+
+function firstPageForTerms(documents: ParsedDocument[], terms: string[]) {
+  for (const document of documents) {
+    for (const page of document.pages ?? []) {
+      if (terms.some((term) => page.text.toLowerCase().includes(term.toLowerCase()))) return page.pageNumber;
+    }
+  }
+  return undefined;
+}
+
+function normaliseKey(value: string) {
+  return value.toLowerCase().replace(/\\\(|\\\)|[^a-z0-9]+/g, " ").trim();
 }
 
 function topic(name: string, aliases: string[], typeValue: CourseTopicType, kind: RevisionCandidateKind, purpose: CardPurpose) {
@@ -523,6 +663,7 @@ function inferCourseTitle(documents: ParsedDocument[], courseType: CourseType) {
   const firstLines = documents.flatMap((doc) => doc.fullText.split("\n").map((line) => line.trim()).filter(Boolean).slice(0, 8));
   const title = firstLines.find((line) => line.length >= 8 && line.length <= 90 && /(time series|spatial|statistics|probability|calculus|algebra|machine learning)/i.test(line));
   if (title) return title;
+  if (courseType === "monte_carlo_sampling") return "Monte Carlo Integration";
   return courseType === "time_series" ? "Time Series Analysis" : courseType.replace(/_/g, " ");
 }
 

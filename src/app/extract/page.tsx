@@ -47,7 +47,7 @@ function ExtractPageContent() {
   const [apiError, setApiError] = useState<string>("");
   const [mathStatus, setMathStatus] = useState<string>("");
   const [runtimeErrors, setRuntimeErrors] = useState<string[]>([]);
-  const [debugMode, setDebugMode] = useState(false);
+  const [debugMode, setDebugMode] = useState(() => loadStorageSettings().interfaceMode === "advanced");
   const [activeTab, setActiveTab] = useState<"kept" | "needs_review" | "rejected" | "embedded" | "course_map">("kept");
 
   const settings = loadLlmPipelineSettings();
@@ -272,27 +272,35 @@ function ExtractPageContent() {
   return (
     <div>
       <PageHeader
-        title="Extract revision cards"
-        description="Review parsing diagnostics first, then run extraction and verification from parsed notes + guidance."
+        title="Build a revision pack"
+        description="Upload notes, analyse them, then review a clean study pack without raw extraction diagnostics."
       />
+
+      <div className="mb-6 grid gap-3 md:grid-cols-4">
+        <WorkflowStep step="1" title="Upload files" done={uploadedFiles.length > 0} />
+        <WorkflowStep step="2" title="Analyse notes" done={Boolean(store.curationReport)} active={!store.curationReport} />
+        <WorkflowStep step="3" title="Review pack" done={normalItems.length > 0} />
+        <WorkflowStep step="4" title="Start revision" done={false} />
+      </div>
 
       <Card>
         <CardHeader>
-          <CardTitle>Extraction inputs</CardTitle>
+          <CardTitle>Analyse notes</CardTitle>
           <CardDescription>
-            {store.notesFiles.length} notes file(s), {store.guidanceFiles.length} guidance file(s) · mode: <code>{settings.mode}</code>
+            {store.notesFiles.length} notes file(s), {store.guidanceFiles.length} guidance file(s)
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="flex flex-wrap gap-2">
             <Button size="lg" onClick={runExtraction} disabled={extracting}>
-              {extracting ? "Analysing..." : "Run AI key revision analysis"}
+              {extracting ? "Analysing..." : "Analyse notes"}
             </Button>
-            <Button variant="outline" onClick={handlePromptCopy}>Generate manual ChatGPT prompt</Button>
+            <Link className="inline-flex h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-medium hover:bg-slate-50" href="/upload">Upload files</Link>
             <label className="flex items-center gap-2 rounded-md border border-slate-300 px-3 py-2 text-sm">
               <input type="checkbox" checked={debugMode} onChange={(event) => setDebugMode(event.target.checked)} />
-              Debug mode
+              Advanced debug
             </label>
+            {debugMode ? <Button variant="outline" onClick={handlePromptCopy}>Generate manual ChatGPT prompt</Button> : null}
           </div>
           {status ? <p className="text-sm text-blue-700">{status}</p> : null}
           {apiError ? <p className="text-sm text-red-700">{apiError}</p> : null}
@@ -328,17 +336,17 @@ function ExtractPageContent() {
               Guidance could not be parsed, so importance classification may be unreliable.
             </p>
           ) : null}
-          {(settings.mode === "ai_key_revision_analysis" || settings.mode === "openai_api" || settings.mode === "cheap_scan_then_verify") ? (
+          {debugMode && (settings.mode === "ai_key_revision_analysis" || settings.mode === "openai_api" || settings.mode === "cheap_scan_then_verify") ? (
             <p className="text-sm text-slate-500">If OPENAI_API_KEY is missing, the app falls back to local heuristic filtering. You can change modes in <Link className="underline" href="/settings">Settings</Link>.</p>
-          ) : (
+          ) : debugMode ? (
             <p className="text-sm text-slate-500">No paid API key required in this mode.</p>
-          )}
-          {likelyUnderExtraction ? (
+          ) : null}
+          {debugMode && likelyUnderExtraction ? (
             <p className="rounded border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
               Candidate detection is likely under-extracting: parsed pages &gt; 50 but raw candidates &lt; 40.
             </p>
           ) : null}
-          {noAssessmentEvidence ? (
+          {debugMode && noAssessmentEvidence ? (
             <p className="rounded border border-amber-200 bg-amber-50 p-2 text-sm text-amber-800">
               No past papers, problem sheets, or guidance uploaded. Priorities are lecture-based only.
             </p>
@@ -349,44 +357,55 @@ function ExtractPageContent() {
       {store.curationReport ? (
         <Card className="mt-6">
           <CardHeader>
-            <CardTitle>AI Revision Analysis Summary</CardTitle>
+            <CardTitle>Analysis complete</CardTitle>
             <CardDescription>
-              {parsedPageCount || "Unknown"} parsed page(s) · {store.curationReport.totalCandidates} candidate(s) · {store.curationReport.keptCount} kept · {store.curationReport.needsReviewCount} need review · {store.curationReport.rejectedCount} rejected
+              Revision pack ready: {normalItems.length} study card(s), {needsReviewItems.length} needing manual review
             </CardDescription>
           </CardHeader>
-          <CardContent className="space-y-2 text-sm text-slate-600">
-            <p><strong>Top course topics:</strong> {topCourseTopics.length ? topCourseTopics.join(", ") : "None detected yet."}</p>
-            <p><strong>Course type:</strong> {store.courseMap?.courseType ?? store.revisionPack?.courseType ?? store.curationReport.courseType ?? "unknown"}</p>
-            <p><strong>Top priority topics:</strong> {(store.examPriorityMap?.topics ?? []).slice(0, 6).map((topic) => `${topic.topicName} (${topic.priorityLabel ?? topic.priority}${typeof topic.priorityScore === "number" ? ` ${topic.priorityScore}` : ""})`).join(", ") || "None detected yet."}</p>
-            {store.revisionPack ? <p><strong>Revision pack:</strong> {store.revisionPack.overview}</p> : null}
-            <p><strong>Quality:</strong> pack completeness {store.curationReport.packCompletenessScore ?? 0}%, candidate coverage {store.curationReport.candidateCoverageScore ?? 0}%, LaTeX quality {store.curationReport.latexQualityScore ?? (lowLatexCount ? "needs review" : "unknown")}.</p>
-            <p><strong>Formula policy:</strong> {store.courseKnowledgeMap?.formulaPolicy.standaloneFormulaRule ?? "Only named, central, examinable formulas become standalone cards."} {store.curationReport.formulaKeptCount} kept / {store.curationReport.formulaRejectedCount} rejected from {store.curationReport.formulaCandidates} formula candidate(s).</p>
-            <p><strong>Proof policy:</strong> {store.courseKnowledgeMap?.proofPolicy.proofCardRule ?? "Create proof cards only when proof is required."}</p>
-            {store.curationReport.embeddedCount > 0 ? <p><strong>Embedded content:</strong> {store.curationReport.embeddedCount} supporting item(s) were attached to parent cards instead of entering review.</p> : null}
-            {store.curationReport.weakParsingWarnings.length > 0 ? (
-              <div className="rounded border border-amber-200 bg-amber-50 p-2 text-amber-800">
-                {store.curationReport.weakParsingWarnings.map((warning) => <p key={warning}>{warning}</p>)}
+          <CardContent className="space-y-5 text-sm text-slate-600">
+            <div className="grid gap-3 md:grid-cols-4">
+              <SummaryMetric label="Core concepts" value={packCount(store.revisionItems, ["mustKnowDefinitions", "modelsToKnow", "conceptualDistinctions"])} />
+              <SummaryMetric label="Key formulas" value={packCount(store.revisionItems, ["formulasToKnow"])} />
+              <SummaryMetric label="Algorithms" value={store.revisionItems.filter((item) => !item.isDeleted && item.type === "algorithm").length} />
+              <SummaryMetric label="Proofs" value={packCount(store.revisionItems, ["proofsToKnow"])} />
+              <SummaryMetric label="Worked examples" value={packCount(store.revisionItems, ["workedExamplePatterns", "methodsAndTemplates"])} />
+              <SummaryMetric label="Exercises" value={store.revisionItems.filter((item) => !item.isDeleted && item.cardPurpose === "calculation_template").length} />
+              <SummaryMetric label="Needs review" value={needsReviewItems.length} warning />
+              <SummaryMetric label="Low math quality" value={lowLatexCount} warning={lowLatexCount > 0} />
+            </div>
+            <div>
+              <p className="font-medium text-slate-950">Detected</p>
+              <div className="mt-2 flex flex-wrap gap-2">
+                {["Core concepts", "Key formulas", "Algorithms", "Proofs", "Worked examples", "Exercises", "Needs review", "Low math quality items"].map((label) => <Badge key={label} variant="outline">{label}</Badge>)}
               </div>
-            ) : null}
-            {store.curationReport.notes.map((note) => <p key={note}>{note}</p>)}
-            {store.curationReport.pipelineStages?.length ? (
-              <div className="mt-3 grid gap-2 md:grid-cols-3">
-                {store.curationReport.pipelineStages.map((stage, index) => (
-                  <div key={`${stage.name}-${index}`} className="rounded border bg-white p-2">
-                    <div className="flex items-center justify-between gap-2">
-                      <strong>{index + 1}. {stage.name}</strong>
-                      <Badge variant={stage.status === "warning" ? "unknown" : stage.status === "error" ? "not_required" : "outline"}>{stage.status}</Badge>
-                    </div>
-                    <p className="text-xs text-slate-500">{stage.detail}</p>
-                  </div>
-                ))}
-              </div>
+            </div>
+            <p>{store.revisionPack?.overview ?? "A revision pack has been built from your notes."}</p>
+            <div className="flex flex-wrap gap-2">
+              <Link className="inline-flex h-10 items-center justify-center rounded-md bg-blue-700 px-4 py-2 text-sm font-medium text-white hover:bg-blue-800" href="/review">Start reviewing</Link>
+              <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50" href="/pack">Edit deck</Link>
+              <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 py-2 text-sm font-medium hover:bg-slate-50" href="/cards?curation=needs_review">Review issues</Link>
+              <Button variant="outline" onClick={() => setDebugMode((current) => !current)}>Advanced debug</Button>
+            </div>
+            {debugMode ? (
+              <details className="rounded-lg border bg-slate-50 p-3">
+                <summary className="cursor-pointer font-medium text-slate-900">Advanced analysis details</summary>
+                <div className="mt-3 space-y-2">
+                  <p><strong>Parsed pages:</strong> {parsedPageCount || "Unknown"}</p>
+                  <p><strong>Candidates:</strong> {store.curationReport.totalCandidates} raw candidate(s), {store.curationReport.keptCount} kept, {store.curationReport.needsReviewCount} needs review, {store.curationReport.rejectedCount} rejected.</p>
+                  <p><strong>Course type:</strong> {store.courseMap?.courseType ?? store.revisionPack?.courseType ?? store.curationReport.courseType ?? "unknown"}</p>
+                  <p><strong>Top topics:</strong> {topCourseTopics.length ? topCourseTopics.join(", ") : "None detected yet."}</p>
+                  <p><strong>Quality:</strong> pack completeness {store.curationReport.packCompletenessScore ?? 0}%, candidate coverage {store.curationReport.candidateCoverageScore ?? 0}%, LaTeX quality {store.curationReport.latexQualityScore ?? (lowLatexCount ? "needs review" : "unknown")}.</p>
+                  {store.curationReport.weakParsingWarnings.map((warning) => <p key={warning} className="text-amber-700">{warning}</p>)}
+                  {store.curationReport.notes.map((note) => <p key={note}>{note}</p>)}
+                  {segmentationDebug.some((document) => document.maxCandidateLength > 3000) ? <p className="font-medium text-amber-700">Needs splitting: max candidate length exceeds 3000 characters.</p> : null}
+                </div>
+              </details>
             ) : null}
           </CardContent>
         </Card>
       ) : null}
 
-      {store.curationReport ? (
+      {debugMode && store.curationReport ? (
         <Card className="mt-6">
           <CardHeader>
             <CardTitle>AI key revision analysis</CardTitle>
@@ -653,7 +672,7 @@ function ExtractPageContent() {
         </Card>
       ) : null}
 
-      {store.rejectedItems.length > 0 ? (
+      {debugMode && store.rejectedItems.length > 0 ? (
         <Card className="mt-6 border-slate-300 bg-slate-50">
           <CardHeader>
             <CardTitle>Rejected / low relevance</CardTitle>
@@ -682,7 +701,7 @@ function ExtractPageContent() {
         </Card>
       ) : null}
 
-      {normalItems.length > 0 ? (
+      {debugMode && normalItems.length > 0 ? (
         <Card className="mt-6">
           <CardHeader>
           <CardTitle>Kept revision cards</CardTitle>
@@ -725,7 +744,7 @@ function ExtractPageContent() {
         </Card>
       ) : null}
 
-      {verification ? (
+      {debugMode && verification ? (
         <Card className="mt-6">
           <CardHeader>
             <CardTitle>Verification report</CardTitle>
@@ -784,8 +803,33 @@ function TabButton({ active, onClick, children }: { active: boolean; onClick: ()
   );
 }
 
+function WorkflowStep({ step, title, done, active }: { step: string; title: string; done?: boolean; active?: boolean }) {
+  return (
+    <div className={`rounded-xl border p-4 text-sm ${active ? "border-blue-300 bg-blue-50" : done ? "border-green-200 bg-green-50" : "bg-white"}`}>
+      <div className="mb-2 flex items-center gap-2">
+        <span className={`flex h-7 w-7 items-center justify-center rounded-full text-xs font-semibold ${done ? "bg-green-600 text-white" : active ? "bg-blue-700 text-white" : "bg-slate-100 text-slate-600"}`}>{step}</span>
+        <p className="font-medium">{title}</p>
+      </div>
+      <p className="text-xs text-slate-500">{done ? "Ready" : active ? "Current step" : "Next"}</p>
+    </div>
+  );
+}
+
 function PackCount({ label, value }: { label: string; value: number }) {
   return <div><p className="font-medium">{value}</p><p className="text-slate-500">{label}</p></div>;
+}
+
+function SummaryMetric({ label, value, warning }: { label: string; value: number; warning?: boolean }) {
+  return (
+    <div className={`rounded-lg border p-3 ${warning ? "border-amber-200 bg-amber-50" : "bg-white"}`}>
+      <p className="text-2xl font-semibold text-slate-950">{value}</p>
+      <p className="text-xs text-slate-500">{label}</p>
+    </div>
+  );
+}
+
+function packCount(items: RevisionItem[], categories: Array<NonNullable<RevisionItem["revisionPackCategory"]>>) {
+  return items.filter((item) => !item.isDeleted && categories.includes(item.revisionPackCategory ?? "needsReview")).length;
 }
 
 function KeptCard({ item }: { item: RevisionItem }) {

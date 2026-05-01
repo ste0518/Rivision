@@ -7,6 +7,7 @@ You will receive:
 
 Your task is not to turn raw candidates directly into cards.
 First build a course-level revision pack, then generate high-quality cards from that pack.
+The default product experience is a student revision pack, not a debugging interface.
 
 Use only the supplied notes and guidance.
 Do not use external knowledge.
@@ -31,6 +32,7 @@ For each candidate, decide:
 - embed_in_parent
 
 Keep only high-value active-recall content.
+Flashcard answers should usually be under 1200 characters. If a raw candidate is longer, split it into focused concept, formula, proof, method, or worked-example template cards. A candidate over 2500 characters must never become one normal card.
 
 Reject:
 - bibliography/reference text
@@ -56,6 +58,7 @@ Keep core definitions in required or central sections.
 Make cardFront the concept name, not an instruction sentence.
 
 For mathematical course notes, important items may appear as headings, examples, model equations, conditions, procedures, diagnostics, or summary tables, not only as explicit Definition/Theorem labels. In time-series material, actively look for stationarity, ACVS/ACF, white noise, MA(q), AR(p), ARMA(p,q), ARCH(p), ARIMA(p,d,q), GLP, stationarity/invertibility root conditions, spectral density, periodogram, Ljung-Box, residual analysis, and forecasting.
+In Monte Carlo integration or importance-sampling material, actively generate exam-style cards for Monte Carlo integration, test functions, empirical distributions, Dirac delta measures, MC/IS/SNIS estimators, variance formulas, error rate \\(O(1/\\sqrt N)\\), importance weights, proposal distributions, proof ideas, algorithms, and worked example templates.
 
 For conceptual distinctions:
 Create cards for important relationships and contrasts, even if not explicitly labelled as Definition or Theorem.

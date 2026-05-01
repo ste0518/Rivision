@@ -91,8 +91,10 @@ export type MathNormalizationProfile =
   | "time_series"
   | "spatial_statistics"
   | "financial_math"
+  | "monte_carlo_sampling"
   | "auto";
 export type CourseType =
+  | "monte_carlo_sampling"
   | "time_series"
   | "spatial_statistics"
   | "financial_math"

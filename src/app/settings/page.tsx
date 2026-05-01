@@ -95,10 +95,17 @@ export default function SettingsPage() {
 
         <Card>
           <CardHeader>
-            <CardTitle>Debug persistence</CardTitle>
-            <CardDescription>Debug views stay in memory by default so large prompts, previews, and diagnostics do not fill browser storage.</CardDescription>
+            <CardTitle>Mode and debug</CardTitle>
+            <CardDescription>Simple revision mode is the default. Advanced mode reveals parser diagnostics and raw candidate details.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
+            <label className="space-y-1 text-sm font-medium">
+              Mode
+              <Select value={storageSettings.interfaceMode} onChange={(event) => setStorageSettings((current) => ({ ...current, interfaceMode: event.target.value as StorageSettings["interfaceMode"] }))}>
+                <option value="simple">Simple revision mode</option>
+                <option value="advanced">Advanced debug mode</option>
+              </Select>
+            </label>
             <label className="flex items-center gap-2 text-sm font-medium">
               <input
                 type="checkbox"
