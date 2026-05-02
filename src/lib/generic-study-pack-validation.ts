@@ -48,9 +48,14 @@ function collectPackBlob(pack: GeneratedRevisionPack): string {
     ...pack.formulas.flatMap((f) => [f.name, f.latex, f.whenToUse]),
     ...pack.proofs.flatMap((p) => [p.name, p.statement, p.proofSkeleton]),
     ...pack.methods.flatMap((m) => [m.problemType, ...m.steps]),
+    ...(pack.cramSheet?.trapBullets ?? []),
+    ...(pack.cramSheet?.formulaBullets ?? []),
   ];
   if (pack.derivations?.length) {
     for (const d of pack.derivations) parts.push(d.title, d.summary, d.steps?.join("\n") ?? "");
+  }
+  if (pack.proofsAndDerivations?.length) {
+    for (const d of pack.proofsAndDerivations) parts.push(d.title, d.summary, d.steps?.join("\n") ?? "");
   }
   return parts.join("\n").toLowerCase();
 }
@@ -61,12 +66,21 @@ function adaptiveMinimums(pageCount: number): { minDefs: number; minForms: numbe
   return { minDefs: 25, minForms: 25 };
 }
 
-/** Assign stats bucket by chapter label from course map chapters or “whole”. */
+/** Assign stats bucket using {@link DocumentProfile.chapterMap} page spans when available. */
 function statsByChapter(pack: GeneratedRevisionPack): Record<string, { definitions: number; formulas: number; proofs: number }> {
-  const chapters =
-    pack.courseMapChapters?.length ?
-      pack.courseMapChapters.map((c) => c.chapter)
-    : pack.courseMap.map((t) => t.title.split(/\s+/)[0] ?? "topic");
+  const map = pack.documentProfile?.chapterMap ?? [];
+  const resolveKey = (page?: number | null, section?: string | null) => {
+    if (page != null && map.length) {
+      const hit = map.find((ch) => page >= ch.startPage && page <= ch.endPage);
+      if (hit) return hit.chapterLabel || hit.chapterTitle || "chapter";
+    }
+    const sec = section ?? "";
+    const titles =
+      pack.courseMapChapters?.map((c) => c.chapter) ??
+      pack.courseMap.map((t) => t.title);
+    const bySection = titles.find((c) => sec.includes(c.replace(/^Chapter\s+/i, "").slice(0, 24)));
+    return bySection ?? titles[0] ?? "document";
+  };
 
   const out: Record<string, { definitions: number; formulas: number; proofs: number }> = {};
   const ensure = (k: string) => {
@@ -74,31 +88,50 @@ function statsByChapter(pack: GeneratedRevisionPack): Record<string, { definitio
     return out[k]!;
   };
 
-  const defaultKey = chapters[0] ?? "document";
-  for (const d of pack.definitions) {
-    const sec = d.sourceSection ?? "";
-    const key = chapters.find((c) => sec.includes(c.replace(/^Chapter\s+/i, ""))) ?? defaultKey;
-    ensure(key).definitions += 1;
-  }
-  for (const f of pack.formulas) {
-    const sec = f.sourceSection ?? "";
-    const key = chapters.find((c) => sec.includes(c.replace(/^Chapter\s+/i, ""))) ?? defaultKey;
-    ensure(key).formulas += 1;
-  }
-  for (const p of pack.proofs) {
-    const sec = p.sourceSection ?? "";
-    const key = chapters.find((c) => sec.includes(c.replace(/^Chapter\s+/i, ""))) ?? defaultKey;
-    ensure(key).proofs += 1;
-  }
+  for (const d of pack.definitions) ensure(resolveKey(d.sourcePage, d.sourceSection)).definitions += 1;
+  for (const f of pack.formulas) ensure(resolveKey(f.sourcePage, f.sourceSection)).formulas += 1;
+  for (const p of pack.proofs) ensure(resolveKey(p.sourcePage, p.sourceSection)).proofs += 1;
 
   if (Object.keys(out).length === 0) {
-    out[defaultKey] = {
+    const k = map[0]?.chapterLabel ?? map[0]?.chapterTitle ?? "document";
+    out[k] = {
       definitions: pack.definitions.length,
       formulas: pack.formulas.length,
       proofs: pack.proofs.length,
     };
   }
   return out;
+}
+
+/** Extra acceptance checks for long mathematical lecture notes (generic thresholds, not one PDF). */
+export function validateLongMathLectureNotes(pack: GeneratedRevisionPack, profile: DocumentProfile | null): { ok: boolean; issues: string[] } {
+  if (!profile || profile.documentType !== "lecture_notes" || profile.pageCount <= 50) return { ok: true, issues: [] };
+
+  const issues: string[] = [];
+  if (profile.chapterMap.length < 2) issues.push("chapterMap has fewer than 2 chapters — segmentation may have missed Chapter banners.");
+
+  const blocks = pack.sectionBlocks ?? [];
+  const nonWhole = blocks.filter((b) => !/whole/i.test(b.sectionId));
+  if (nonWhole.length < 10 && blocks.length < 10) issues.push("Fewer than 10 section blocks — numbered headings may not have been detected.");
+
+  const diag = pack.extractionPipelineDiagnostics;
+  const cand = diag?.formulaCandidateCount ?? 0;
+  if (cand >= 20 && pack.formulas.length < 20) issues.push("Formula count is far below formulaCandidateCount — check OCR cleanup or line filtering.");
+
+  const proofSignals = profile.proofLikeMarkersInSource || profile.hasProofs;
+  const proofCand = diag?.proofCandidateCount ?? 0;
+  const mergedProofs = (pack.proofsAndDerivations?.length ?? 0) + (pack.derivations?.length ?? 0);
+  if (proofSignals && proofCand >= 5 && mergedProofs < 5) issues.push("Proof-like markers in source but merged proofs/derivations are sparse.");
+
+  if (
+    blocks.length === 1 &&
+    /whole/i.test(blocks[0]?.sectionId ?? "") &&
+    profile.pageCount > 40
+  ) {
+    issues.push("Single whole-document section block on a long PDF — headings likely not detected.");
+  }
+
+  return { ok: issues.length === 0, issues };
 }
 
 export function computeGenericAcceptanceTests(input: {
@@ -136,7 +169,7 @@ export function computeGenericAcceptanceTests(input: {
 
   const examplesExpected = documentProfile?.hasWorkedExamples ?? false;
   const exercisesExpected = documentProfile?.hasExercises ?? false;
-  const proofsExpected = documentProfile?.hasProofs ?? false;
+  const proofsExpected = documentProfile?.proofLikeMarkersInSource ?? documentProfile?.hasProofs ?? false;
 
   const workedOk =
     !examplesExpected ||
@@ -149,10 +182,12 @@ export function computeGenericAcceptanceTests(input: {
     (pack.extractedExercises?.length ?? 0) > 0 ||
     /\b(exercise|problem)\s+\d/i.test(sourceTextLower);
 
+  const proofExtracted =
+    pack.proofs.length + (pack.derivations?.length ?? 0) + (pack.proofsAndDerivations?.length ?? 0);
+
   const proofOk =
     !proofsExpected ||
-    pack.proofs.length > 0 ||
-    (pack.derivations?.length ?? 0) > 0 ||
+    proofExtracted > 0 ||
     /\bproof\b/i.test(sourceTextLower);
 
   const dupes =
@@ -188,6 +223,7 @@ export function validateGenericStudyPack(pack: GeneratedRevisionPack, documentPr
   const sourceLower = sourceText.toLowerCase();
   const blob = collectPackBlob(pack);
   const contamination = detectSourceContamination(blob, sourceLower);
+  const longNotes = validateLongMathLectureNotes(pack, documentProfile);
 
   const recommendations: string[] = [];
   const pageCount = documentProfile?.pageCount ?? 1;
@@ -198,6 +234,9 @@ export function validateGenericStudyPack(pack: GeneratedRevisionPack, documentPr
   }
   if (pack.formulas.length < minForms && sourceLower.includes("=")) {
     recommendations.push(`Formula coverage looks low (${pack.formulas.length}) for document length — check PDF text extraction and segmentation.`);
+  }
+  for (const issue of longNotes.issues) {
+    if (!recommendations.includes(issue)) recommendations.push(issue);
   }
 
   const stats = statsByChapter(pack);
@@ -218,11 +257,13 @@ export function validateGenericStudyPack(pack: GeneratedRevisionPack, documentPr
     acceptanceTests.noSourceContamination &&
     acceptanceTests.noBibliographyLeakage &&
     acceptanceTests.hasDefinitionsForMainTopics &&
-    acceptanceTests.hasFormulasFromFormulaDenseSections;
+    acceptanceTests.hasFormulasFromFormulaDenseSections &&
+    longNotes.ok;
 
   const criticalQualityFailure =
     contamination.some((c) => /importance sampling|snis|mcmc|detailed balance/i.test(c)) ||
-    (pageCount > 50 && pack.formulas.length < 3 && /\d+\.\d+/.test(sourceText));
+    (pageCount > 50 && pack.formulas.length < 3 && /\d+\.\d+/.test(sourceText)) ||
+    !longNotes.ok;
 
   return {
     ok: ok && !criticalQualityFailure,

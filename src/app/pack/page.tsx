@@ -17,6 +17,8 @@ import {
   revisionPackDebugFilenameBase,
   totalQualityWarningCount,
 } from "@/lib/revision-pack-debug-export";
+import { validateGenericStudyPack } from "@/lib/generic-study-pack-validation";
+import { cleanUploadedStudySourceText } from "@/lib/source-text-cleanup";
 import { isDeveloperUiEnabled } from "@/lib/storage";
 import { cardFromDefinition, cardFromFormula, cardFromProof, mockExplainNote } from "@/lib/pack-to-card";
 import { createId } from "@/lib/utils";
@@ -39,6 +41,12 @@ export default function PackPage() {
       practiceQuestions: store.practiceQuestions,
     });
   }, [pack, store.notesFiles, store.revisionItems, store.practiceQuestions]);
+
+  const packQuality = useMemo(() => {
+    if (!pack) return null;
+    const sourceUnion = store.notesFiles.map((f) => f.content || f.parsedDocument?.fullText || "").join("\n\n");
+    return validateGenericStudyPack(pack, pack.documentProfile ?? null, cleanUploadedStudySourceText(sourceUnion));
+  }, [pack, store.notesFiles]);
 
   const activeCards = store.revisionItems.filter((item) => !item.isDeleted).length;
   const generatedFrom =
@@ -209,6 +217,17 @@ export default function PackPage() {
         title="Study pack"
         description="Structured revision built from your uploads. Everything stays on your device."
       />
+
+      {packQuality?.criticalQualityFailure ? (
+        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-950">
+          <p className="font-medium">Generated with critical quality failures</p>
+          <ul className="mt-2 list-inside list-decimal space-y-1 text-red-900">
+            {(packQuality.recommendations.length ? packQuality.recommendations : ["chapterMap empty", "segmentation weak", "formula extraction low"]).slice(0, 5).map((line, i) => (
+              <li key={i}>{line}</li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
 
       {toast ? <p className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-sm text-blue-950">{toast}</p> : null}
 

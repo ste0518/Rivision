@@ -3,6 +3,7 @@
  * All signals are derived from the uploaded file text only.
  */
 
+import { collectStructuralHeadings, type StructuralHeading } from "@/lib/lecture-segmentation";
 import { extractSectionHeadingsFromText, mergeExtractedSectionHeadings, type ExtractedSectionHeading } from "@/lib/section-headings";
 
 export type DocumentType =
@@ -21,6 +22,18 @@ export type ChapterMapEntry = {
   sectionHeadings: string[];
 };
 
+export type NotationEntry = {
+  symbol: string;
+  count: number;
+  meaningGuess?: string;
+};
+
+export type HandwritingNoisePage = {
+  page: number;
+  noiseScore: number;
+  examples: string[];
+};
+
 export type DocumentProfile = {
   title: string | null;
   courseName: string | null;
@@ -29,9 +42,13 @@ export type DocumentProfile = {
   pageCount: number;
   chapterMap: ChapterMapEntry[];
   detectedTopics: string[];
-  detectedNotation: string[];
+  detectedNotation: NotationEntry[];
+  /** True when the raw text contains proof-like markers (not extraction success). */
+  proofLikeMarkersInSource: boolean;
+  handwritingNoisePages: HandwritingNoisePage[];
   hasWorkedExamples: boolean;
   hasExercises: boolean;
+  /** @deprecated Prefer proofLikeMarkersInSource — same value for compatibility */
   hasProofs: boolean;
   hasAlgorithms: boolean;
   hasHandwrittenAnnotations: boolean;
@@ -123,23 +140,61 @@ export function splitDocumentTextLayers(fullText: string): TextLayers {
   };
 }
 
-function inferDocumentType(text: string): DocumentType {
-  const lower = text.toLowerCase();
-  const prob =
-    /\b(problem\s+sheet|homework\s*\d|assignment\s*\d|due\s+date)\b/i.test(lower) && /\b(exercise|question)\s*\d+/i.test(lower);
-  const past = /\b(final\s+exam|past\s+paper|semester\s+\d|minutes\s+allowed|total\s+marks)\b/i.test(lower);
-  const sol =
-    /\b(solutions?|model\s+answers?|mark\s+scheme|answer\s+key)\b/i.test(lower) &&
-    /\b(solution|proof|sketch)\s*\d|\bthus\b|\btherefore\b/i.test(lower);
-  let hits = 0;
-  if (prob) hits += 1;
-  if (past) hits += 1;
-  if (sol) hits += 1;
-  if (hits >= 2) return "mixed";
-  if (prob) return "problem_sheet";
-  if (past) return "past_paper";
-  if (sol) return "solutions";
-  if (/\b(lecture|chapter|section\s+\d)\b/i.test(lower)) return "lecture_notes";
+/**
+ * Classify uploaded PDF text using early-page cues + structure (no filenames).
+ * Avoids labelling equation-heavy lecture notes as “solutions” because of occasional “solution/proof” words.
+ */
+export function classifyDocumentType(
+  cleanedPages: Array<{ pageNumber: number; text: string }>,
+  combinedPrintedText: string,
+): DocumentType {
+  const combined = combinedPrintedText.replace(/\r\n/g, "\n");
+  const lower = combined.toLowerCase();
+  const early =
+    cleanedPages.length ?
+      cleanedPages
+        .slice(0, Math.min(18, cleanedPages.length))
+        .map((p) => p.text)
+        .join("\n")
+        .toLowerCase()
+    : combined.slice(0, 45_000).toLowerCase();
+
+  const structural = collectStructuralHeadings(combined);
+  const lectureStructureScore =
+    (structural.filter((h) => h.kind === "chapter").length >= 2 ? 4 : 0) +
+    (structural.filter((h) => h.kind === "section").length >= 12 ? 4 : structural.filter((h) => h.kind === "section").length >= 6 ? 2 : 0);
+
+  const lectureCueScore =
+    (/\bchapter\s+\d+/i.test(early) ? 2 : 0) +
+    (/\d+\.\d+\s+[a-z]/i.test(early) ? 2 : 0) +
+    (/\b(lecture\s+notes|course\s+notes|module)\b/i.test(lower) ? 2 : 0);
+
+  const examPaperStrong =
+    /\b(total\s+marks|minutes\s+allowed|time\s+allowed|candidate\s+number|desk\s+number)\b/i.test(lower) &&
+    /\b(final\s+exam|examination|past\s+paper)\b/i.test(lower);
+
+  const problemSheetStrong =
+    /\b(problem\s+sheet|homework\s*\d|assignment\s*\d|due\s+date)\b/i.test(lower) && /\b(question|exercise)\s*\d+/i.test(lower);
+
+  let dominatorSolutionLines = 0;
+  let markSchemeHits = 0;
+  for (const raw of combined.split("\n")) {
+    const s = raw.trim();
+    if (/^(solution|solutions|model\s+answers?)\s*[.:]?\s*$/i.test(s) || /^(solution|solutions)\s+to\b/i.test(s)) dominatorSolutionLines += 2;
+    else if (/^solution\s+\d+[.:)]/i.test(s)) dominatorSolutionLines += 1;
+    if (/mark\s+scheme|examiner\s+report|official\s+solutions/i.test(s)) markSchemeHits += 1;
+  }
+  const solutionsDominant =
+    markSchemeHits >= 3 ||
+    dominatorSolutionLines >= 10 ||
+    (dominatorSolutionLines >= 5 && /\b(answer\s+key|official\s+solutions)\b/i.test(lower));
+
+  if (examPaperStrong && lectureStructureScore + lectureCueScore < 5) return "past_paper";
+  if (problemSheetStrong && !solutionsDominant) return "problem_sheet";
+  if (solutionsDominant && lectureStructureScore + lectureCueScore < 6) return "solutions";
+  if (solutionsDominant && lectureStructureScore + lectureCueScore >= 6) return "mixed";
+  if (lectureStructureScore + lectureCueScore >= 3 || /\bchapter\s+\d+/i.test(combined)) return "lecture_notes";
+  if (problemSheetStrong) return "problem_sheet";
   return "unknown";
 }
 
@@ -224,6 +279,113 @@ function buildChapterMapFromSections(
   return out.slice(0, 80);
 }
 
+function buildChapterMapFromStructuralHeadings(headings: StructuralHeading[], pageCount: number, fullText: string): ChapterMapEntry[] {
+  const chapters = headings.filter((h) => h.kind === "chapter");
+  if (!chapters.length) return [];
+
+  const sorted = [...chapters].sort((a, b) => a.startOffset - b.startOffset);
+  const out: ChapterMapEntry[] = [];
+
+  for (let i = 0; i < sorted.length; i += 1) {
+    const cur = sorted[i]!;
+    const nextCh = sorted[i + 1];
+    const startPage = pageNumberFromOffset(fullText, cur.startOffset);
+    const endPage = nextCh ? Math.max(startPage, pageNumberFromOffset(fullText, nextCh.startOffset) - 1) : pageCount;
+
+    const sectionHeadings = headings
+      .filter((h) => h.kind === "section" && h.startOffset >= cur.startOffset && (!nextCh || h.startOffset < nextCh.startOffset))
+      .map((h) => `${h.label} ${h.title}`.trim());
+
+    out.push({
+      chapterLabel: cur.label,
+      chapterTitle: cur.title,
+      startPage,
+      endPage: Math.min(pageCount, Math.max(startPage, endPage)),
+      sectionHeadings,
+    });
+  }
+
+  return out.slice(0, 80);
+}
+
+const NOTATION_PATTERNS: Array<{ re: RegExp; meaningGuess: string }> = [
+  { re: /\bX_t\b/g, meaningGuess: "Time series value at time t" },
+  { re: /μ/g, meaningGuess: "Mean" },
+  { re: /\\mu\b/g, meaningGuess: "Mean (LaTeX)" },
+  { re: /σ/g, meaningGuess: "Std dev / innovation scale" },
+  { re: /\\sigma\b/g, meaningGuess: "Std dev (LaTeX)" },
+  { re: /\bs_tau\b|\bs_τ\b|γ\s*\(\s*τ\s*\)/gi, meaningGuess: "Autocovariance at lag τ" },
+  { re: /\brho_tau\b|ρ_τ|\brho\s*_\s*τ/gi, meaningGuess: "Autocorrelation at lag τ" },
+  { re: /\b(?:ε_t|epsilon_t)\b/gi, meaningGuess: "White-noise / innovation term" },
+  { re: /\b(?:Φ\(B\)|\\Phi\(B\))/g, meaningGuess: "AR polynomial in backshift" },
+  { re: /\b(?:Θ\(B\)|\\Theta\(B\))/g, meaningGuess: "MA polynomial in backshift" },
+  { re: /\bB\b(?=\s*\))/g, meaningGuess: "Backshift operator" },
+];
+
+function dedupeNotationCounts(combined: string): NotationEntry[] {
+  const counts = new Map<string, { count: number; meaningGuess?: string }>();
+  for (const { re, meaningGuess } of NOTATION_PATTERNS) {
+    re.lastIndex = 0;
+    const ms = combined.match(re);
+    if (!ms?.length) continue;
+    const sym = ms[0]!.replace(/\s+/g, "").slice(0, 24);
+    const prev = counts.get(sym);
+    const next = (prev?.count ?? 0) + ms.length;
+    counts.set(sym, { count: next, meaningGuess: prev?.meaningGuess ?? meaningGuess });
+  }
+  return [...counts.entries()]
+    .map(([symbol, v]) => ({ symbol, count: v.count, meaningGuess: v.meaningGuess }))
+    .sort((a, b) => b.count - a.count)
+    .slice(0, 48);
+}
+
+const NOISE_WORD_RE =
+  /\b(T\s+is\s+z|Dopulation|fii+i+n\.?to|antititin|poputation|varience|covarance)\b/i;
+
+function scorePageNoise(pageText: string): { score: number; examples: string[] } {
+  const lines = pageText.split("\n").map((l) => l.trim()).filter(Boolean);
+  let score = 0;
+  const examples: string[] = [];
+
+  for (const ln of lines) {
+    if (NOISE_WORD_RE.test(ln)) {
+      score += 4;
+      if (examples.length < 4) examples.push(ln.slice(0, 120));
+      continue;
+    }
+    if (/^[a-z]{1,3}\.{3,}/i.test(ln)) {
+      score += 3;
+      if (examples.length < 4) examples.push(ln.slice(0, 120));
+      continue;
+    }
+    const words = ln.split(/\s+/).filter((w) => /^[a-z]{5,}$/i.test(w));
+    let weird = 0;
+    for (const w of words) {
+      if (!/[aeiou]/i.test(w)) weird += 1;
+    }
+    if (words.length >= 2 && weird / words.length > 0.45) {
+      score += 2;
+      if (examples.length < 4) examples.push(ln.slice(0, 120));
+    }
+    if (ln.length <= 4 && /^[A-Za-z]$/.test(ln)) score += 1;
+  }
+
+  const symDensity =
+    (pageText.match(/[=∑∫∇μσερφθΣ∏√]/g) ?? []).length / Math.max(1, pageText.length / 80);
+  if (symDensity > 2.2 && lines.length < 6) score += 2;
+
+  return { score, examples };
+}
+
+function computeHandwritingNoisePages(cleanedPages: Array<{ pageNumber: number; text: string }>): HandwritingNoisePage[] {
+  const out: HandwritingNoisePage[] = [];
+  for (const p of cleanedPages) {
+    const { score, examples } = scorePageNoise(p.text);
+    if (score >= 4 && examples.length) out.push({ page: p.pageNumber, noiseScore: score, examples });
+  }
+  return out.slice(0, 120);
+}
+
 /** Technical tokens for contamination checks (multi-word phrases and symbols). */
 export function buildSourceKeywordSet(sourceLower: string): Set<string> {
   const set = new Set<string>();
@@ -284,22 +446,27 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
   const pageCount = inferPageCount(input.cleanedPages, combined);
 
   const sections = extractSectionHeadingsFromText(combined);
-  const chapterMap = buildChapterMapFromSections(sections, pageCount, combined);
+  const structuralHeadings = collectStructuralHeadings(combined);
+  const chapterMapStructural = buildChapterMapFromStructuralHeadings(structuralHeadings, pageCount, combined);
+  const chapterMapFallback = buildChapterMapFromSections(sections, pageCount, combined);
+  const chapterMap = chapterMapStructural.length >= 2 ? chapterMapStructural : chapterMapFallback;
 
-  const lower = combined.toLowerCase();
   const hasWorkedExamples =
     /\bworked\s+example\b/i.test(combined) ||
     /(?:^|\n)\s*example\s*[:.-]/im.test(combined) ||
     /\bexample\s*\(\s*\w+/i.test(combined);
   const hasExercises =
     /\b(exercise|problem)\s+\d/i.test(combined) || /(?:^|\n)\s*(question|problem)\s*\d/im.test(combined);
-  const hasProofs = /(?:^|\n)\s*proof\s*[.:]/im.test(combined) || /\bshow\s+that\b/i.test(combined);
+  const proofLikeMarkersInSource = /(?:^|\n)\s*proof\s*[.:]/im.test(combined) || /\bshow\s+that\b/i.test(combined);
   const hasAlgorithms = /\balgorithm\s+\d/i.test(combined) || /\bpseudocode\b/i.test(combined);
 
   const layers = splitDocumentTextLayers(combined);
   const hwRatio =
     layers.handwrittenText.length / Math.max(1, layers.printedText.length + layers.handwrittenText.length);
-  const hasHandwrittenAnnotations = hwRatio > 0.02 || layers.handwrittenText.length > 400;
+  const cleanedPagesForNoise =
+    input.cleanedPages.length ? input.cleanedPages.map((p) => ({ pageNumber: p.pageNumber, text: sanitiseExtractedText(p.text) })) : [{ pageNumber: 1, text: combined }];
+  const handwritingNoisePages = computeHandwritingNoisePages(cleanedPagesForNoise);
+  const hasHandwrittenAnnotations = handwritingNoisePages.length > 0 || hwRatio > 0.02 || layers.handwrittenText.length > 400;
 
   const headingTopics = sections.map((s) => `${s.title}`.trim()).filter((t) => t.length >= 4);
   const topicSet = new Set<string>();
@@ -316,33 +483,43 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
     "arch",
     "arima",
     "seasonal adjustment",
+    "spectral analysis",
+    "periodogram",
+    "general linear process",
     "variance",
     "covariance",
+    "vector autoregression",
+    "cross-spectral",
   ]) {
     if (bodySnippet.includes(phrase)) topicSet.add(phrase);
   }
   const detectedTopics = [...topicSet].slice(0, 80);
 
-  const notation: string[] = [];
-  const notationHits = combined.match(/\\(?:Phi|Theta|mathbb|mathrm)\{[^}]+\}|𝜙|𝜃|∇|Σ|σ|μ|\bX_t\b|\bB\b(?=\s*\()/g) ?? [];
-  for (const h of notationHits.slice(0, 40)) notation.push(h);
+  const detectedNotation = dedupeNotationCounts(combined);
 
   const title = inferTitleFromFirstPages(combined);
   const subjectArea = inferSubjectArea(combined);
   const courseName = title ?? subjectArea;
 
+  const cleanedPagesArg =
+    input.cleanedPages.length ?
+      input.cleanedPages.map((p) => ({ pageNumber: p.pageNumber, text: sanitiseExtractedText(p.text.replace(/\r\n/g, "\n")) }))
+    : [{ pageNumber: 1, text: combined.slice(0, 120_000) }];
+
   return {
     title,
     courseName,
     subjectArea,
-    documentType: inferDocumentType(combined),
+    documentType: classifyDocumentType(cleanedPagesArg, combined),
     pageCount,
     chapterMap,
     detectedTopics,
-    detectedNotation: notation,
+    detectedNotation,
+    proofLikeMarkersInSource,
+    handwritingNoisePages,
     hasWorkedExamples,
     hasExercises,
-    hasProofs,
+    hasProofs: proofLikeMarkersInSource,
     hasAlgorithms,
     hasHandwrittenAnnotations,
   };

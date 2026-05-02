@@ -57,7 +57,9 @@ export type RevisionPackDebugJson = {
     acceptanceWarningMessage?: string | null;
     recommendations?: string[];
     generatedItemStatsByChapter?: Record<string, { definitions: number; formulas: number; proofs: number }>;
-    handwritingNoisePages?: number[];
+    handwritingNoisePages?: unknown[];
+    pipelineDiagnostics?: unknown;
+    topActionableIssues?: string[];
   };
 };
 
@@ -169,6 +171,11 @@ function* iterPackStrings(
     for (const s of p.proofSteps ?? []) yield s;
   }
   for (const d of pack.derivations ?? []) {
+    yield d.title;
+    yield d.summary;
+    for (const s of d.steps ?? []) yield s;
+  }
+  for (const d of pack.proofsAndDerivations ?? []) {
     yield d.title;
     yield d.summary;
     for (const s of d.steps ?? []) yield s;
@@ -437,6 +444,7 @@ export function buildRevisionPackDebugJson(store: RevisionPackDebugInput): Revis
   }
 
   const validation = validateGenericStudyPack(pack, pack.documentProfile ?? null, sourceUnion);
+  const actionablePool = [...manualFailures, ...validation.recommendations];
   const acceptanceTests: GenericAcceptanceTests = computeGenericAcceptanceTests({
     pack,
     documentProfile: pack.documentProfile ?? null,
@@ -449,10 +457,9 @@ export function buildRevisionPackDebugJson(store: RevisionPackDebugInput): Revis
     quiz: store.practiceQuestions,
   });
 
-  const criticalQualityFailure = criticalFailureFromAcceptance(acceptanceTests, [...manualFailures, ...validation.recommendations]);
-  const acceptanceWarningMessage = criticalQualityFailure
-    ? "Study pack generated, but quality checks failed. Review Debug JSON."
-    : null;
+  const criticalQualityFailure =
+    validation.criticalQualityFailure || criticalFailureFromAcceptance(acceptanceTests, actionablePool);
+  const acceptanceWarningMessage = criticalQualityFailure ? "Generated with critical quality failures — review issues below." : null;
 
   const qcWarnings: string[] = [...validation.recommendations];
   for (const e of extractionErrors) qcWarnings.push(`Extraction error: ${e}`);
@@ -502,9 +509,11 @@ export function buildRevisionPackDebugJson(store: RevisionPackDebugInput): Revis
       acceptanceTests,
       criticalQualityFailure,
       acceptanceWarningMessage,
-      recommendations: [...manualFailures, ...validation.recommendations],
+      recommendations: actionablePool,
       generatedItemStatsByChapter: validation.generatedItemStatsByChapter,
-      handwritingNoisePages: pack.documentProfile?.hasHandwrittenAnnotations ? [] : [],
+      handwritingNoisePages: pack.documentProfile?.handwritingNoisePages ?? [],
+      pipelineDiagnostics: pack.extractionPipelineDiagnostics ?? null,
+      topActionableIssues: actionablePool.slice(0, 5),
     },
   };
 

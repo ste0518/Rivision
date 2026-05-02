@@ -1,112 +1,155 @@
 /**
- * Structural segmentation of lecture notes by headings (document-generic).
+ * Structural segmentation of lecture notes by chapter & numbered headings (document-generic).
  */
 
 import { sanitiseExtractedText } from "@/lib/document-profile";
+import {
+  chapterContextAt,
+  collectStructuralHeadings,
+  pageAtOffset,
+  type StructuralHeading,
+} from "@/lib/lecture-segmentation";
 
 export type SectionBlock = {
   sectionId: string;
+  chapterLabel: string;
+  chapterTitle: string;
   heading: string;
+  level: number;
   startPage: number;
   endPage: number;
   text: string;
   formulas: string[];
+  definitions: string[];
   workedExamples: string[];
-  proofs: string[];
-  exercises: string[];
+  proofsAndDerivations: string[];
+  /** @deprecated Prefer proofsAndDerivations */
+  proofs?: string[];
+  exercises?: string[];
 };
 
-const CHAPTER_RE = /^(?:Chapter|CHAPTER)\s+(\d+(?:\.\d+)*)\s*[.:]?\s*(.+)$/i;
-const NUMBERED_HEADING_RE = /^(\d+(?:\.\d+)*)\s+(.+)$/;
-const DEFINITION_RE = /^Definition\s+(\d+(?:\.\d+)*)\b/i;
-const WORKED_EXAMPLE_RE = /^Worked\s+example\s*[:.-]?\s*(.*)$/i;
-const EXAMPLE_RE = /^Example\s*[:.-]?\s*(.*)$/i;
-const EXERCISE_RE = /^(?:Exercise|Problem|Question)\s+(\d+(?:\.\d+)*)\b/i;
-const PROOF_RE = /^Proof\s*[.:]?\s*/i;
-const ALGORITHM_RE = /^Algorithm\s+(\d+(?:\.\d+)*)/i;
+const MAX_SECTION_PAGES = 12;
 
-function pageAt(fullText: string, offset: number): number {
-  let page = 1;
-  for (const m of fullText.matchAll(/\[Page\s+(\d+)\]/gi)) {
-    if ((m.index ?? 0) > offset) break;
-    page = Number(m[1]) || page;
+function extractInlineArrays(body: string): {
+  formulas: string[];
+  definitions: string[];
+  workedExamples: string[];
+  proofsAndDerivations: string[];
+} {
+  const formulas: string[] = [];
+  const definitions: string[] = [];
+  const workedExamples: string[] = [];
+  const proofsAndDerivations: string[] = [];
+
+  for (const ln of body.split("\n")) {
+    const tr = ln.trim();
+    if (!tr) continue;
+    if (/^Worked\s+example\s*:/i.test(tr)) workedExamples.push(tr.slice(0, 600));
+    else if (/^(Proof|Show\s+that)\b/i.test(tr)) proofsAndDerivations.push(tr.slice(0, 600));
+    else if (/\bdefined\s+as\b|^Definition\b/i.test(tr) && tr.length < 800) definitions.push(tr.slice(0, 500));
+    else if (/[=∑∫]|\\sum|\\int|\bcov\s*\(|\\bVar\b|\\mathbb\{E\}|ρ_|φ_|\\Phi\(B\)|MA\(|AR\(|ARMA|ARCH|ARIMA/i.test(tr) && tr.length > 6 && tr.length < 500) {
+      formulas.push(tr.slice(0, 400));
+    }
   }
-  return page;
+
+  return {
+    formulas: dedupeStr(formulas, 40),
+    definitions: dedupeStr(definitions, 20),
+    workedExamples: dedupeStr(workedExamples, 15),
+    proofsAndDerivations: dedupeStr(proofsAndDerivations, 20),
+  };
 }
 
-function classifyLine(line: string): "chapter" | "numbered" | "definition" | "worked" | "example" | "exercise" | "proof" | "algorithm" | "other" {
-  const t = line.trim();
-  if (CHAPTER_RE.test(t)) return "chapter";
-  if (DEFINITION_RE.test(t)) return "definition";
-  if (WORKED_EXAMPLE_RE.test(t)) return "worked";
-  if (EXAMPLE_RE.test(t) && !/^examples?\s+$/i.test(t)) return "example";
-  if (EXERCISE_RE.test(t)) return "exercise";
-  if (PROOF_RE.test(t)) return "proof";
-  if (ALGORITHM_RE.test(t)) return "algorithm";
-  if (NUMBERED_HEADING_RE.test(t)) {
-    const m = t.match(NUMBERED_HEADING_RE);
-    const rest = m?.[2]?.trim() ?? "";
-    if (rest.length >= 4 && /^[A-Za-z]/.test(rest)) return "numbered";
+function dedupeStr(items: string[], max: number): string[] {
+  const seen = new Set<string>();
+  const out: string[] = [];
+  for (const x of items) {
+    const k = x.replace(/\s+/g, " ").slice(0, 120).toLowerCase();
+    if (seen.has(k)) continue;
+    seen.add(k);
+    out.push(x);
+    if (out.length >= max) break;
   }
-  return "other";
+  return out;
 }
 
-function headingKey(line: string): string {
-  const t = line.trim();
-  const ch = t.match(CHAPTER_RE);
-  if (ch) return `chapter:${ch[1]}`;
-  const d = t.match(DEFINITION_RE);
-  if (d) return `def:${d[1]}`;
-  const ex = t.match(EXERCISE_RE);
-  if (ex) return `exe:${ex[1]}`;
-  const num = t.match(NUMBERED_HEADING_RE);
-  if (num) return `num:${num[1]}`;
-  if (WORKED_EXAMPLE_RE.test(t)) return `worked:${t.slice(0, 80)}`;
-  if (EXAMPLE_RE.test(t)) return `ex:${t.slice(0, 80)}`;
-  if (PROOF_RE.test(t)) return `proof:${t.slice(0, 40)}`;
-  if (ALGORITHM_RE.test(t)) return `alg:${t.slice(0, 60)}`;
-  return `other:${t.slice(0, 60)}`;
+/** Split oversized spans using `[Page N]` boundaries so each piece spans ≤ maxPages. */
+function splitByPageBudget(fullText: string, body: string, maxPages: number): Array<{ slice: string; startPage: number; endPage: number }> {
+  const anchorStart = Math.max(0, fullText.indexOf(body));
+  const startPage = pageAtOffset(fullText, anchorStart);
+  const endPage = pageAtOffset(fullText, anchorStart + Math.max(0, body.length - 1));
+  if (endPage - startPage < maxPages) {
+    return [{ slice: body, startPage, endPage }];
+  }
+
+  const chunks = body.split(/(?=\n\[Page\s+\d+\])/);
+  const segments: Array<{ page: number; text: string }> = [];
+  let carryPage = startPage;
+  for (const chunk of chunks) {
+    const pm = chunk.match(/\[Page\s+(\d+)\]/i);
+    const pg = pm ? Number(pm[1]) || carryPage : carryPage;
+    carryPage = pg;
+    segments.push({ page: pg, text: chunk });
+  }
+  if (segments.length <= 1) {
+    return [{ slice: body.slice(0, 50_000), startPage, endPage }];
+  }
+
+  const runs: Array<{ slice: string; startPage: number; endPage: number }> = [];
+  let buf = "";
+  let rs = segments[0]!.page;
+  let re = segments[0]!.page;
+
+  const flush = () => {
+    const t = buf.trim();
+    if (t.length > 8) runs.push({ slice: t.slice(0, 50_000), startPage: rs, endPage: re });
+    buf = "";
+  };
+
+  for (const seg of segments) {
+    if (!buf) {
+      rs = seg.page;
+      re = seg.page;
+      buf = seg.text;
+      continue;
+    }
+    if (seg.page - rs >= maxPages) {
+      flush();
+      buf = seg.text;
+      rs = seg.page;
+      re = seg.page;
+    } else {
+      buf += seg.text;
+      re = seg.page;
+    }
+  }
+  flush();
+  return runs.length ? runs : [{ slice: body.slice(0, 50_000), startPage, endPage }];
 }
 
-/** Approximate heading level: smaller number / fewer dots => higher level. */
-function headingLevel(line: string): number {
-  const t = line.trim();
-  const ch = t.match(CHAPTER_RE);
-  if (ch) return 1;
-  const num = t.match(/^(\d+(?:\.\d+)*)/);
-  if (num) return num[1]!.split(".").length;
-  if (DEFINITION_RE.test(t) || EXERCISE_RE.test(t) || WORKED_EXAMPLE_RE.test(t) || EXAMPLE_RE.test(t) || PROOF_RE.test(t) || ALGORITHM_RE.test(t))
-    return 4;
-  return 9;
+function headingKey(h: StructuralHeading, idx: number): string {
+  return `${h.kind}:${h.label}:${idx}`;
 }
 
 export function buildSectionBlocks(fullText: string, primarySourceLabel = "notes"): SectionBlock[] {
   const text = sanitiseExtractedText(fullText.replace(/\r\n/g, "\n"));
-  const lines = text.split("\n");
-  const headings: Array<{ offset: number; line: string; kind: ReturnType<typeof classifyLine>; level: number }> = [];
+  const structural = collectStructuralHeadings(text);
 
-  let offset = 0;
-  for (const line of lines) {
-    const trimmed = line.trim();
-    if (trimmed.length >= 6) {
-      const kind = classifyLine(trimmed);
-      if (kind !== "other") {
-        headings.push({ offset, line: trimmed, kind, level: headingLevel(trimmed) });
-      }
-    }
-    offset += line.length + 1;
-  }
-
-  if (!headings.length) {
+  if (structural.length === 0) {
     return [
       {
         sectionId: `${primarySourceLabel}-whole`,
+        chapterLabel: "",
+        chapterTitle: "",
         heading: "Document",
-        startPage: pageAt(text, 0),
-        endPage: pageAt(text, text.length - 1),
+        level: 9,
+        startPage: pageAtOffset(text, 0),
+        endPage: pageAtOffset(text, Math.max(0, text.length - 1)),
         text: text.slice(0, 120_000),
         formulas: [],
+        definitions: [],
         workedExamples: [],
+        proofsAndDerivations: [],
         proofs: [],
         exercises: [],
       },
@@ -114,50 +157,56 @@ export function buildSectionBlocks(fullText: string, primarySourceLabel = "notes
   }
 
   const blocks: SectionBlock[] = [];
-  for (let i = 0; i < headings.length; i += 1) {
-    const h = headings[i]!;
-    const start = h.offset;
+
+  for (let i = 0; i < structural.length; i += 1) {
+    const h = structural[i]!;
     const curLevel = h.level;
     let end = text.length;
-    for (let j = i + 1; j < headings.length; j += 1) {
-      if (headings[j]!.level <= curLevel) {
-        end = headings[j]!.offset;
+    for (let j = i + 1; j < structural.length; j += 1) {
+      const hj = structural[j]!;
+      if (hj.level <= curLevel) {
+        end = hj.startOffset;
         break;
       }
     }
 
-    const body = text.slice(start, end).trim();
-    if (body.length < 8) continue;
+    const body = text.slice(h.startOffset, end).trim();
+    if (body.length < 12) continue;
 
-    const formulas: string[] = [];
-    for (const ln of body.split("\n")) {
-      const tr = ln.trim();
-      if (/[=∑∫∝]/.test(tr) && tr.length < 500 && tr.length > 6) formulas.push(tr.slice(0, 400));
+    const ctx = chapterContextAt(structural, h.startOffset);
+    const chapterLabel = ctx.chapterLabel || (h.kind === "chapter" ? h.label : "");
+    const chapterTitle = ctx.chapterTitle || (h.kind === "chapter" ? h.title : "");
+
+    const headingTitle = h.kind === "chapter" ? `${h.label}: ${h.title}` : `${h.label} ${h.title}`;
+    const inline = extractInlineArrays(body);
+
+    const spans = splitByPageBudget(text, body, MAX_SECTION_PAGES);
+    let part = 0;
+    for (const span of spans) {
+      part += 1;
+      const secInline = extractInlineArrays(span.slice);
+      const sectionId =
+        spans.length > 1 ?
+          `${primarySourceLabel}-${headingKey(h, i)}-p${part}`
+        : `${primarySourceLabel}-${headingKey(h, i)}`;
+
+      blocks.push({
+        sectionId,
+        chapterLabel,
+        chapterTitle,
+        heading: headingTitle.slice(0, 220),
+        level: h.level,
+        startPage: span.startPage,
+        endPage: span.endPage,
+        text: span.slice,
+        formulas: secInline.formulas,
+        definitions: secInline.definitions,
+        workedExamples: secInline.workedExamples,
+        proofsAndDerivations: secInline.proofsAndDerivations,
+        proofs: secInline.proofsAndDerivations.filter((p) => /^Proof\b/i.test(p)),
+        exercises: [],
+      });
     }
-
-    const workedExamples: string[] = [];
-    const proofs: string[] = [];
-    const exercises: string[] = [];
-
-    if (h.kind === "worked" || (h.kind === "example" && /worked/i.test(h.line))) {
-      workedExamples.push(body.slice(0, 8000));
-    } else if (h.kind === "proof") {
-      proofs.push(body.slice(0, 8000));
-    } else if (h.kind === "exercise") {
-      exercises.push(body.slice(0, 8000));
-    }
-
-    blocks.push({
-      sectionId: `${primarySourceLabel}-${headingKey(h.line)}-${i}`,
-      heading: h.line.slice(0, 200),
-      startPage: pageAt(text, start),
-      endPage: pageAt(text, Math.max(start, end - 1)),
-      text: body.slice(0, 50_000),
-      formulas: formulas.slice(0, 40),
-      workedExamples,
-      proofs,
-      exercises,
-    });
   }
 
   return dedupeBlocks(blocks);
@@ -167,10 +216,10 @@ function dedupeBlocks(blocks: SectionBlock[]): SectionBlock[] {
   const seen = new Set<string>();
   const out: SectionBlock[] = [];
   for (const b of blocks) {
-    const k = `${b.heading}|${b.startPage}`;
+    const k = `${b.heading}|${b.startPage}|${b.endPage}`;
     if (seen.has(k)) continue;
     seen.add(k);
     out.push(b);
   }
-  return out.slice(0, 400);
+  return out.slice(0, 500);
 }

@@ -147,12 +147,32 @@ export interface GeneratedDerivationItem {
   title: string;
   summary: string;
   steps?: string[];
+  /** Proof vs worked example vs algebraic derivation chain */
+  type?: "proof" | "worked_example" | "derivation";
+  problemStatement?: string;
+  keySteps?: string[];
+  finalResult?: string;
+  relatedFormulaIds?: string[];
   sourceFile?: string;
   sourcePage?: number | null;
   sourceSection?: string | null;
   sourceExcerpt: string;
   groundingConfidence: number;
 }
+
+/** Counts for debugging segmentation / extraction quality (local pipeline). */
+export type ExtractionPipelineDiagnostics = {
+  formulaCandidateCount: number;
+  formulaExtractedCount: number;
+  formulaRejectedCount: number;
+  formulaRejectionReasons: string[];
+  headingCandidateCount: number;
+  sectionBlockCount: number;
+  chapterCandidateCount: number;
+  workedExampleCandidateCount: number;
+  proofCandidateCount: number;
+  extractionPipelineTrace: string[];
+};
 
 export interface GeneratedMethodTemplate {
   id: string;
@@ -201,6 +221,9 @@ export interface GeneratedRevisionPack {
   documentProfile?: DocumentProfile;
   /** Structural segmentation used for extraction QA. */
   sectionBlocks?: SectionBlock[];
+  /** Unified proof / worked-example / derivation rows (may overlap formal {@link proofs}). */
+  proofsAndDerivations?: GeneratedDerivationItem[];
+  extractionPipelineDiagnostics?: ExtractionPipelineDiagnostics;
   courseMap: GeneratedCourseTopic[];
   /** Chapter-level summaries for long notes (optional; complements {@link courseMap}). */
   courseMapChapters?: CourseMapChapterEntry[];

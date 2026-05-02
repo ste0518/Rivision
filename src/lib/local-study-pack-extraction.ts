@@ -25,7 +25,9 @@ import {
 } from "@/lib/section-headings";
 import type {
   CourseMapChapterEntry,
+  DebugExtractedExampleExercise,
   DefinitionImportance,
+  ExtractionPipelineDiagnostics,
   GeneratedCommonMistake,
   GeneratedCourseTopic,
   GeneratedCramSheet,
@@ -599,7 +601,17 @@ const FORMULA_LIKE =
 const FORMULA_SECONDARY =
   /[=]|\\sum|\\int|∑|∫|∝|\\\\propto|conditional|\\mathbb\{P\}|\\mathbb\{E\}|M_\{|M\^|p_n|p\^\*|p\?\(|K\(|q\(|\bP\(|\br\(x|\bMij\b|\bx_\{|u_n|F_X|lambda|Sigma|sqrt|∏|prop(?:ortional)?|Bayes/i;
 
-function looksLikeFormula(line: string): boolean {
+function looksLikeFormula(line: string, relaxed = false): boolean {
+  if (relaxed) {
+    const t = line.trim();
+    if (t.length < 5 || t.length > 520) return false;
+    if (
+      /\b(cov|corr|var)\s*\(|\\operatorname\{cov\}|\\mathrm\{cov\}|ρ_|\\rho_|φ_|\\phi_|MA\s*\(|AR\s*\(|ARMA|ARCH|ARIMA|VAR\s*\(|GLP|acf\b|PACF\b|\\Phi\(B\)|\\Theta\(B\)|backshift|seasonal\s+difference|spectral\s+density|S\s*\(\s*f\s*\)/i.test(t) &&
+      /[=∑∫+\-]|\\sum|\\int|\\frac|\\mathbb\{E\}|E\s*\{/i.test(t)
+    ) {
+      return true;
+    }
+  }
   if (line.length < 6 || line.length > 500) return false;
   if (!FORMULA_LIKE.test(line)) return false;
   if (!FORMULA_SECONDARY.test(line)) return false;
@@ -981,6 +993,121 @@ const MARKOV_MCMC_CANONICAL_NAMES = new Set([
   "MALA / Langevin proposal",
 ]);
 
+function isTimeSeriesHeavyContext(blob: string): boolean {
+  const lower = blob.toLowerCase();
+  return /\b(time\s+series|autocovariance|autocorrelation|acf\b|pacf\b|arma|arima|sarima|stationar|white\s+noise|spectral|periodogram|backshift|variogram|glp\b|general\s+linear\s+process)\b/.test(lower);
+}
+
+/** Canonical formulas for mathematical statistics / time-series lecture notes (only when notes match context). */
+const TIME_SERIES_FORMULA_PATTERNS: Array<{ name: string; matcher: RegExp; latex: string; whenToUse: string }> = [
+  {
+    name: "Covariance definition",
+    matcher: /cov\s*\(\s*X\s*,\s*Y\s*\)\s*=\s*E\s*\[\s*\(\s*X\s*-\s*E\s*\[X\]\s*\)/i,
+    latex: "\\operatorname{cov}(X,Y)=\\mathbb{E}[(X-\\mathbb{E}[X])(Y-\\mathbb{E}[Y])]",
+    whenToUse: "Covariance from centred products / computing via expectations.",
+  },
+  {
+    name: "Correlation from covariance",
+    matcher: /corr\s*\(\s*X\s*,\s*Y\s*\)|ρ\s*=\s*cov|correlation\s+coefficient/i,
+    latex: "\\rho_{XY}=\\dfrac{\\operatorname{cov}(X,Y)}{\\sqrt{\\operatorname{Var}(X)\\operatorname{Var}(Y)}}",
+    whenToUse: "Pearson correlation rescales covariance to [-1,1].",
+  },
+  {
+    name: "Autocovariance at lag τ",
+    matcher: /s_τ\s*=\s*cov\s*\(\s*X_t\s*,\s*X_\{t\+τ\}|γ\s*\(\s*τ\s*\)\s*=\s*cov/i,
+    latex: "s_\\tau=\\operatorname{cov}(X_t,X_{t+\\tau})",
+    whenToUse: "Autocovariance sequence for equally spaced times.",
+  },
+  {
+    name: "Autocorrelation at lag τ",
+    matcher: /ρ_τ\s*=\s*s_τ\s*\/\s*s_0|acf\s+at\s+lag/i,
+    latex: "\\rho_\\tau=s_\\tau/s_0",
+    whenToUse: "Normalised autocovariance (ACF).",
+  },
+  {
+    name: "White noise autocovariances",
+    matcher: /white\s+noise[\s\S]{0,80}s_0\s*=|σ\s*\^?\s*2\s*δ/i,
+    latex: "s_\\tau=\\sigma^2\\mathbf{1}_{\\{\\tau=0\\}}",
+    whenToUse: "IID Gaussian white noise autocovariance.",
+  },
+  {
+    name: "MA(q) model",
+    matcher: /MA\s*\(\s*q\s*\)|moving\s+average\s+order\s+q/i,
+    latex: "X_t=\\varepsilon_t+\\sum_{j=1}^q \\theta_j \\varepsilon_{t-j}",
+    whenToUse: "Moving-average representation with innovations ε.",
+  },
+  {
+    name: "AR(p) model",
+    matcher: /AR\s*\(\s*p\s*\)|autoregressive\s+order\s+p/i,
+    latex: "X_t=\\sum_{j=1}^p \\phi_j X_{t-j}+\\varepsilon_t",
+    whenToUse: "Autoregressive recursion.",
+  },
+  {
+    name: "AR(1) stationarity",
+    matcher: /AR\(1\)[\s\S]{0,120}\|\s*φ\s*\|\s*<\s*1|\|\s*phi\s*\|\s*<\s*1/i,
+    latex: "|\\phi|<1",
+    whenToUse: "Stationarity condition for causal AR(1).",
+  },
+  {
+    name: "ARMA(p,q) compact",
+    matcher: /ARMA\s*\(\s*p\s*,\s*q\s*\)|\\Phi\(B\)|\\Theta\(B\)/i,
+    latex: "\\Phi(B)X_t=\\Theta(B)\\varepsilon_t",
+    whenToUse: "ARMA in operator notation.",
+  },
+  {
+    name: "ARCH dynamics",
+    matcher: /ARCH\s*\(\s*p\s*\)|conditional\s+variance/i,
+    latex: "\\sigma_t^2=\\omega+\\sum_{i=1}^p \\alpha_i X_{t-i}^2",
+    whenToUse: "Volatility clustering (ARCH-type variance law).",
+  },
+  {
+    name: "Trend–seasonal decomposition",
+    matcher: /X_t\s*=\s*m_t\s*\+\s*s_t\s*\+\s*Y_t|signal\s*\+\s*noise\s*\+\s*seasonal/i,
+    latex: "X_t=m_t+s_t+Y_t",
+    whenToUse: "Additive signal/trend/seasonal decomposition.",
+  },
+  {
+    name: "First difference",
+    matcher: /∇\s*X_t|first\s+difference|\(1\s*-\s*B\)X/i,
+    latex: "\\nabla X_t=X_t-X_{t-1}",
+    whenToUse: "Removing polynomial trends via differencing.",
+  },
+  {
+    name: "Backshift operator",
+    matcher: /B\s+X_t\s*=\s*X_\{t-1\}|backshift/i,
+    latex: "BX_t=X_{t-1}",
+    whenToUse: "Lag operator on discrete-time processes.",
+  },
+  {
+    name: "ARIMA operator form",
+    matcher: /ARIMA\s*\(\s*p\s*,\s*d\s*,\s*q\s*\)|\(1\s*-\s*B\)\^?\s*d/i,
+    latex: "\\Phi(B)(1-B)^d X_t=\\Theta(B)\\varepsilon_t",
+    whenToUse: "Integrated ARMA with differencing order d.",
+  },
+  {
+    name: "Seasonal difference",
+    matcher: /seasonal\s+differencing|\(1\s*-\s*B\^s\)/i,
+    latex: "\\nabla_s X_t=X_t-X_{t-s}",
+    whenToUse: "Removing seasonal cycles with period s.",
+  },
+  {
+    name: "Spectral density as Fourier pair",
+    matcher: /spectral\s+density|f\s*\(\s*ω\s*\)|periodogram/i,
+    latex: "f(\\omega)=\\sum_{\\tau=-\\infty}^\\infty s_\\tau e^{-i\\omega\\tau}",
+    whenToUse: "Linking autocovariance to spectrum (notation varies by course).",
+  },
+  {
+    name: "VAR(p) model",
+    matcher: /VAR\s*\(\s*p\s*\)|vector\s+autoregression/i,
+    latex: "X_t=\\sum_{j=1}^p \\Phi_j X_{t-j}+\\varepsilon_t",
+    whenToUse: "Multivariate AR dynamics.",
+  },
+];
+
+function filterTimeSeriesFormulaPatterns(sourceLower: string): typeof TIME_SERIES_FORMULA_PATTERNS {
+  return isTimeSeriesHeavyContext(sourceLower) ? TIME_SERIES_FORMULA_PATTERNS : [];
+}
+
 function filterCanonicalFormulaPatterns(sourceLower: string) {
   const mc =
     /\bmonte\s*carlo\b|\bimportance\s+sampling\b|\bsnis\b|\beffective\s+sample\b|\bess\b|\bmc\s+estimator\b|\bself[-\s]?normali/i.test(sourceLower);
@@ -1013,7 +1140,7 @@ function sourceGroundingPack(
 function extractCanonicalFormulas(text: string, sourceFile: string, sections: ExtractedSection[]): GeneratedFormulaItem[] {
   const lower = text.toLowerCase();
   const out: GeneratedFormulaItem[] = [];
-  for (const pat of filterCanonicalFormulaPatterns(lower)) {
+  for (const pat of [...filterCanonicalFormulaPatterns(lower), ...filterTimeSeriesFormulaPatterns(lower)]) {
     pat.matcher.lastIndex = 0;
     const m = pat.matcher.exec(text);
     if (!m) continue;
@@ -1040,6 +1167,7 @@ function extractCanonicalFormulas(text: string, sourceFile: string, sections: Ex
 }
 
 function extractFormulaLines(text: string, sourceFile: string, sections: ExtractedSection[], defaultWhenToUse: string): GeneratedFormulaItem[] {
+  const relaxedLines = isTimeSeriesHeavyContext(text);
   const lines = text.split("\n");
   let offset = 0;
   const out: GeneratedFormulaItem[] = [];
@@ -1047,7 +1175,7 @@ function extractFormulaLines(text: string, sourceFile: string, sections: Extract
 
   for (const line of lines) {
     const trimmed = line.trim();
-    if (!looksLikeFormula(trimmed)) {
+    if (!looksLikeFormula(trimmed, relaxedLines)) {
       offset += line.length + 1;
       continue;
     }
@@ -1115,16 +1243,13 @@ function filterFormulasForChapterContext(items: GeneratedFormulaItem[], lectureT
   });
 }
 
-function buildLikelyExamStructureSnippet(combinedLectureText: string, hasPastEvidence: boolean): string {
-  if (hasPastEvidence) return "Past/problem-sheet evidence present — cross-check emphasis against these notes.";
-  const lower = combinedLectureText.toLowerCase();
-  if (/\bmonte\s*carlo\s+integration\b|\bimportance\s+sampling\b|\bess\b|\bsnis\b|\berror\s+metrics\b/i.test(lower)) {
-    return "Lecture-only snapshot: Monte Carlo integration, error metrics, importance sampling, self-normalised importance sampling, and effective sample size — add past papers to estimate exam weighting.";
-  }
-  if (/\bmarkov\b|\bmcmc\b|\bmetropolis\b|\bgibbs\b|\bdetailed\s+balance\b/i.test(lower)) {
-    return "Lecture-only snapshot: Markov chains, detailed balance, and MCMC algorithms — add past papers to estimate exam weighting.";
-  }
-  return "Lecture-only snapshot: core definitions and methods from your notes — add past papers to estimate exam weighting.";
+function buildExamStructureFromProfile(profile: DocumentProfile, hasPastEvidence: boolean): string {
+  if (hasPastEvidence) return "Past/problem-sheet evidence present — align priorities with the headings below.";
+  const topics = profile.detectedTopics.slice(0, 16).filter(Boolean);
+  const chapters = profile.chapterMap.slice(0, 10).map((c) => c.chapterTitle || c.chapterLabel).filter(Boolean);
+  const topicPart = topics.length ? topics.join(", ") : "the concepts surfaced from headings";
+  const chapterPart = chapters.length ? chapters.join("; ") : "chapter banners detected in the PDF text";
+  return `Structured overview from this upload only: ${topicPart}. Chapter themes include ${chapterPart}. Add past papers to estimate exam weighting.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1470,6 +1595,10 @@ function cleanAlgorithmSteps(body: string): string[] {
 }
 
 function algorithmBlocksToMethods(blocks: LabelledBlock[]): GeneratedMethodTemplate[] {
+  const textBlob = blocks.map((b) => b.body).join("\n").toLowerCase();
+  const markovPresent = /\b(markov|transition\s+matrix|mcmc|gibbs|metropolis|detailed\s+balance)\b/i.test(textBlob);
+  const monteCarloPresent = /\b(monte\s*carlo|importance\s+sampling|snis|self[-\s]?normali)\b/i.test(textBlob);
+
   const algos = blocks.filter((b) => b.kind === "algorithm");
   const methods: GeneratedMethodTemplate[] = algos.map((b) => {
     const headLine = b.body.split("\n")[0] ?? "";
@@ -1482,14 +1611,10 @@ function algorithmBlocksToMethods(blocks: LabelledBlock[]): GeneratedMethodTempl
       id: createId("meth"),
       problemType: `${b.formalLabel}: ${cleanTitle}`,
       steps,
-      triggerWords: [cleanTitle, "MCMC", "Metropolis", "Gibbs"].filter(Boolean),
+      triggerWords: [cleanTitle, ...(markovPresent ? (["MCMC", "Metropolis", "Gibbs"] as const) : [])].filter(Boolean),
       relatedPracticeType: "Exam-style algorithm recall",
     };
   });
-
-  const textBlob = blocks.map((b) => b.body).join("\n").toLowerCase();
-  const markovPresent = /\b(markov|transition\s+matrix|mcmc|gibbs|metropolis|detailed\s+balance)\b/i.test(textBlob);
-  const monteCarloPresent = /\b(monte\s*carlo|importance\s+sampling|snis|self[-\s]?normali)\b/i.test(textBlob);
   const extras: Array<{ title: string; steps: string[]; triggers: string[]; requiresMarkovContext?: boolean; requiresMonteCarlo?: boolean }> =
     [
     {
@@ -1619,36 +1744,145 @@ function buildRichCourseMap(
   });
 }
 
+function dedupeDerivations(items: GeneratedDerivationItem[]): GeneratedDerivationItem[] {
+  const out: GeneratedDerivationItem[] = [];
+  for (const d of items) {
+    if (out.some((x) => jaccardSimilarity(x.summary, d.summary) > 0.88)) continue;
+    out.push(d);
+    if (out.length >= 36) break;
+  }
+  return out;
+}
+
 function extractDerivationCards(text: string, primaryFile: string, sections: ExtractedSection[]): GeneratedDerivationItem[] {
   const out: GeneratedDerivationItem[] = [];
-  const chunkRe =
-    /(?:^|\n)\s*(Worked\s+example\s*:[^\n]+)\n([\s\S]{60,14000}?)(?=\n\s*(?:Chapter\s+\d+|\d+(?:\.\d+)+\s+[A-Za-z]|Worked\s+example|Definition\s+\d|Theorem\s+\d|Proposition\s+\d)\b)/gi;
-  let m: RegExpExecArray | null;
-  while ((m = chunkRe.exec(text)) !== null) {
-    const title = m[1]!.trim().slice(0, 180);
-    const body = m[2]!.trim();
-    if (body.length < 80) continue;
-    const offset = m.index ?? 0;
+
+  const pushChunk = (title: string, body: string, offset: number, type: NonNullable<GeneratedDerivationItem["type"]>) => {
+    if (body.length < 48) return;
     const steps = body
       .split(/\n+/)
       .map((l) => l.trim())
-      .filter((l) => l.length > 18)
-      .slice(0, 24);
-    const excerpt = body.slice(0, 720);
+      .filter((l) => l.length > 14)
+      .slice(0, 26);
+    const excerpt = body.slice(0, 820);
     out.push({
       id: createId("der"),
-      title,
+      title: title.slice(0, 180),
       summary: body.slice(0, 520).replace(/\s+/g, " ").trim(),
+      type,
       steps,
+      keySteps: steps.slice(0, 14),
+      problemStatement: body.split(/\n\s*\n/)[0]?.trim().slice(0, 520),
+      finalResult: steps.slice(-3).join(" ")?.slice(0, 400),
       sourceFile: primaryFile,
       sourcePage: pageAtOffset(text, offset),
       sourceSection: sectionForOffset(sections, offset),
       sourceExcerpt: excerpt,
-      groundingConfidence: /\b(hence|therefore|show\s+that|thus)\b/i.test(body) ? 0.82 : 0.68,
+      groundingConfidence: /\b(hence|therefore|show\s+that|thus|stationar|invertibil)/i.test(body) ? 0.84 : 0.7,
     });
-    if (out.length >= 28) break;
+  };
+
+  const patterns: Array<{ re: RegExp; type: NonNullable<GeneratedDerivationItem["type"]> }> = [
+    {
+      re: /(?:^|\n)\s*(Worked\s+example\s*:[^\n]+)\n([\s\S]{60,14000}?)(?=\n\s*(?:Chapter\s+\d+|\d+(?:\.\d+)+\s+[A-Za-z]|Worked\s+example|Definition\s+\d|Theorem\s+\d|Proposition\s+\d)\b)/gi,
+      type: "worked_example",
+    },
+    {
+      re: /(?:^|\n)\s*(Example\s*:[^\n]+)\n([\s\S]{40,9000}?)(?=\n\s*(?:Chapter\s+\d+|\d+(?:\.\d+)+\s+[A-Za-z]|Worked\s+example|Example\s*:|Exercise\s+\d)\b)/gi,
+      type: "worked_example",
+    },
+    {
+      re: /(?:^|\n)\s*(Proof\s*[.:]\s*[^\n]*)\n([\s\S]{40,12000}?)(?=\n\s*(?:Chapter\s+\d+|\d+(?:\.\d+)+\s+[A-Za-z]|Proof\s*[.:]|Theorem\s+\d|Lemma\s+\d)\b)/gi,
+      type: "proof",
+    },
+    {
+      re: /(?:^|\n)\s*((?:Show\s+that|Suppose\s+that)[^\n]{8,200})\n([\s\S]{60,12000}?)(?=\n\s*(?:Chapter\s+\d+|\d+(?:\.\d+)+\s+[A-Za-z]|Show\s+that|Worked\s+example)\b)/gi,
+      type: "derivation",
+    },
+  ];
+
+  for (const { re, type } of patterns) {
+    re.lastIndex = 0;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(text)) !== null) {
+      const title = (m[1] ?? "").trim().slice(0, 180);
+      const body = (m[2] ?? "").trim();
+      pushChunk(title || type, body, m.index ?? 0, type);
+      if (out.length >= 48) break;
+    }
+  }
+
+  return dedupeDerivations(out);
+}
+
+function mergeProofsAndDerivations(proofs: GeneratedProofItem[], derivations: GeneratedDerivationItem[]): GeneratedDerivationItem[] {
+  const fromProofs: GeneratedDerivationItem[] = proofs.map((p) => ({
+    id: `merged-${p.id}`,
+    title: p.name,
+    summary: p.statement.slice(0, 520),
+    type: "proof" as const,
+    steps: p.proofSteps,
+    keySteps: p.proofSteps?.slice(0, 14),
+    problemStatement: p.statement.slice(0, 420),
+    finalResult: p.proofSkeleton.split("\n").at(-1)?.slice(0, 360),
+    sourceFile: p.sourceFile,
+    sourcePage: p.sourcePage ?? null,
+    sourceSection: p.sourceSection ?? null,
+    sourceExcerpt: (p.sourceExcerpt ?? p.statement).slice(0, 900),
+    groundingConfidence: 0.78,
+  }));
+  return dedupeDerivations([...fromProofs, ...derivations]);
+}
+
+function harvestWorkedExampleCards(text: string, primaryFile: string, sections: ExtractedSection[]): DebugExtractedExampleExercise[] {
+  const out: DebugExtractedExampleExercise[] = [];
+  const re = /(?:^|\n)\s*(Worked\s+example\s*:[^\n]+)\n([\s\S]{40,6000}?)(?=\n\s*(?:Chapter\s+\d+|\d+(?:\.\d+)+\s+[A-Za-z]|Worked\s+example)\b)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const title = m[1]!.trim().slice(0, 160);
+    const body = normalizeMathText(m[2]!.trim());
+    const offset = m.index ?? 0;
+    out.push({
+      id: createId("wex"),
+      kind: "example",
+      title,
+      body,
+      sourceFile: primaryFile,
+      sourcePage: pageAtOffset(text, offset),
+      sourceSection: sectionForOffset(sections, offset),
+      sourceExcerpt: `${title}\n${body.slice(0, 400)}`,
+      groundingConfidence: 0.82,
+    });
+    if (out.length >= 40) break;
   }
   return out;
+}
+
+const STALE_TOPIC_TERMS = [
+  "mcmc",
+  "detailed balance",
+  "metropolis-hastings",
+  "metropolis hastings",
+  "importance sampling",
+  "snis",
+  "effective sample size",
+  "markov chain monte carlo",
+];
+
+function isStaleVersusSource(blobLower: string, sourceLower: string): boolean {
+  return STALE_TOPIC_TERMS.some((term) => blobLower.includes(term) && !sourceLower.includes(term));
+}
+
+function filterStaleFormulas(formulas: GeneratedFormulaItem[], sourceLower: string): GeneratedFormulaItem[] {
+  return formulas.filter((f) => !isStaleVersusSource(`${f.name}\n${f.latex}\n${f.whenToUse}`.toLowerCase(), sourceLower));
+}
+
+function filterStaleMethods(methods: GeneratedMethodTemplate[], sourceLower: string): GeneratedMethodTemplate[] {
+  return methods.filter((m) => !isStaleVersusSource(`${m.problemType}\n${m.steps.join("\n")}\n${m.triggerWords.join(" ")}`.toLowerCase(), sourceLower));
+}
+
+function filterStaleMistakes(mistakes: GeneratedCommonMistake[], sourceLower: string): GeneratedCommonMistake[] {
+  return mistakes.filter((m) => !isStaleVersusSource(`${m.mistake}\n${m.howToAvoid}\n${m.whyItHappens}`.toLowerCase(), sourceLower));
 }
 
 export type HeuristicPackContext = {
@@ -1709,10 +1943,12 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   ]);
 
   const cleanText = cleanedPrinted;
+  const sourceBlobLower = cleanedPrinted.toLowerCase();
   const whenHint = defaultFormulaWhenToUse(cleanText);
   const lineFormulas = extractFormulaLines(cleanText, primaryName, sections, whenHint);
   const canonicalFormulas = extractCanonicalFormulas(cleanText, primaryName, sections);
   const blockFormulas = extractFormulasFromBlocks(blocks, primaryName, cleanText);
+  const formulaCandidatesPreDedupe = canonicalFormulas.length + blockFormulas.length + lineFormulas.length;
   const pageCount = documentProfile.pageCount;
   const maxFormulas = pageCount < 15 ? 90 : pageCount <= 50 ? 150 : 220;
   let formulas = dedupeFormulas([...canonicalFormulas, ...blockFormulas, ...lineFormulas], maxFormulas).map((f) => {
@@ -1720,13 +1956,17 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     return { ...f, mathStatus: mathStatusFromValidation(v) };
   });
   formulas = filterFormulasForChapterContext(formulas, cleanText);
+  formulas = filterStaleFormulas(formulas, sourceBlobLower);
 
   let proofs = blocksToProofs(blocks, proofBlocks);
   proofs = dedupeProofs(proofs);
 
   const derivations = extractDerivationCards(cleanedPrinted, primaryName, sections);
+  const proofsAndDerivations = mergeProofsAndDerivations(proofs, derivations);
+  const workedExamplesHarvest = harvestWorkedExampleCards(cleanedPrinted, primaryName, sections);
 
-  const methods = algorithmBlocksToMethods(blocks);
+  let methods = algorithmBlocksToMethods(blocks);
+  methods = filterStaleMethods(methods, sourceBlobLower);
 
   const primaryStem =
     files.find((f) => f.role === "lecture_notes")?.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ") ??
@@ -1734,13 +1974,23 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const inferredTitle = inferCourseTitleFromNotes(cleanedPrinted, primaryStem);
   const chapterTitle = documentProfile.courseName ?? documentProfile.title ?? inferredTitle;
 
-  let courseMap = courseTopicsFromSections(files, sectionsMerged);
-  if (!courseMap.length) {
-    courseMap = guessTopicsFallback(files);
+  let courseMap: GeneratedCourseTopic[] = [];
+  if (documentProfile.chapterMap.length) {
+    const names = files.filter((f) => f.role === "lecture_notes" || !f.role).map((f) => f.name);
+    courseMap = documentProfile.chapterMap.map((ch) => ({
+      id: createId("topic"),
+      title: `${ch.chapterLabel}: ${ch.chapterTitle}`.replace(/^\s*:\s*/, "").trim(),
+      sourceFileNames: names.length ? names : files.map((f) => f.name),
+      importance: "high" as TopicImportance,
+      evidenceReason: "Chapter banner detected in parsed lecture text.",
+    }));
+  } else {
+    courseMap = courseTopicsFromSections(files, sectionsMerged);
+    if (!courseMap.length) courseMap = guessTopicsFallback(files);
   }
 
   const lowerCtx = cleanedPrinted.toLowerCase();
-  const mistakes: GeneratedCommonMistake[] = [];
+  let mistakes: GeneratedCommonMistake[] = [];
   if (isMonteCarloIntegrationHeavyContext(cleanedPrinted)) {
     mistakes.push(
       {
@@ -1795,6 +2045,8 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     });
   }
 
+  mistakes = filterStaleMistakes(mistakes, sourceBlobLower);
+
   const patterns = buildPastPaperPatterns(hasPastEvidence, settings);
 
   const courseMapChapters = buildRichCourseMap(documentProfile, definitions, formulas, derivations);
@@ -1810,11 +2062,31 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     trapBullets: mistakes.map((m) => `${m.mistake} — ${m.howToAvoid}`),
   };
 
+  const extractionPipelineDiagnostics: ExtractionPipelineDiagnostics = {
+    formulaCandidateCount: formulaCandidatesPreDedupe,
+    formulaExtractedCount: formulas.length,
+    formulaRejectedCount: Math.max(0, formulaCandidatesPreDedupe - formulas.length),
+    formulaRejectionReasons: [],
+    headingCandidateCount: sectionsMerged.length,
+    sectionBlockCount: sectionBlocks.length,
+    chapterCandidateCount: documentProfile.chapterMap.length,
+    workedExampleCandidateCount: workedExamplesHarvest.length + derivations.filter((d) => d.type === "worked_example").length,
+    proofCandidateCount: proofBlocks.length,
+    extractionPipelineTrace: [
+      "sanitise_printed_layer",
+      "profileDocument",
+      "structural_headings→sectionBlocks",
+      "labelled_blocks+proof_blocks",
+      "formula_pipeline",
+      "derivation_and_worked_example_harvest",
+    ],
+  };
+
   const overview = {
     courseName: chapterTitle,
-    summary: `Structured locally from ${files.length} file(s): ${definitions.filter((d) => !CORE_IDEA_PLACEHOLDER.test(d.term)).length} definitions · ${formulas.length} formulas · ${proofs.length} proofs · ${derivations.length} derivations · ${methods.length} methods.`,
-    likelyExamStructure: buildLikelyExamStructureSnippet(cleanedPrinted, hasPastEvidence),
-    highPriorityTopics: courseMap.filter((t) => t.importance === "high").map((t) => t.title).slice(0, 12),
+    summary: `Structured locally from ${files.length} file(s): ${definitions.filter((d) => !CORE_IDEA_PLACEHOLDER.test(d.term)).length} definitions · ${formulas.length} formulas · ${proofs.length} proof cards · ${proofsAndDerivations.length} proofs/derivations (merged) · ${methods.length} methods.`,
+    likelyExamStructure: buildExamStructureFromProfile(documentProfile, hasPastEvidence),
+    highPriorityTopics: documentProfile.detectedTopics.slice(0, 16),
   };
 
   return {
@@ -1828,10 +2100,13 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     formulas,
     proofs,
     derivations,
+    proofsAndDerivations,
     methods,
     pastPaperPatterns: patterns,
     commonMistakes: mistakes,
     cramSheet: cram,
+    workedExamples: workedExamplesHarvest,
+    extractionPipelineDiagnostics,
   };
 }
 
