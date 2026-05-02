@@ -80,14 +80,19 @@ export interface GeneratedFormulaItem {
   sourceExcerpt?: string;
 }
 
+export type StudyPackProofImportance = "must_know" | "useful" | "optional";
+
 export interface GeneratedProofItem {
   id: string;
   name: string;
   /** Short heading for cram sheets / lists. */
   proofName?: string;
   statement: string;
+  /** Structured steps for revision (split from the Proof block). */
+  proofSteps?: string[];
   proofSkeleton: string;
   commonMistake: string;
+  importance?: StudyPackProofImportance;
   /** @deprecated Prefer {@link sourceFile}. */
   source?: string;
   sourceFile?: string;

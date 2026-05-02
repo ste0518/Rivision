@@ -248,6 +248,14 @@ export default function PackPage() {
 
       {debugExport ? (
         <>
+          {debugExport.qualityChecks.criticalQualityFailure ? (
+            <Card className="border-amber-200 bg-amber-50">
+              <CardContent className="pt-4 text-sm text-amber-950">
+                {debugExport.qualityChecks.acceptanceWarningMessage ??
+                  "Study pack generated, but quality checks failed. Review Debug JSON."}
+              </CardContent>
+            </Card>
+          ) : null}
           <Card>
             <CardHeader>
               <CardTitle className="text-base">Export</CardTitle>

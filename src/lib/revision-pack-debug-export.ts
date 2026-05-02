@@ -1,4 +1,6 @@
 import { APP_VERSION } from "@/lib/app-version";
+import type { Chapter3PackValidation } from "@/lib/chapter3-pack-validation";
+import { validateChapter3Pack } from "@/lib/chapter3-pack-validation";
 import { extractExampleAndExerciseItemsForDebug, type DebugExampleExerciseItem, type LecturePackFile } from "@/lib/local-study-pack-extraction";
 import { cleanUploadedStudySourceText } from "@/lib/source-text-cleanup";
 import type { StudyState } from "@/lib/storage";
@@ -44,7 +46,27 @@ export type RevisionPackDebugJson = {
     sourceContamination: string[];
     duplicateQuizPrompts: string[];
     overlongBlocks: string[];
+    acceptanceTests?: AcceptanceTests;
+    /** Present when the primary notes file looks like `chapter-3.pdf`. */
+    chapter3Validation?: Chapter3PackValidation;
+    criticalQualityFailure?: boolean;
+    acceptanceWarningMessage?: string | null;
   };
+};
+
+export type AcceptanceTests = {
+  hasAtLeast10Definitions: boolean;
+  hasAtLeast15Formulas: boolean;
+  hasSixProofCards: boolean;
+  hasExamples3_1To3_9Only: boolean;
+  hasExercises3_1To3_12: boolean;
+  exercise3_8HighPriority: boolean;
+  noReferenceOnlyExamples: boolean;
+  noBibliographyLeakage: boolean;
+  noKnownUnrelatedTopics: boolean;
+  noBadMathTokensInStudyPack: boolean;
+  noDuplicateQuizQuestions: boolean;
+  noOverlongBlocks: boolean;
 };
 
 const SOFT_HYPHEN = "\u00ad";
@@ -124,7 +146,12 @@ function collectLatexStatusWarnings(pack: GeneratedRevisionPack): string[] {
   return w;
 }
 
-function* iterPackStrings(pack: GeneratedRevisionPack, examples: DebugExampleExerciseItem[], exercises: DebugExampleExerciseItem[]): Generator<string> {
+function* iterPackStrings(
+  pack: GeneratedRevisionPack,
+  examples: DebugExampleExerciseItem[],
+  exercises: DebugExampleExerciseItem[],
+  quiz?: GeneratedPracticeQuestion[],
+): Generator<string> {
   yield pack.examOverview.summary;
   yield pack.examOverview.likelyExamStructure;
   yield pack.examOverview.courseName ?? "";
@@ -146,6 +173,7 @@ function* iterPackStrings(pack: GeneratedRevisionPack, examples: DebugExampleExe
     yield p.statement;
     yield p.proofSkeleton;
     yield p.commonMistake;
+    for (const s of p.proofSteps ?? []) yield s;
   }
   for (const m of pack.methods) {
     yield m.problemType;
@@ -172,11 +200,29 @@ function* iterPackStrings(pack: GeneratedRevisionPack, examples: DebugExampleExe
     yield x.title;
     yield x.body;
     yield x.rawBlock;
+    yield x.problem ?? "";
+    yield x.examTag ?? "";
+    if (x.subQuestions?.length) {
+      for (const sq of x.subQuestions) {
+        yield sq.label;
+        yield sq.text;
+      }
+    }
+  }
+  for (const q of quiz ?? []) {
+    yield q.question;
+    yield q.expectedAnswer ?? "";
+    yield q.topic ?? "";
   }
 }
 
-function generatedPackBlob(pack: GeneratedRevisionPack, examples: DebugExampleExerciseItem[], exercises: DebugExampleExerciseItem[]): string {
-  return Array.from(iterPackStrings(pack, examples, exercises)).join("\n");
+function generatedPackBlob(
+  pack: GeneratedRevisionPack,
+  examples: DebugExampleExerciseItem[],
+  exercises: DebugExampleExerciseItem[],
+  quiz?: GeneratedPracticeQuestion[],
+): string {
+  return Array.from(iterPackStrings(pack, examples, exercises, quiz)).join("\n");
 }
 
 function collectExtendedQuality(
@@ -188,7 +234,7 @@ function collectExtendedQuality(
 ): { sourceContamination: string[]; duplicateQuizPrompts: string[]; overlongBlocks: string[] } {
   const sourceContamination: string[] = [];
   const src = sourceText.toLowerCase();
-  const lowerGen = generatedPackBlob(pack, examples, exercises).toLowerCase();
+  const lowerGen = generatedPackBlob(pack, examples, exercises, practiceQuestions).toLowerCase();
   const contaminationTerms = [
     "simple kriging",
     "ordinary kriging",
@@ -222,7 +268,7 @@ function collectExtendedQuality(
     counts.set(k, (counts.get(k) ?? 0) + 1);
   }
   for (const [k, n] of counts) {
-    if (n > 2) duplicateQuizPrompts.push(`Quiz prompt repeated ${n} times: ${k.slice(0, 140)}`);
+    if (n > 1) duplicateQuizPrompts.push(`Quiz prompt repeated ${n} times: ${k.slice(0, 140)}`);
   }
 
   const wc = (s: string) => (s.trim().match(/\S+/g) ?? []).length;
@@ -248,6 +294,7 @@ function findBadMathTokens(
   pack: GeneratedRevisionPack,
   examples: DebugExampleExerciseItem[],
   exercises: DebugExampleExerciseItem[],
+  quiz?: GeneratedPracticeQuestion[],
 ): string[] {
   const found = new Set<string>();
   const check = (s: string, label: string) => {
@@ -276,11 +323,54 @@ function findBadMathTokens(
   };
 
   let i = 0;
-  for (const str of iterPackStrings(pack, examples, exercises)) {
+  for (const str of iterPackStrings(pack, examples, exercises, quiz)) {
     i += 1;
     check(str, `generated#${i}`);
   }
   return [...found];
+}
+
+function computeAcceptanceTests(
+  sourceFilename: string,
+  pack: GeneratedRevisionPack,
+  exBlocks: DebugExampleExerciseItem[],
+  exeBlocks: DebugExampleExerciseItem[],
+  badMath: string[],
+  duplicateQuizPrompts: string[],
+  overlongBlocks: string[],
+): AcceptanceTests {
+  const ch3 = /chapter[-_\s]*3\.pdf$/i.test(sourceFilename);
+  const exLabels = exBlocks.map((x) => x.formalLabel);
+  const exeLabels = exeBlocks.map((x) => x.formalLabel);
+  const expectedEx = Array.from({ length: 9 }, (_, i) => `Example 3.${i + 1}`);
+  const expectedExe = Array.from({ length: 12 }, (_, i) => `Exercise 3.${i + 1}`);
+  const ex38 = exeBlocks.find((e) => /^Exercise\s+3\.8\b/i.test(e.formalLabel));
+  const blob = generatedPackBlob(pack, exBlocks, exeBlocks).toLowerCase();
+
+  return {
+    hasAtLeast10Definitions: pack.definitions.length >= 10,
+    hasAtLeast15Formulas: pack.formulas.length >= 15,
+    hasSixProofCards: pack.proofs.length >= 6,
+    hasExamples3_1To3_9Only:
+      !ch3 || (expectedEx.every((x) => exLabels.includes(x)) && !exLabels.some((x) => /Example\s+(2|4)\./i.test(x))),
+    hasExercises3_1To3_12: !ch3 || expectedExe.every((x) => exeLabels.includes(x)),
+    exercise3_8HighPriority:
+      !ch3 || (ex38?.importance === "must_know" && Boolean(ex38?.examTag?.includes("2024") || ex38?.examTag?.includes("Final"))),
+    noReferenceOnlyExamples: !exLabels.some((x) => /Example\s+(2\.3|4\.9)/i.test(x)),
+    noBibliographyLeakage: !/\bBIBLIOGRAPHY\b/i.test(blob),
+    noKnownUnrelatedTopics:
+      !/(simple kriging|ordinary kriging|markov chain|irreducibility|aperiodicity|detailed balance)/i.test(blob),
+    noBadMathTokensInStudyPack: badMath.length === 0,
+    noDuplicateQuizQuestions: duplicateQuizPrompts.length === 0,
+    noOverlongBlocks: overlongBlocks.length === 0,
+  };
+}
+
+function criticalFailureFromAcceptance(ch3: boolean, at: AcceptanceTests): boolean {
+  if (!at.hasSixProofCards || !at.hasAtLeast15Formulas || !at.noBadMathTokensInStudyPack || !at.noBibliographyLeakage) return true;
+  if (!at.noReferenceOnlyExamples) return true;
+  if (ch3 && (!at.exercise3_8HighPriority || !at.hasExamples3_1To3_9Only || !at.hasExercises3_1To3_12)) return true;
+  return false;
 }
 
 function missingSectionWarnings(pack: GeneratedRevisionPack, examples: unknown[], exercises: unknown[]): string[] {
@@ -373,14 +463,36 @@ export function buildRevisionPackDebugJson(store: RevisionPackDebugInput): Revis
   const cleaned = buildCleanedExtraction(raw.text, notesFiles, latexLines);
   const extractionErrors = collectExtractionErrors(notesFiles);
 
-  const badMath = findBadMathTokens(pack, exBlocks, exeBlocks);
+  const badMath = findBadMathTokens(pack, exBlocks, exeBlocks, store.practiceQuestions);
   const missing = missingSectionWarnings(pack, exBlocks, exeBlocks);
   const classification = classificationIssues(exBlocks, exeBlocks);
   const sourceUnion = (raw.text ? cleanUploadedStudySourceText(raw.text) : "") || lectureFiles.map((f) => f.parsedText ?? "").join("\n\n");
   const extended = collectExtendedQuality(pack, store.practiceQuestions, sourceUnion, exBlocks, exeBlocks);
 
+  const acceptanceTests = computeAcceptanceTests(sourceFilename, pack, exBlocks, exeBlocks, badMath, extended.duplicateQuizPrompts, extended.overlongBlocks);
+  const ch3Pack = /chapter[-_\s]*3\.pdf$/i.test(sourceFilename);
+  const ex38 = exeBlocks.find((e) => /^Exercise\s+3\.8\b/i.test(e.formalLabel));
+  const chapter3Validation: Chapter3PackValidation | undefined = ch3Pack
+    ? validateChapter3Pack(pack, store.practiceQuestions, {
+        exampleFormalLabels: exBlocks.map((e) => e.formalLabel),
+        exerciseFormalLabels: exeBlocks.map((e) => e.formalLabel),
+        exercise3_8: { importance: ex38?.importance, examTag: ex38?.examTag },
+      })
+    : undefined;
+  const criticalQualityFailure = criticalFailureFromAcceptance(ch3Pack, acceptanceTests);
+  const acceptanceWarningMessage = criticalQualityFailure
+    ? "Study pack generated, but quality checks failed. Review Debug JSON."
+    : null;
+
   const qcWarnings: string[] = [];
   for (const e of extractionErrors) qcWarnings.push(`Extraction error: ${e}`);
+  if (acceptanceWarningMessage) qcWarnings.push(acceptanceWarningMessage);
+  if (criticalQualityFailure) {
+    for (const err of chapter3Validation?.errors ?? []) {
+      const line = `Chapter 3 validation: ${err}`;
+      if (!qcWarnings.includes(line)) qcWarnings.push(line);
+    }
+  }
 
   const overview =
     `${pack.examOverview.summary}\n\nLikely exam structure:\n${pack.examOverview.likelyExamStructure}`.trim();
@@ -415,6 +527,10 @@ export function buildRevisionPackDebugJson(store: RevisionPackDebugInput): Revis
       sourceContamination: extended.sourceContamination,
       duplicateQuizPrompts: extended.duplicateQuizPrompts,
       overlongBlocks: extended.overlongBlocks,
+      acceptanceTests,
+      chapter3Validation,
+      criticalQualityFailure,
+      acceptanceWarningMessage,
     },
   };
 
@@ -445,7 +561,8 @@ export function totalQualityWarningCount(q: RevisionPackDebugJson["qualityChecks
     q.warnings.length +
     q.sourceContamination.length +
     q.duplicateQuizPrompts.length +
-    q.overlongBlocks.length
+    q.overlongBlocks.length +
+    (q.criticalQualityFailure ? 1 : 0)
   );
 }
 

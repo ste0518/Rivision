@@ -5,7 +5,12 @@
  * Run via: `npm run test:chapter3`.
  */
 import assert from "node:assert/strict";
-import { buildHeuristicStudentRevisionPack, extractSectionHeadings } from "../src/lib/local-study-pack-extraction";
+import { validateChapter3Pack } from "../src/lib/chapter3-pack-validation";
+import {
+  buildHeuristicStudentRevisionPack,
+  extractExampleAndExerciseItemsForDebug,
+  extractSectionHeadings,
+} from "../src/lib/local-study-pack-extraction";
 import { chapter3MonteCarloExcerpt } from "../src/lib/test-fixtures/chapter-3-monte-carlo-excerpt";
 
 const fixtureFile = {
@@ -50,9 +55,24 @@ assert.ok(/snis|self-normal|normalised importance/.test(formulaBlob), "expected 
 assert.ok(/ess|effective sample/.test(formulaBlob), "expected ESS formula");
 
 const proofLabels = pack.proofs.map((p) => p.sourceLabel ?? "");
-for (const lbl of ["Proposition 3.1", "Proposition 3.2", "Proposition 3.3", "Proposition 3.4"]) {
+for (const lbl of ["Proposition 3.1", "Proposition 3.2", "Proposition 3.3", "Proposition 3.4", "Proposition 3.5", "Proposition 3.6"]) {
   assert.ok(proofLabels.includes(lbl), `proofs missing ${lbl}; got: ${proofLabels.join(", ")}`);
 }
+
+assert.ok(pack.definitions.length >= 10, `expected ≥10 definitions, got ${pack.definitions.length}`);
+assert.ok(pack.formulas.length >= 15, `expected ≥15 formulas, got ${pack.formulas.length}`);
+
+const lists = extractExampleAndExerciseItemsForDebug([fixtureFile]);
+const ex38 = lists.exercises.find((e) => /^Exercise\s+3\.8\b/i.test(e.formalLabel));
+assert.ok(ex38?.importance === "must_know", "Exercise 3.8 should be marked must_know");
+assert.ok(ex38?.examTag?.includes("2024"), "Exercise 3.8 should carry exam metadata");
+
+const golden = validateChapter3Pack(pack, undefined, {
+  exampleFormalLabels: lists.examples.map((x) => x.formalLabel),
+  exerciseFormalLabels: lists.exercises.map((x) => x.formalLabel),
+  exercise3_8: { importance: ex38?.importance, examTag: ex38?.examTag },
+});
+assert.ok(golden.ok, golden.errors.join("; "));
 
 const methodTitles = pack.methods.map((m) => m.problemType).join(" | ");
 assert.ok(/Algorithm\s*7/i.test(methodTitles), `expected Algorithm 7 method; got ${methodTitles}`);

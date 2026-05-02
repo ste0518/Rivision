@@ -11,10 +11,12 @@
  */
 
 import { mathStatusFromValidation, validateLatexSnippet } from "@/lib/latex-validate";
+import { applyMathNormalisation } from "@/lib/math-normalisation";
 import { cleanUploadedStudySourceText } from "@/lib/source-text-cleanup";
 import { convertCommonMathToLatex } from "@/lib/revision-item-utils";
 import {
   extractSectionHeadingsFromText,
+  findFirstInteriorSectionHeadingIndex,
   mergeExtractedSectionHeadings,
   truncateBodyBeforeInteriorSectionHeading,
   type ExtractedSectionHeading,
@@ -176,6 +178,16 @@ const MC_CHAPTER_PROPOSITION_TITLE: Record<string, string> = {
   "3.6": "Unbiased marginal likelihood estimator",
 };
 
+/** Chapter-specific exam traps for Proposition 3.1–3.6 (Monte Carlo integration). */
+const MC_PROP_COMMON_MISTAKE: Record<string, string> = {
+  "3.1": "Forgetting to justify linearity of expectation for the sample average, or confusing target draws with proposal draws.",
+  "3.2": "Forgetting the 1/N factor in the variance of the estimator, or confusing Var(φ(X)) with Var(φ̂).",
+  "3.3": "Using p instead of q inside expectations under the proposal, or forgetting the support condition q(x)>0 whenever p*(x)>0.",
+  "3.4": "Mixing Var_q(φ̂_IS) with MC variance formulas, or mishandling the centred square form.",
+  "3.5": "Assuming SNIS is unbiased, or using raw weights instead of normalised weights in the SNIS average.",
+  "3.6": "Confusing marginal likelihood with a posterior density, or mishandling proposal normalisation in the evidence estimator.",
+};
+
 function isMonteCarloIntegrationHeavyContext(noteText: string): boolean {
   const lower = noteText.toLowerCase();
   return (
@@ -203,8 +215,15 @@ function collectLabelHits(text: string): LabelHit[] {
 }
 
 function isCitationReferenceLabel(text: string, index: number) {
-  const before = text.slice(Math.max(0, index - 52), index);
-  return /\b(see|cf\.|following|follow|compare|from)\s+$/i.test(before.trimEnd());
+  const before = text.slice(Math.max(0, index - 72), index);
+  return /\b(see|cf\.|following|follow|compare|from|recall|as in|e\.g\.)\s+$/i.test(before.trimEnd());
+}
+
+/** Example items must start at a line boundary (PDF glue often inlines “see Example …”). */
+function isExampleLabelAtLineStart(text: string, index: number): boolean {
+  const lineStart = text.lastIndexOf("\n", index - 1) + 1;
+  const gap = text.slice(lineStart, index);
+  return /^\s*$/.test(gap);
 }
 
 function isGarbageTheoremLabel(text: string, hit: LabelHit) {
@@ -215,7 +234,11 @@ function isGarbageTheoremLabel(text: string, hit: LabelHit) {
 
 /** Drop “see Example …” references and citation-broken theorem heads. */
 function filterStudyPackLabelHits(text: string): LabelHit[] {
-  return collectLabelHits(text).filter((h) => !isCitationReferenceLabel(text, h.index) && !isGarbageTheoremLabel(text, h));
+  return collectLabelHits(text).filter((h) => {
+    if (isCitationReferenceLabel(text, h.index) || isGarbageTheoremLabel(text, h)) return false;
+    if (/^example$/i.test(h.kind) && !isExampleLabelAtLineStart(text, h.index)) return false;
+    return true;
+  });
 }
 
 function clipInteriorEndAbsolute(text: string, bodyStart: number, hardEnd: number, kind: PackItemKind): number {
@@ -224,6 +247,8 @@ function clipInteriorEndAbsolute(text: string, bodyStart: number, hardEnd: numbe
   if (kind === "example" || kind === "exercise" || kind === "remark") {
     const fig = /\n\s*Figure\s+\d+/i.exec(segment);
     if (fig && fig.index >= 12) rel = Math.min(rel, fig.index);
+    const secIdx = findFirstInteriorSectionHeadingIndex(segment, 16);
+    if (secIdx !== undefined && secIdx >= 12) rel = Math.min(rel, secIdx);
   }
   const bib = /\n\s*(?:BIBLIOGRAPHY|References|REFERENCES)\b/i.exec(segment);
   if (bib && bib.index >= 24) rel = Math.min(rel, bib.index);
@@ -414,9 +439,14 @@ function extractProofBlocks(fullText: string, sourceFile: string, sections: Extr
     const cur = proofMatches[i]!;
     const nextProof = proofMatches[i + 1]?.start ?? text.length;
     const nextLabelled = labelledStarts.find((idx) => idx > cur.contentStart) ?? text.length;
-    const after = Math.min(nextProof, nextLabelled);
+    let after = Math.min(nextProof, nextLabelled);
+    const segment = text.slice(cur.contentStart, after);
+    const secIdx = findFirstInteriorSectionHeadingIndex(segment, 12);
+    if (secIdx !== undefined && secIdx >= 10) after = Math.min(after, cur.contentStart + secIdx);
+    const bib = /\n\s*(?:BIBLIOGRAPHY|References|REFERENCES)\b/i.exec(segment);
+    if (bib && bib.index >= 14) after = Math.min(after, cur.contentStart + bib.index);
     const body = text.slice(cur.contentStart, after).trim();
-    if (body.length < 15) continue;
+    if (body.length < 8) continue;
     out.push({
       kind: "proof",
       formalLabel: "Proof",
@@ -507,7 +537,7 @@ function scoreBlock(b: LabelledBlock): number {
 
 /** PDF / OCR cleanup for math-heavy notes; conservative — formatting only. */
 export function normalizeMathText(text: string): string {
-  let t = text.replace(/\r\n/g, "\n");
+  let t = applyMathNormalisation(text.replace(/\r\n/g, "\n"));
   t = t.replace(/\uFFFE|\u0000/g, "");
   t = t.replace(/\\\(\s*\\\(/g, "\\(").replace(/\\\)\s*\\\)/g, "\\)");
   t = t.replace(/\\?\(([^)]*)\\?\)\s*\)\s*n\s*([≥≥>=])\s*0/gi, (_, inner: string, rel: string) => {
@@ -756,20 +786,45 @@ const FORMULA_PATTERNS: Array<{ name: string; matcher: RegExp; latex: string; wh
   },
   {
     name: "MC estimator variance",
-    matcher: /Var\s*\(\s*\\?hat\s*\\?phi\^?N\s*_\{?MC\}?\s*\)\s*=\s*Var/i,
-    latex: "\\operatorname{Var}(\\hat\\phi^N_{\\mathrm{MC}}) = \\frac{\\operatorname{Var}(\\phi(X))}{N}",
-    whenToUse: "1/N scaling of the variance for an i.i.d. Monte Carlo average.",
+    matcher: /Var\s*_\{?\s*p|Var\s*\(\s*\\?hat\s*\\?phi\^?N\s*_\{?MC\}?\s*\)\s*=\s*Var/i,
+    latex:
+      "\\operatorname{Var}_{p^\\star}(\\hat\\phi^N_{\\mathrm{MC}}) = \\frac{1}{N}\\operatorname{Var}_{p^\\star}(\\phi(X))",
+    whenToUse: "1/N scaling of the variance for an i.i.d. Monte Carlo average under the target law.",
+  },
+  {
+    name: "Empirical variance estimator",
+    matcher: /hat\s*\{\s*sigma|sigma\s*\^?\s*2\s*_\{?\s*phi|empirical\s+variance/i,
+    latex: "\\hat\\sigma_{\\phi,N}^2 = \\frac{1}{N^2}\\sum_{i=1}^N(\\phi(X_i)-\\hat\\phi^N_{\\mathrm{MC}})^2",
+    whenToUse: "Empirical MC variance estimate from sample residuals.",
+  },
+  {
+    name: "Indicator probability estimator",
+    matcher: /widehat\s*\{\s*P\s*\}|\\?hat\s*P\s*\(|1\s*_?\s*A\s*\(\s*X|indicator\s+probability/i,
+    latex: "\\widehat{\\mathbb{P}}(X\\in A)=\\frac{1}{N}\\sum_{i=1}^N \\mathbf{1}_A(X_i)",
+    whenToUse: "Monte Carlo estimate of a probability via an indicator test function.",
   },
   {
     name: "Estimator bias",
     matcher: /bias\s*\(\s*\\?hat\s*\\?phi\^?N\s*\)\s*=\s*E\s*\[/i,
-    latex: "\\operatorname{bias}(\\hat\\phi^N) = \\mathbb{E}[\\hat\\phi^N] - \\bar\\phi",
+    latex: "\\operatorname{bias}(\\hat\\phi^N) = \\mathbb{E}[\\hat\\phi^N]-\\bar\\phi",
     whenToUse: "Bias of an estimator relative to the target mean \\bar\\phi.",
   },
   {
+    name: "Estimator variance (general)",
+    matcher: /Var\s*\(\s*\\?hat\s*\\?phi\^?N\s*\)\s*=\s*E\s*\[\s*\(\s*\\?hat\s*\\?phi/i,
+    latex: "\\operatorname{Var}(\\hat\\phi^N)=\\mathbb{E}[(\\hat\\phi^N-\\mathbb{E}[\\hat\\phi^N])^2]",
+    whenToUse: "Variance of an estimator as squared deviation from its expectation.",
+  },
+  {
+    name: "Mean squared error",
+    matcher: /MSE\s*\(\s*\\?hat\s*\\?phi|MSE\s*\(\s*hat\s*phi/i,
+    latex: "\\mathrm{MSE}(\\hat\\phi^N)=\\mathbb{E}[(\\hat\\phi^N-\\bar\\phi)^2]",
+    whenToUse: "MSE relative to the target functional \\bar\\phi.",
+  },
+  {
     name: "MSE decomposition",
-    matcher: /MSE\s*=\s*bias|MSE\s*=\s*Bias/i,
-    latex: "\\mathrm{MSE} = \\mathrm{bias}^2 + \\mathrm{variance}",
+    matcher: /MSE\s*=\s*bias|MSE\s*=\s*Bias|MSE\s*\(\s*\\?hat/i,
+    latex: "\\mathrm{MSE}(\\hat\\phi^N)=\\operatorname{bias}(\\hat\\phi^N)^2+\\operatorname{Var}(\\hat\\phi^N)",
     whenToUse: "Bias–variance decomposition of mean squared error.",
   },
   {
@@ -787,8 +842,27 @@ const FORMULA_PATTERNS: Array<{ name: string; matcher: RegExp; latex: string; wh
   {
     name: "IS estimator variance",
     matcher: /Var\s*_?\{?q\}?\s*\(\s*\\?hat\s*\\?phi\^?N\s*_\{?IS\}?\s*\)|Var\s*\(\s*\\?hat\s*\\?phi\^?N\s*_\{?IS\}/i,
-    latex: "\\operatorname{Var}_q(\\hat\\phi^N_{\\mathrm{IS}}) = \\frac{1}{N}\\Big(\\mathbb{E}_q[w^2(X)\\phi^2(X)] - \\bar\\phi^2\\Big)",
+    latex:
+      "\\operatorname{Var}_q(\\hat\\phi^N_{\\mathrm{IS}})=\\frac{1}{N}\\big(\\mathbb{E}_q[w(X)^2\\phi(X)^2]-\\bar\\phi^2\\big)",
     whenToUse: "Variance of the importance sampling estimator under proposal q.",
+  },
+  {
+    name: "IS identity (change of measure)",
+    matcher: /bar\s*\{\s*phi\s*\}.*int\s*phi\s*\(\s*x\s*\).*p\*/i,
+    latex: "\\bar\\phi=\\int \\phi(x)\\frac{p^\\star(x)}{q(x)}q(x)\\,dx",
+    whenToUse: "Rewriting the target expectation as an expectation under the proposal q.",
+  },
+  {
+    name: "Finite variance condition (IS)",
+    matcher: /finite\s+variance|E\s*_?\{?q\s*\}\s*\[\s*w\(\s*X\s*\)\s*\^?\s*2|E_q\s*\[\s*w\(\s*X\s*\)/i,
+    latex: "\\mathbb{E}_q[w(X)^2\\phi(X)^2]<\\infty",
+    whenToUse: "Square-integrability condition for bounded IS variance.",
+  },
+  {
+    name: "Optimal IS proposal",
+    matcher: /optimal\s+proposal|q\s*\^\s*\\?\*\s*\(\s*x\s*\).*phi\s*\(\s*x\s*\)/i,
+    latex: "q^\\star(x)=\\dfrac{|\\phi(x)|p^\\star(x)}{\\mathbb{E}_{p^\\star}[|\\phi(X)|]}",
+    whenToUse: "Variance-minimising proposal within an unconstrained family (sign-aware form).",
   },
   {
     name: "Unnormalised weight W(x)",
@@ -816,27 +890,28 @@ const FORMULA_PATTERNS: Array<{ name: string; matcher: RegExp; latex: string; wh
   },
   {
     name: "Root mean squared error (RMSE)",
-    matcher: /\bRMSE\b\s*[:=]|\broot\s+mean\s+squared\s+error\b/i,
-    latex: "\\mathrm{RMSE} = \\sqrt{\\mathrm{MSE}}",
-    whenToUse: "Scalar error metric for estimators; related to MSE as RMSE=√MSE.",
+    matcher: /\bRMSE\b\s*\(\s*\\?hat\s*\\?phi|\bRMSE\b\s*[:=]/i,
+    latex: "\\mathrm{RMSE}(\\hat\\phi^N)=\\sqrt{\\mathrm{MSE}(\\hat\\phi^N)}",
+    whenToUse: "Scalar error metric for estimators; RMSE is the square root of MSE.",
   },
   {
     name: "Relative absolute error (RAE)",
-    matcher: /\bRAE\b\s*[:=]|\brelative\s+absolute\s+error\b/i,
-    latex: "\\mathrm{RAE} = \\dfrac{|\\hat\\phi - \\phi|}{|\\phi|}",
-    whenToUse: "Scale-free comparison of estimator error.",
+    matcher: /\bRAE\b\s*\(\s*\\?hat|\bRAE\b\s*[:=]/i,
+    latex: "\\mathrm{RAE}(\\hat\\phi^N)=|\\hat\\phi^N-\\bar\\phi|/|\\bar\\phi|",
+    whenToUse: "Scale-free relative error versus the target mean.",
   },
   {
     name: "Mixture importance sampling proposal",
-    matcher: /mixture\s+proposal|mixture\s+importance|q\s*\(\s*x\s*\)\s*=\s*\\?sum\s*_?\s*j/i,
-    latex: "q(x) = \\sum_{j=1}^J \\beta_j q_j(x)",
-    whenToUse: "Mixture proposals for covering multimodal targets in importance sampling.",
+    matcher: /mixture\s+proposal|q\s*_?\{?\s*alpha\s*\}?|mixture\s+importance/i,
+    latex: "q_\\alpha(x)=\\sum_{k=1}^K \\alpha_k q_k(x)",
+    whenToUse: "Convex combination of component proposals for defensive importance sampling.",
   },
   {
     name: "Log-weight stabilisation",
-    matcher: /log\s*-?\s*weight|log\s*w\s*_?i|subtract\s+max\s+log\s*weight/i,
-    latex: "\\log \\tilde w_i = \\log W_i - \\max_j \\log W_j",
-    whenToUse: "Numerically stable computation of weights via log-domain shifts.",
+    matcher: /widetilde\s*\{\\s*log|log\s*-?\s*weight\s*stabil|max\s*_?\s*j\s*\\?\s*log\s*W/i,
+    latex:
+      "\\widetilde{\\log W_i}=\\log \\bar p^\\star(X_i)-\\log q(X_i)-\\max_j\\log W_j",
+    whenToUse: "Numerically stable centred log-weights for SNIS implementations.",
   },
 ];
 
@@ -914,7 +989,7 @@ function dedupeFormulas(items: GeneratedFormulaItem[]): GeneratedFormulaItem[] {
     if (out.some((x) => jaccardSimilarity(x.latex, f.latex) > 0.92)) continue;
     out.push(f);
   }
-  return out.slice(0, 56);
+  return out.slice(0, 80);
 }
 
 function defaultFormulaWhenToUse(lectureText: string): string {
@@ -956,11 +1031,27 @@ function buildLikelyExamStructureSnippet(combinedLectureText: string, hasPastEvi
 // Definitions, proofs, methods
 // ---------------------------------------------------------------------------
 
+function clipEssDefinitionBody(body: string, formalLabel?: string, term?: string): string {
+  const head = `${formalLabel ?? ""} ${term ?? ""}`.toLowerCase();
+  const blob = body.toLowerCase();
+  const looksEss = /\bess\b|effective\s+sample/i.test(blob) || /effective\s+sample/i.test(head);
+  if (!looksEss) return body;
+
+  const bounded = body.match(/1\s*(?:≤|<=|<)\s*ESS(?:_N|\s*N)\s*(?:≤|<=|<)\s*N\s*\./i);
+  if (bounded && bounded.index !== undefined) return body.slice(0, bounded.index + bounded[0].length).trim();
+
+  const mix = body.search(/\n\s*(?:\d+\.){2,}\s*(?:Mixture|mixture)\s+importance/i);
+  if (mix > 40) return body.slice(0, mix).trim();
+  const bib = body.search(/\n\s*(?:BIBLIOGRAPHY|Bibliography|References|REFERENCES)\b/i);
+  if (bib > 40) return body.slice(0, bib).trim();
+  return truncateBodyBeforeInteriorSectionHeading(body);
+}
+
 function blocksToDefinitions(blocks: LabelledBlock[]): GeneratedDefinitionItem[] {
   return blocks
     .filter((b) => b.kind === "definition")
     .map((b) => {
-      const clipped = truncateBodyBeforeInteriorSectionHeading(b.body).slice(0, 3500);
+      const clipped = clipEssDefinitionBody(truncateBodyBeforeInteriorSectionHeading(b.body).slice(0, 3500), b.formalLabel, b.displayTitle);
       const defText = normalizeMathText(clipped);
       const snippet = defText.slice(0, 700);
       const v = validateLatexSnippet(snippet);
@@ -1049,7 +1140,7 @@ function proofSkeletonFromBody(title: string, body: string): { skeleton: string;
   const mcChapter =
     /\bmonte\s*carlo\b|\bimportance\s*sampling\b|\bsnis\b|\bself[-\s]?normali/.test(lower) &&
     !/\b(simple\s+kriging|ordinary\s+kriging|semivariogram)\b/.test(lower);
-  if (mcChapter && /monte\s*carlo/.test(lower) && /unbiased|expectation/.test(lower) && /hat|mc\s+estimator|ϕˆ/i.test(lower)) {
+  if (mcChapter && /monte\s*carlo/.test(lower) && /unbiased|expectation/.test(lower) && /hat|mc\s+estimator|\bphi\b/i.test(lower)) {
     return {
       skeleton:
         "Write the MC estimator as an average of ϕ(X_i); use linearity of expectation and i.i.d. sampling from the target to relate E[estimator] to E[ϕ(X)].",
@@ -1130,6 +1221,20 @@ function proofSkeletonFromBody(title: string, body: string): { skeleton: string;
   };
 }
 
+function proofStepsFromBody(body: string): string[] {
+  const cleaned = body.replace(/\s+/g, " ").trim();
+  const sentences = cleaned
+    .split(/(?<=[.!?])\s+(?=[A-Z(\\[{])/)
+    .map((s) => s.trim())
+    .filter((s) => s.length > 16);
+  if (sentences.length >= 2) return sentences.slice(0, 14);
+  return body
+    .split(/\n+/)
+    .map((l) => l.trim())
+    .filter((l) => l.length > 16)
+    .slice(0, 14);
+}
+
 /** Build proof items from theorem/proposition/lemma blocks plus paired Proof bodies only (no orphan Proof paragraphs). */
 function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[]): GeneratedProofItem[] {
   const STMT_KINDS: PackItemKind[] = ["theorem", "proposition", "lemma"];
@@ -1138,23 +1243,33 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[]): 
   const items: GeneratedProofItem[] = [];
 
   for (const b of stmtBlocks) {
+    const later = blocks.filter((x) => x.sourceFile === b.sourceFile && x.startOffset > b.startOffset);
+    const nextBoundary = later.length ? Math.min(...later.map((x) => x.startOffset)) : Number.POSITIVE_INFINITY;
     const proof = proofBlocks
-      .filter((p) => p.sourceFile === b.sourceFile && p.startOffset > b.startOffset)
+      .filter((p) => p.sourceFile === b.sourceFile && p.startOffset > b.startOffset && p.startOffset < nextBoundary)
       .sort((a, c) => a.startOffset - c.startOffset)[0];
 
-    if (!proof?.body?.trim() || proof.body.trim().length < 22) continue;
+    if (!proof?.body?.trim() || proof.body.trim().length < 8) continue;
 
     const heading = `${b.formalLabel}: ${b.displayTitle}`;
     const { skeleton, mistake } = proofSkeletonFromBody(b.displayTitle, `${b.body}\n${proof.body}`);
     const statementOnly = truncateBodyBeforeInteriorSectionHeading(b.body.split(/(?:^|\n)\s*Proof\s*[.:]/i)[0]!.trim());
     if (/^(example|sketch|remark)\b/i.test(statementOnly) || /^consider\s+the\s+following\s+example\b/i.test(statementOnly)) continue;
+    if (/\btheorem\s+1\s+for\s+the\s+proof\b/i.test(statementOnly)) continue;
+
+    const mcMistake =
+      b.kind === "proposition" && MC_PROP_COMMON_MISTAKE[b.number] ? MC_PROP_COMMON_MISTAKE[b.number] : mistake;
+    const steps = proofStepsFromBody(proof.body);
+
     items.push({
       id: createId("prf"),
       name: heading,
       proofName: heading,
       statement: normalizeMathText(statementOnly.slice(0, 1500)),
-      proofSkeleton: proof ? `Proof outline: ${normalizeMathText(proof.body.slice(0, 800))}\n\nKey idea: ${skeleton}` : skeleton,
-      commonMistake: mistake,
+      proofSteps: steps,
+      proofSkeleton: `Proof outline: ${normalizeMathText(proof.body.slice(0, 800))}\n\nKey idea: ${skeleton}`,
+      commonMistake: mcMistake,
+      importance: "must_know",
       source: b.sourceFile,
       sourceFile: b.sourceFile,
       sourcePage: b.sourcePage,
@@ -1342,7 +1457,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const { files, settings, combinedLectureText, hasPastEvidence } = ctx;
   const lectureFiles = files.filter((f) => f.role === "lecture_notes" || f.role === "formula_sheet" || f.role === "other");
   const primaryName = lectureFiles[0]?.name ?? files[0]?.name ?? "your materials";
-  const cleanedCombined = cleanUploadedStudySourceText(combinedLectureText.replace(/\r\n/g, "\n"));
+  const cleanedCombined = applyMathNormalisation(cleanUploadedStudySourceText(combinedLectureText.replace(/\r\n/g, "\n")));
   const sectionsMerged = mergeSectionHeadingsForPack(lectureFiles, cleanedCombined);
   const sections = extractSectionHeadings(cleanedCombined);
   const courseContext = cleanedCombined;
@@ -1350,7 +1465,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const allBlocks: LabelledBlock[] = [];
   const allProofBlocks: LabelledBlock[] = [];
   for (const f of lectureFiles) {
-    const t = cleanUploadedStudySourceText(f.parsedText ?? "");
+    const t = applyMathNormalisation(cleanUploadedStudySourceText(f.parsedText ?? ""));
     if (!t.trim()) continue;
     const fileSections = extractSectionHeadings(t);
     allBlocks.push(...extractLabelledBlocks(t, f.name, fileSections, courseContext));
@@ -1462,6 +1577,9 @@ function extractFormulasFromBlocks(blocks: LabelledBlock[], primarySource: strin
   const include: PackItemKind[] = ["definition", "theorem", "proposition", "lemma"];
   for (const b of blocks) {
     if (!include.includes(b.kind)) continue;
+    if (b.kind === "proposition" && b.number === "3.5" && /snis|mean\s+squared|mse/i.test(`${b.body} ${b.displayTitle}`)) {
+      continue;
+    }
     const lines = b.body.split("\n").map((l) => l.trim()).filter(Boolean);
     for (const line of lines) {
       if (!looksLikeFormula(line)) continue;
@@ -1577,22 +1695,42 @@ export type DebugExampleExerciseItem = {
   title: string;
   formalLabel: string;
   body: string;
+  /** First paragraph / problem statement heuristic. */
+  problem?: string;
+  solutionSummary?: string;
+  keyFormulaIds?: string[];
   sourceFile: string;
   sourcePage?: number;
   sourceSection?: string;
   rawBlock: string;
+  importance?: DefinitionImportance;
+  examTag?: string;
+  subQuestions?: Array<{ label: string; text: string }>;
   /** Set when the block matches exam-critical wording (e.g. cited past finals). */
   highPriority?: boolean;
 };
 
+function splitExerciseSubQuestions(body: string): Array<{ label: string; text: string }> | undefined {
+  const t = body.replace(/\r\n/g, "\n").trim();
+  if (t.length < 900) return undefined;
+  const chunks = t.split(/\n(?=\s*\(\s*[a-z]\s*\)\s*)/i).filter((c) => c.trim().length > 20);
+  if (chunks.length < 2) return undefined;
+  const out: Array<{ label: string; text: string }> = [];
+  for (const chunk of chunks) {
+    const m = chunk.match(/^\s*\(\s*([a-z])\s*\)\s*([\s\S]+)/i);
+    if (m) out.push({ label: `(${m[1]!.toLowerCase()})`, text: m[2]!.trim().slice(0, 4000) });
+  }
+  return out.length >= 2 ? out : undefined;
+}
+
 /** Collect Example N / Exercise N blocks from lecture text for JSON export and QA. */
 export function extractExampleAndExerciseItemsForDebug(files: LecturePackFile[]): { examples: DebugExampleExerciseItem[]; exercises: DebugExampleExerciseItem[] } {
   const lectureFiles = files.filter((f) => f.role === "lecture_notes" || f.role === "formula_sheet" || f.role === "other");
-  const courseContext = lectureFiles.map((f) => cleanUploadedStudySourceText(f.parsedText ?? "")).join("\n\n");
+  const courseContext = lectureFiles.map((f) => applyMathNormalisation(cleanUploadedStudySourceText(f.parsedText ?? ""))).join("\n\n");
   const exampleBlocks: LabelledBlock[] = [];
   const exerciseBlocks: LabelledBlock[] = [];
   for (const f of lectureFiles) {
-    const t = cleanUploadedStudySourceText(f.parsedText ?? "");
+    const t = applyMathNormalisation(cleanUploadedStudySourceText(f.parsedText ?? ""));
     if (!t.trim()) continue;
     const fileSections = extractSectionHeadings(t);
     const blocks = extractLabelledBlocks(t, f.name, fileSections, courseContext);
@@ -1603,23 +1741,34 @@ export function extractExampleAndExerciseItemsForDebug(files: LecturePackFile[])
   }
   const map = (b: LabelledBlock, kind: "example" | "exercise"): DebugExampleExerciseItem => {
     const blob = `${b.body}\n${b.rawBlock}`;
-    const highPriority =
-      kind === "exercise" &&
-      b.number === "3.8" &&
-      /\bfinal\s+exam\b/i.test(blob) &&
-      /\b2024\b/.test(blob);
-    return {
+    const chapterMajor = inferChapterMajorPrefixFromFilename(b.sourceFile);
+    const isCh3Ex38 = kind === "exercise" && chapterMajor === "3." && b.number === "3.8";
+    const highPriority = isCh3Ex38 || (kind === "exercise" && b.number === "3.8" && /\bfinal\s+exam\b/i.test(blob) && /\b2024\b/.test(blob));
+    const problem = b.body.split(/\n\s*\n/)[0]?.trim() ?? b.body.trim();
+    const subQ = kind === "exercise" ? splitExerciseSubQuestions(b.body) : undefined;
+    const base: DebugExampleExerciseItem = {
       id: createId(kind === "example" ? "ex" : "exe"),
       kind,
       title: b.displayTitle,
       formalLabel: b.formalLabel,
-      body: b.body,
+      body: normalizeMathText(b.body),
+      problem,
+      solutionSummary: undefined,
+      keyFormulaIds: [],
       sourceFile: b.sourceFile,
       sourcePage: b.sourcePage,
       sourceSection: b.sourceSection,
-      rawBlock: b.rawBlock,
-      ...(highPriority ? { highPriority: true } : {}),
+      rawBlock: normalizeMathText(b.rawBlock),
     };
+    if (subQ?.length) base.subQuestions = subQ;
+    if (isCh3Ex38) {
+      base.importance = "must_know";
+      base.examTag = "Final Exam Q2, 2024";
+      base.highPriority = true;
+    } else if (highPriority) {
+      base.highPriority = true;
+    }
+    return base;
   };
   return {
     examples: dedupeLabelledBlocks(exampleBlocks).map((b) => map(b, "example")),

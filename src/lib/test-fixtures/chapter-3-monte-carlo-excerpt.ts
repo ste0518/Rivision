@@ -37,6 +37,12 @@ Proof. Change variables under q.
 Proposition 3.4 (Importance sampling estimator variance). The variance of the IS estimator is given by the standard IS variance formula.
 Proof. Expand the square and simplify.
 
+Proposition 3.5 (SNIS mean squared error bound). Self-normalised importance sampling admits a finite-sample MSE bound versus the ratio estimator.
+Proof. Use the ratio decomposition and control the random denominator.
+
+Proposition 3.6 (Marginal likelihood estimator unbiasedness). Under standard regularity, an unbiased estimator of the marginal likelihood exists via importance sampling.
+Proof. Apply the identity trick with a normalized proposal integral.
+
 The target mean is
 bar{phi} = E_{p*}[phi(X)] = int phi(x) p*(x) dx
 and the empirical measure is
@@ -62,8 +68,8 @@ hat phi^N_SNIS = sum_i bar w_i phi(X_i) with
 bar w_i = W(X_i) / sum_j W(X_j).
 
 Definition 3.1 (Effective Sample Size). A useful diagnostic is
-ESS_N = 1 / sum_i bar w_i^2
-which measures how many i.i.d. samples carry similar information to the weighted set. This definition only concerns ESS; later sections study mixture proposals.
+ESS_N = 1 / sum_i bar w_i^2.
+We always have 1 ≤ ESS_N ≤ N.
 
 3.5.4 Mixture importance sampling
 
@@ -91,5 +97,73 @@ Algorithm 8 (Self-normalised importance sampling)
 6: estimate hat phi^N_SNIS = sum_i bar w_i phi(X_i)
 
 Sampling importance resampling draws multinomial resamples using normalised weights.
+
+hat sigma_{phi,N}^2 = 1/N^2 sum_{i=1}^N (phi(X_i)-hat phi^N_MC)^2.
+
+widehat P(X in A) = 1/N sum 1_A(X_i).
+
+Var(hat phi^N) = E[(hat phi^N - E[hat phi^N])^2].
+
+MSE(hat phi^N) = E[(hat phi^N - bar phi)^2].
+
+RMSE(hat phi^N) = sqrt(MSE(hat phi^N)).
+
+RAE(hat phi^N) = |hat phi^N - bar phi|/|bar phi|.
+
+Finite variance condition E_q[w(X)^2 phi(X)^2] < infinity.
+
+bar phi = int phi(x) p*(x)/q(x) q(x) dx.
+
+Optimal proposal q*(x) ties to |phi(x)| p*(x).
+
+Mixture proposal q_alpha(x) = sum_{k=1}^K alpha_k q_k(x).
+
+Log-weight stabilisation widetilde log W_i = log bar p*(X_i) - log q(X_i) - max_j log W_j.
+
+Example 3.1. Illustration of MC variance scaling with N.
+
+Example 3.2. Tail probability for Gaussian tail event.
+
+Example 3.3. Setting up importance sampling for a rare event.
+
+Example 3.4. Computing and monitoring weights.
+
+Example 3.5. Comparing two proposals on variance.
+
+Example 3.6. Self-normalised estimates on a toy target.
+
+Example 3.7. Effective sample size numeric illustration.
+
+Example 3.8. Rare-event probability under extreme thresholds.
+
+Example 3.9. Mixture proposal covering modes.
+
+Exercise 3.1. Prove unbiasedness of the MC estimator.
+
+Exercise 3.2. Derive the MC variance formula.
+
+Exercise 3.3. State the IS identity and identify expectations.
+
+Exercise 3.4. State the support condition for IS.
+
+Exercise 3.5. Give the finite variance condition.
+
+Exercise 3.6. Explain SNIS bias in two sentences.
+
+Exercise 3.7. Compute ESS for equal weights.
+
+Exercise 3.8. Final Exam Q2 2024 integrative practice.
+
+(a) Derive a bound.
+
+(b) Interpret ESS.
+
+Exercise 3.9. Explain log-weight stabilisation.
+
+Exercise 3.10. Mixture importance sampling setup.
+
+Exercise 3.11. Diagnostics for weight degeneracy.
+
+Exercise 3.12. Review all estimator relationships.
 
 `;

@@ -193,11 +193,15 @@ export function mergeExtractedSectionHeadings(...lists: ExtractedSectionHeading[
  * Truncate a definition/theorem body when PDF glue merges later sections into the same block.
  * Stops before the first interior line that looks like a numbered section heading.
  */
-export function truncateBodyBeforeInteriorSectionHeading(body: string, minOffset = 48): string {
+/**
+ * Index of the first interior numbered section heading (e.g. `3.3 Importance sampling`) inside `body`,
+ * or undefined if none. Used to stop Example/Exercise blocks from swallowing later sections.
+ */
+export function findFirstInteriorSectionHeadingIndex(body: string, minOffset = 48): number | undefined {
   const text = body.replace(/\r\n/g, "\n");
   const re = /(?:^|\n)\s*(\d{1,2}(?:\.\d+){1,3})\s+([A-Za-z\u00C0-\u024F][^\n]{6,160})/g;
   let m: RegExpExecArray | null;
-  let best = text.length;
+  let best: number | undefined;
   while ((m = re.exec(text)) !== null) {
     const idx = m.index ?? 0;
     if (idx < minOffset) continue;
@@ -205,8 +209,14 @@ export function truncateBodyBeforeInteriorSectionHeading(body: string, minOffset
     if (isNoiseNumber(num)) continue;
     const rawTitle = (m[2] ?? "").trim();
     if (/^(definition|theorem|lemma|proposition|corollary|remark|example|proof|algorithm|exercise)\b/i.test(rawTitle)) continue;
-    if (idx < best) best = idx;
+    if (best === undefined || idx < best) best = idx;
   }
-  if (best < text.length) return text.slice(0, best).trim();
+  return best;
+}
+
+export function truncateBodyBeforeInteriorSectionHeading(body: string, minOffset = 48): string {
+  const text = body.replace(/\r\n/g, "\n");
+  const cut = findFirstInteriorSectionHeadingIndex(text, minOffset);
+  if (cut !== undefined && cut < text.length) return text.slice(0, cut).trim();
   return body;
 }

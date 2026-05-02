@@ -161,7 +161,7 @@ export default function UploadPage() {
         examOverview: { ...studentPack.examOverview, ...(recallWarning ? { reviewCardsWarning: recallWarning } : {}) },
       };
 
-      const starterPractice = generateQuickPracticeQuestions(studentPackWithNote, 12);
+      const starterPractice = generateQuickPracticeQuestions(studentPackWithNote, 18);
       const revisionItemsForStore = recallFromPack.length > 0 ? recallFromPack : result.items;
 
       store.setRevisionItems(revisionItemsForStore, result.rejectedItems, {

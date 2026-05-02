@@ -105,6 +105,8 @@ export function cardFromProof(p: GeneratedProofItem): RevisionItem {
     p.sourceFile ||
     p.source ||
     "study pack";
+  const stepsBlock =
+    p.proofSteps && p.proofSteps.length > 0 ? `\n\nSteps:\n${p.proofSteps.map((s, i) => `${i + 1}. ${s}`).join("\n")}` : "";
   return baseItem({
     type: "proof",
     title: p.proofName ?? p.name,
@@ -122,7 +124,7 @@ export function cardFromProof(p: GeneratedProofItem): RevisionItem {
     importance: "must_know",
     cardPurpose: "proof_recall",
     questionPrompt: `Prove or explain: ${p.proofName ?? p.name}`,
-    answer: `${p.proofSkeleton}\n\nCommon mistake: ${p.commonMistake}`,
+    answer: `${p.proofSkeleton}${stepsBlock}\n\nCommon mistake: ${p.commonMistake}`,
     revisionPackCategory: "proofsToKnow",
   });
 }
