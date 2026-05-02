@@ -24,6 +24,7 @@ import type {
   StudyFileRole,
   WorkedExamplePattern,
 } from "@/lib/types";
+import { extractSectionHeadingsFromText } from "@/lib/section-headings";
 import { createId } from "@/lib/utils";
 
 export type CoursePackBuilderInput = {
@@ -641,22 +642,20 @@ function buildChapters(document: ParsedDocument): CourseMap["chapters"] {
 }
 
 function inferSectionsFromText(document: ParsedDocument): CourseMap["chapters"][number]["sections"] {
-  const sections: CourseMap["chapters"][number]["sections"] = [];
-  const regex = /(?:^|\n)(\d+(?:\.\d+){0,3})\s+([A-Za-z][^\n]{3,120})(?=\n)/g;
-  for (const match of document.fullText.matchAll(regex)) {
-    const start = match.index ?? 0;
-    sections.push({
-      number: match[1],
-      sectionNumber: match[1],
-      title: match[2].trim(),
+  const extracted = extractSectionHeadingsFromText(document.fullText);
+  return extracted.slice(0, 80).map((section) => {
+    const start = section.startOffset;
+    return {
+      number: section.sectionNumber,
+      sectionNumber: section.sectionNumber,
+      title: section.title,
       sourceFile: document.sourceFile,
       pageStart: pageAtOffset(document, start),
-      summary: excerptAround(document.fullText.slice(start, start + 900), match[2]),
-      detectedImportance: "unknown",
-      likelyImportance: "unknown",
-    });
-  }
-  return sections.slice(0, 80);
+      summary: excerptAround(document.fullText.slice(start, start + 900), section.title),
+      detectedImportance: "unknown" as const,
+      likelyImportance: "unknown" as const,
+    };
+  });
 }
 
 function inferCourseTitle(documents: ParsedDocument[], courseType: CourseType) {

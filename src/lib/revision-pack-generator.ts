@@ -1,6 +1,8 @@
 import { inferStudyFileRole } from "@/lib/course-files";
-import { buildHeuristicStudentRevisionPack } from "@/lib/local-study-pack-extraction";
+import { buildHeuristicStudentRevisionPack, CORE_IDEA_PLACEHOLDER } from "@/lib/local-study-pack-extraction";
+import { cardFromDefinition, cardFromFormula, cardFromMethod, cardFromProof } from "@/lib/pack-to-card";
 import type { GeneratedDefinitionItem, GeneratedPracticeQuestion, GeneratedRevisionPack } from "@/lib/student-revision-schema";
+import type { RevisionItem } from "@/lib/types";
 import type { StudyFile, StudyFileRole } from "@/lib/types";
 import { createId } from "@/lib/utils";
 
@@ -27,6 +29,28 @@ function combinedText(files: PackSourceFile[]) {
 }
 
 /** Builds the structured student Study Pack using local heuristics (labelled blocks, sections, formulas). */
+/** One active-recall card per study-pack item (definitions, formulas, proofs, methods) when the pack is non-empty. */
+export function buildRevisionItemsFromStudentPack(pack: GeneratedRevisionPack): RevisionItem[] {
+  const out: RevisionItem[] = [];
+  for (const d of pack.definitions) {
+    if (CORE_IDEA_PLACEHOLDER.test(d.term)) continue;
+    out.push(cardFromDefinition(d));
+  }
+  for (const f of pack.formulas) out.push(cardFromFormula(f));
+  for (const p of pack.proofs) out.push(cardFromProof(p));
+  for (const m of pack.methods) out.push(cardFromMethod(m));
+  return out;
+}
+
+export function countTypedPackItems(pack: GeneratedRevisionPack): number {
+  return (
+    pack.definitions.filter((d) => !CORE_IDEA_PLACEHOLDER.test(d.term)).length +
+    pack.formulas.length +
+    pack.proofs.length +
+    pack.methods.length
+  );
+}
+
 export function generateStudentRevisionPack(input: {
   files: PackSourceFile[];
   settings: RevisionPackGeneratorSettings;

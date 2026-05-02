@@ -30,8 +30,12 @@ export const majorLabelWords = [
 
 const labelWords = [...majorLabelWords, "Formula", "Equation"];
 
+/**
+ * Numbered environment labels; optional parenthesised title; number optional for Proof/Remark/Example
+ * (e.g. `Algorithm 1 Pseudocode...` still has a number).
+ */
 export const ITEM_LABEL_RE = new RegExp(
-  `\\b(${majorLabelWords.join("|")})\\s*(\\d+(?:\\.\\d+)*)?\\s*(?:\\([^)]+\\))?\\s*(?:\\[[^\\]]+\\])?\\s*[\\.:]?`,
+  `\\b(${majorLabelWords.join("|")})\\s*(\\d+(?:\\.\\d+)*)?\\s*(?:\\([^)]+\\))?(?:\\s*\\[[^\\]]+\\])?`,
   "g",
 );
 

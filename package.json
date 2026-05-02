@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "eslint",
     "test:extraction": "tsx scripts/extraction-regression.ts",
-    "test:chapter4": "tsx scripts/chapter-4-extraction.test.ts"
+    "test:chapter4": "tsx scripts/chapter-4-extraction.test.ts",
+    "test:chapters12": "tsx scripts/chapters-1-2-extraction.test.ts"
   },
   "dependencies": {
     "@tailwindcss/postcss": "latest",

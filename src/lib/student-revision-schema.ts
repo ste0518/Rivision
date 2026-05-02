@@ -29,6 +29,8 @@ export interface ExamOverviewSection {
   summary: string;
   likelyExamStructure: string;
   highPriorityTopics: string[];
+  /** Shown when active recall cards come from a fallback path while typed pack items are empty. */
+  reviewCardsWarning?: string;
 }
 
 export interface GeneratedCourseTopic {

@@ -12,6 +12,7 @@
 
 import { mathStatusFromValidation, validateLatexSnippet } from "@/lib/latex-validate";
 import { convertCommonMathToLatex } from "@/lib/revision-item-utils";
+import { extractSectionHeadingsFromText, type ExtractedSectionHeading } from "@/lib/section-headings";
 import type {
   DefinitionImportance,
   GeneratedCommonMistake,
@@ -55,11 +56,7 @@ export type PackItemKind =
   | "formula"
   | "proof";
 
-export type ExtractedSection = {
-  sectionNumber: string;
-  title: string;
-  startOffset: number;
-};
+export type ExtractedSection = ExtractedSectionHeading;
 
 export type LabelledBlock = {
   kind: PackItemKind;
@@ -76,25 +73,14 @@ export type LabelledBlock = {
   importance: DefinitionImportance;
 };
 
-const LABELLED_HEAD = new RegExp(
-  [
-    "(?:^|\\n)\\s*",
-    "(Definition|Theorem|Proposition|Lemma|Corollary|Example|Exercise|Remark|Algorithm)",
-    "\\s+",
-    "(\\d+(?:\\.\\d+)*)",
-    "\\s*",
-    "(?:\\(([^)]+)\\))?",
-    "\\s*",
-    "(?:\\[[^\\]]+\\])?",
-    "\\s*",
-    "(?:[:.]\\s*)?",
-  ].join(""),
-  "gim",
-);
+/** Label prefix only; body begins after optional `. ` following the number/paren. */
+const LABEL_START_RE =
+  /(?:^|\n)\s*(Definition|Theorem|Proposition|Lemma|Corollary|Example|Exercise|Remark|Algorithm)\s+(\d+(?:\.\d+)*)(?:\s*\(([^)]+)\))?/gi;
 
 const PROOF_HEAD = /(?:^|\n)\s*Proof\s*[.:]\s*/gim;
 
-const CORE_IDEA_PLACEHOLDER = /^Core idea\s+\d+$/i;
+/** Exported for recall-card builders that skip placeholder definitions. */
+export const CORE_IDEA_PLACEHOLDER = /^Core idea\s+\d+$/i;
 
 function pageAtOffset(fullText: string, offset: number): number | undefined {
   let pageNumber: number | undefined;
@@ -105,37 +91,57 @@ function pageAtOffset(fullText: string, offset: number): number | undefined {
   return pageNumber;
 }
 
-/** Extract section headings like "4.1 Discrete state space Markov chains" (any case). */
+/** Section headings: single-chapter `1 INTRODUCTION`, nested `1.1.2 …`, banners, etc. */
 export function extractSectionHeadings(text: string): ExtractedSection[] {
-  const sections: ExtractedSection[] = [];
-  let offset = 0;
-  for (const line of text.split("\n")) {
-    const leading = line.length - line.trimStart().length;
-    const trimmed = line.trim();
-    // Accept "4.1", "4.1.2" etc. The title may be lowercase as in PDF text extraction.
-    const m = trimmed.match(/^(\d+(?:\.\d+)+)\s+([A-Za-z][^]{1,200})$/);
-    if (m) {
-      const rest = m[2].trim();
-      // Skip lines that are actually labelled blocks (Definition 4.1 ..., etc.).
-      if (!/^(definition|theorem|lemma|proposition|corollary|remark|example|proof|algorithm|exercise)\b/i.test(rest)) {
-        // Reject super-noisy headings that look like equations or table rows.
-        if (!/[=∑∫∏≥≤<>]/.test(rest) && rest.length <= 160) {
-          sections.push({
-            sectionNumber: m[1],
-            title: titleCase(rest.replace(/\s+/g, " ").trim()),
-            startOffset: offset + leading,
-          });
-        }
-      }
-    }
-    offset += line.length + 1;
-  }
-  return sections;
+  return extractSectionHeadingsFromText(text);
 }
 
-function titleCase(value: string): string {
-  // Simple capitalisation for headings like "discrete state space markov chains".
-  return value.replace(/\b([a-z])([a-z0-9-]*)/g, (_m, head: string, tail: string) => head.toUpperCase() + tail);
+function inferCourseTitleFromNotes(combinedLectureText: string, primaryFileStem: string): string {
+  const lines = combinedLectureText.split("\n").map((l) => l.trim()).filter(Boolean);
+  const fullTitle = lines.find(
+    (l) =>
+      l.length >= 35 &&
+      l.length <= 160 &&
+      /stochastic simulation.*uniform random|generative models|stochastic simulation:/i.test(l),
+  );
+  if (fullTitle) return fullTitle.replace(/\s+/g, " ").trim();
+  const keywordTitle = lines.find(
+    (l) =>
+      (/(stochastic simulation|monte carlo|markov chain mcmc|bayesian inference)/i.test(l) && l.length >= 14 && l.length < 130) ||
+      (/simulation|generative models/i.test(l) && l.length > 20 && l.length < 130),
+  );
+  if (keywordTitle) return keywordTitle;
+  const mc = lines.find((l) => /markov|monte carlo|\bmcmc\b/i.test(l) && l.length >= 12 && l.length < 120);
+  if (mc) return mc;
+  return primaryFileStem;
+}
+
+function advancePastLabelSeparator(text: string, pos: number): number {
+  let i = pos;
+  if (text[i] === "." && /\s/.test(text[i + 1] ?? "")) {
+    i++;
+    while (i < text.length && /\s/.test(text[i])) i++;
+  }
+  return i;
+}
+
+type LabelHit = { index: number; bodyStart: number; kind: string; number: string; paren?: string };
+
+function collectLabelHits(text: string): LabelHit[] {
+  const hits: LabelHit[] = [];
+  LABEL_START_RE.lastIndex = 0;
+  let m: RegExpExecArray | null;
+  while ((m = LABEL_START_RE.exec(text)) !== null) {
+    const bodyStart = advancePastLabelSeparator(text, (m.index ?? 0) + m[0].length);
+    hits.push({
+      index: m.index ?? 0,
+      bodyStart,
+      kind: m[1] ?? "",
+      number: m[2] ?? "",
+      paren: m[3]?.trim(),
+    });
+  }
+  return hits;
 }
 
 function sectionForOffset(sections: ExtractedSection[], offset: number): string | undefined {
@@ -170,41 +176,57 @@ function importanceForKind(kind: PackItemKind): DefinitionImportance {
 
 function titleForBlock(kind: PackItemKind, parenTitle: string | undefined, body: string): string {
   if (parenTitle?.trim()) return parenTitle.trim().replace(/\s+/g, " ");
-  // Take first line up to ~140 chars for prose blocks.
   const firstLine = body.replace(/^\s+/, "").split(/\n/)[0] ?? body;
   const cleaned = firstLine.replace(/\s+/g, " ").trim();
   if (cleaned.length >= 8 && cleaned.length < 160) return cleaned.length > 140 ? `${cleaned.slice(0, 137)}…` : cleaned;
   return `${kind} statement`;
 }
 
+function inferDisplayTitle(kind: PackItemKind, parenTitle: string | undefined, body: string, algorithmHeadLine?: string): string {
+  if (parenTitle?.trim()) return parenTitle.trim().replace(/\s+/g, " ");
+  const blob = `${algorithmHeadLine ?? ""}\n${body}`;
+  const lower = blob.toLowerCase();
+
+  if (kind === "definition") {
+    if (lower.includes("conditionally independent")) return "Conditional independence";
+    if (/pseudo[-\s]?random/.test(lower)) return "Pseudo-random numbers";
+  }
+  if (kind === "theorem") {
+    if (lower.includes("fundamental theorem of simulation")) return "Fundamental Theorem of Simulation";
+    if (/(probability integral|f_x\s*\^\{-1\}|inverse transform cdf|\bcdf\b.*f_x)/i.test(blob)) return "Probability integral transform";
+    if (lower.includes("box") && lower.includes("müller")) return "Box-Müller transform";
+  }
+  if (kind === "proposition") {
+    if (lower.includes("chain rule for sampling")) return "Chain Rule for Sampling";
+    if (lower.includes("conditional bayes") || lower.includes("conditional bayes rule")) return "Conditional Bayes rule";
+  }
+  if (kind === "algorithm") {
+    const head = (algorithmHeadLine ?? body.split("\n")[0] ?? "").replace(/^\s+/, "");
+    let cleaned = head.replace(/^pseudocode\s+for\s+/i, "").replace(/^algorithm\s+\d+(?:\.\d+)?\s*[:.]?\s*/i, "").replace(/\s+/g, " ").trim();
+    cleaned = cleaned.split(/[.!?]/)[0]?.trim() ?? cleaned;
+    if (cleaned.length >= 5 && cleaned.length < 140) return cleaned;
+  }
+
+  return titleForBlock(kind, undefined, body);
+}
+
 function extractLabelledBlocks(fullText: string, sourceFile: string, sections: ExtractedSection[]): LabelledBlock[] {
   const text = fullText.replace(/\r\n/g, "\n");
-  const hits: Array<{ index: number; headerLen: number; kind: string; number: string; paren?: string }> = [];
-  LABELLED_HEAD.lastIndex = 0;
-  let m: RegExpExecArray | null;
-  while ((m = LABELLED_HEAD.exec(text)) !== null) {
-    hits.push({
-      index: m.index,
-      headerLen: m[0].length,
-      kind: m[1] ?? "",
-      number: m[2] ?? "",
-      paren: m[3]?.trim(),
-    });
-  }
+  const hits = collectLabelHits(text);
 
   const blocks: LabelledBlock[] = [];
   for (let i = 0; i < hits.length; i += 1) {
     const cur = hits[i]!;
     const next = hits[i + 1];
-    const bodyStart = cur.index + cur.headerLen;
     const end = next ? next.index : text.length;
     const rawBlock = text.slice(cur.index, end).trim();
-    const body = text.slice(bodyStart, end).trim();
-    if (body.length < 8 && rawBlock.length < 15) continue;
+    const body = text.slice(cur.bodyStart, end).trim();
+    if (body.length < 6 && rawBlock.length < 14) continue;
 
     const kind = kindFromWord(cur.kind);
     const formalLabel = `${capitalize(cur.kind)} ${cur.number}`;
-    const displayTitle = titleForBlock(kind, cur.paren, body);
+    const algorithmHeadLine = kind === "algorithm" ? body.split("\n")[0] : undefined;
+    const displayTitle = inferDisplayTitle(kind, cur.paren, body, algorithmHeadLine);
     const offset = cur.index;
     blocks.push({
       kind,
@@ -240,10 +262,7 @@ function extractProofBlocks(fullText: string, sourceFile: string, sections: Extr
     proofMatches.push({ start: pm.index, contentStart });
   }
   // Stop a proof body when the next labelled head is encountered, not just the next Proof.
-  const labelledStarts: number[] = [];
-  LABELLED_HEAD.lastIndex = 0;
-  let lm: RegExpExecArray | null;
-  while ((lm = LABELLED_HEAD.exec(text)) !== null) labelledStarts.push(lm.index);
+  const labelledStarts = collectLabelHits(text).map((h) => h.index);
 
   for (let i = 0; i < proofMatches.length; i += 1) {
     const cur = proofMatches[i]!;
@@ -371,9 +390,11 @@ export function normalizeMathText(text: string): string {
 // Formulas
 // ---------------------------------------------------------------------------
 
-const FORMULA_LIKE = /[=∑∫]|\\sum|\\int|\\propto|∝|\\\(|\$|\\frac|\\mathbb\{P\}|M\^\{|M\^|p\^\*|p_n|K\(|\bsum\b|\bmin\b|\balpha\b|q\(/i;
+const FORMULA_LIKE =
+  /[=∑∫]|\\sum|\\int|\\propto|∝|\\\(|\$|\\frac|\\mathbb\{P\}|\\mathbb\{E\}|M\^\{|M\^|p\^\*|p_n|p\?\(|K\(|\bsum\b|\bmin\b|\balpha\b|q\(|\bmod\b|\bPhi\b|\bN\(|\bGamma\b|\bExp\b|\bUnif\b|\bPois\b|\bint\b|\bE\[|\bVar\b|\bdet\b/i;
 
-const FORMULA_SECONDARY = /[=]|\\sum|\\int|∑|∫|∝|\\\\propto|conditional|\\mathbb\{P\}|M_\{|M\^|p_n|p\^\*|K\(|q\(|\bP\(|\br\(x|\bMij\b/i;
+const FORMULA_SECONDARY =
+  /[=]|\\sum|\\int|∑|∫|∝|\\\\propto|conditional|\\mathbb\{P\}|\\mathbb\{E\}|M_\{|M\^|p_n|p\^\*|p\?\(|K\(|q\(|\bP\(|\br\(x|\bMij\b|\bx_\{|u_n|F_X|lambda|Sigma|sqrt|∏|prop(?:ortional)?|Bayes/i;
 
 function looksLikeFormula(line: string): boolean {
   if (line.length < 6 || line.length > 500) return false;
@@ -394,10 +415,10 @@ function looksLikeFormula(line: string): boolean {
   if (/^[A-Za-z][\w−\-]*\s*=\s*\d+(\s+\d+(\.\d+)?){2,}$/.test(line.trim())) return false;
   // Reject step lines like "2: for n = 1,..." (these belong to algorithms, not the formula tab).
   if (/^\d+\s*:\s+/.test(line.trim())) return false;
-  // Reject English prose lines that incidentally contain "=".
   const wordCount = line.split(/\s+/).length;
   const symbolDensity = (line.match(/[=∑∫∝<>≥≤_^|]/g) ?? []).length / Math.max(1, wordCount);
-  if (wordCount > 10 && symbolDensity < 0.18) return false;
+  if (wordCount > 14 && symbolDensity < 0.12) return false;
+  if (wordCount > 10 && symbolDensity < 0.18 && !/\b(p\?\(|p\^\*|∫|∝|F_X|Sigma|det\s*J|mod\b)/i.test(line)) return false;
   // Reject lines that contain a long run of natural-English words before any math symbol.
   const proseRun = line.match(/^[A-Z]?[a-z]+(?:\s+[a-z]+){5,}/);
   if (proseRun && proseRun[0].length / line.length > 0.55) return false;
@@ -491,6 +512,66 @@ const FORMULA_PATTERNS: Array<{ name: string; matcher: RegExp; latex: string; wh
     latex: "q(x' \\mid x) = \\mathcal{N}\\!\\left(x';\\, x + \\gamma \\nabla \\log p^\\star(x),\\, 2\\gamma I\\right)",
     whenToUse: "MALA proposal centred on a gradient ascent step on log-target.",
   },
+  {
+    name: "Unnormalised target",
+    matcher: /p\*\(\s*x\s*\)\s*=\s*pbar\*\(\s*x\s*\)\s*\/\s*Z|p\^\*\(x\)\s*=\s*\\bar\s*p\^\*\(x\)\s*\/\s*Z/i,
+    latex: "p^\\star(x) = \\bar p^\\star(x) / Z",
+    whenToUse: "Target density known up to an unknown normalising constant.",
+  },
+  {
+    name: "Bayes posterior",
+    matcher: /p\s*\(\s*x\s*\|\s*y\s*\)\s*(?:=|∝)\s*p\s*\(\s*y\s*\|\s*x\s*\)\s*p\s*\(\s*x\s*\)/i,
+    latex: "p(x \\mid y) \\propto p(y \\mid x) \\, p(x)",
+    whenToUse: "Posterior under a prior and likelihood (Bayes rule).",
+  },
+  {
+    name: "Marginal likelihood",
+    matcher: /p\s*\(\s*y\s*\)\s*=\s*\\?int\s*p\s*\(\s*y\s*\|\s*x\s*\)\s*p\s*\(\s*x\s*\)/i,
+    latex: "p(y) = \\int p(y \\mid x) \\, p(x) \\, dx",
+    whenToUse: "Evidence / marginal likelihood as integral of joint contributions.",
+  },
+  {
+    name: "Linear congruential generator",
+    matcher: /x\s*_\{\s*n\+1\s*\}\s*=\s*a\s*x\s*_?\s*n\s*\+\s*b\s*mod\s*m|x\s*n\+1\s*=\s*a\s*x\s*n\s*\+\s*b\s*mod\s*m/i,
+    latex: "x_{n+1} = (a x_n + b) \\bmod m",
+    whenToUse: "Pseudo-random uniform seeds via linear congruential updates.",
+  },
+  {
+    name: "Uniform from congruential output",
+    matcher: /\bu\s*_?\s*n\s*=\s*x\s*_?\s*n\s*\/\s*m\b/i,
+    latex: "u_n = x_n / m",
+    whenToUse: "Normalising LCG state to [0,1).",
+  },
+  {
+    name: "Inverse transform sampling identity",
+    matcher: /X\s*=\s*F\s*_?\s*X\s*\^\{\s*-1\s*\}\s*\(\s*U\s*\)|F\s*_?\s*X\s*\^\{\s*-1\s*\}\s*\(\s*U\s*\)/i,
+    latex: "X = F_X^{-1}(U), \\quad U \\sim \\mathrm{Unif}(0,1)",
+    whenToUse: "Probability integral transform / inverse-CDF sampling.",
+  },
+  {
+    name: "Exponential inverse-CDF",
+    matcher: /X\s*=\s*-?\s*lambda\s*\^\{\s*-1\s*\}\s*\\?log\s*\(\s*1\s*-\s*U\s*\)|-\s*lambda\s*\^\{\s*-1\s*\}\s*log/i,
+    latex: "X = -\\lambda^{-1} \\log(1-U)",
+    whenToUse: "Sampling Exp(lambda) via inverse transform.",
+  },
+  {
+    name: "Box–Muller Z1",
+    matcher: /Z\s*_?\s*1\s*=\s*sqrt\s*\(\s*-?\s*2\s*\\?log\s*U\s*_?\s*1\s*\)\s*\\?cos/i,
+    latex: "Z_1 = \\sqrt{-2\\log U_1}\\cos(2\\pi U_2)",
+    whenToUse: "Box–Muller Gaussian pair construction.",
+  },
+  {
+    name: "Affine Gaussian sample",
+    matcher: /Y\s*=\s*Sigma\s*\^\{\s*1\/2\s*\}\s*X\s*\+\s*mu|Y\s*=\s*\\Sigma\s*\^\{\s*1\/2\s*\}/i,
+    latex: "Y = \\Sigma^{1/2} X + \\mu",
+    whenToUse: "Sampling multivariate Gaussian with mean and covariance.",
+  },
+  {
+    name: "Cholesky Gaussian sample",
+    matcher: /x\s*_?\s*i\s*=\s*mu\s*\+\s*L\s*v|Cholesky/i,
+    latex: "x_i = \\mu + L v",
+    whenToUse: "Drawing Gaussian samples using Cholesky factor L.",
+  },
 ];
 
 function extractCanonicalFormulas(text: string, sourceFile: string, sections: ExtractedSection[]): GeneratedFormulaItem[] {
@@ -564,7 +645,7 @@ function dedupeFormulas(items: GeneratedFormulaItem[]): GeneratedFormulaItem[] {
     if (out.some((x) => jaccardSimilarity(x.latex, f.latex) > 0.92)) continue;
     out.push(f);
   }
-  return out.slice(0, 40);
+  return out.slice(0, 56);
 }
 
 // ---------------------------------------------------------------------------
@@ -599,6 +680,23 @@ function blocksToDefinitions(blocks: LabelledBlock[]): GeneratedDefinitionItem[]
 
 function proofSkeletonFromBody(title: string, body: string): { skeleton: string; mistake: string } {
   const lower = `${title} ${body}`.toLowerCase();
+  if (
+    lower.includes("f_x") ||
+    lower.includes("probability integral") ||
+    (lower.includes("f_x^{-1}") && lower.includes("cdf"))
+  ) {
+    return {
+      skeleton:
+        "Let U ~ Uniform(0,1); set X = F_X^{-1}(U). Then P(X<=x) = P(F_X^{-1}(U)<=x) = P(U<=F_X(x)) = F_X(x).",
+      mistake: "Forgetting monotonicity/right-continuity of F_X when pushing the inequality through F_X^{-1}.",
+    };
+  }
+  if (lower.includes("conditional bayes") || (lower.includes("p(x|y)") && lower.includes("p(y|x)"))) {
+    return {
+      skeleton: "Apply Bayes with conditional independence structure; simplify using factors shared across observations.",
+      mistake: "Mixing up conditioning directions in p(y|x) vs p(x|y).",
+    };
+  }
   if (lower.includes("detailed balance") && (lower.includes("stationar") || lower.includes("invariant"))) {
     return {
       skeleton: "Assume detailed balance K(x'|x)p*(x)=K(x|x')p*(x') → integrate both sides over x' → use that K(·|x) integrates to 1 → conclude p*(x) = ∫ K(x|x')p*(x')dx', i.e. K-invariance.",
@@ -746,9 +844,10 @@ function cleanAlgorithmSteps(body: string): string[] {
 function algorithmBlocksToMethods(blocks: LabelledBlock[]): GeneratedMethodTemplate[] {
   const algos = blocks.filter((b) => b.kind === "algorithm");
   const methods: GeneratedMethodTemplate[] = algos.map((b) => {
-    const cleanTitle = b.parenTitle?.trim() && b.parenTitle.trim().length > 3
-      ? b.parenTitle.trim()
-      : cleanAlgorithmTitle(b.body);
+    const cleanTitle =
+      b.parenTitle?.trim() && b.parenTitle.trim().length > 3
+        ? b.parenTitle.trim()
+        : cleanAlgorithmTitle(b.displayTitle || b.body);
     const steps = cleanAlgorithmSteps(b.body).map((s) => normalizeMathText(s));
     return {
       id: createId("meth"),
@@ -812,19 +911,15 @@ function algorithmBlocksToMethods(blocks: LabelledBlock[]): GeneratedMethodTempl
 
 function courseTopicsFromSections(files: LecturePackFile[], lectureText: string): GeneratedCourseTopic[] {
   const sections = extractSectionHeadings(lectureText);
-  if (sections.length) {
-    // Prefer top-level sections (X.Y) for the Course Map; nested X.Y.Z stay as evidence.
-    const topLevel = sections.filter((s) => s.sectionNumber.split(".").length === 2);
-    const chosen = topLevel.length ? topLevel : sections;
-    return chosen.map((s) => ({
-      id: createId("topic"),
-      title: `${s.sectionNumber} ${s.title}`,
-      sourceFileNames: files.filter((f) => f.role === "lecture_notes" || !f.role).map((f) => f.name),
-      importance: "high" as TopicImportance,
-      evidenceReason: "Detected numbered section heading in lecture text.",
-    }));
-  }
-  return [];
+  if (!sections.length) return [];
+  const names = files.filter((f) => f.role === "lecture_notes" || !f.role).map((f) => f.name);
+  return sections.map((s) => ({
+    id: createId("topic"),
+    title: `${s.sectionNumber} ${s.title}`,
+    sourceFileNames: names.length ? names : files.map((f) => f.name),
+    importance: "high" as TopicImportance,
+    evidenceReason: "Detected numbered section heading in lecture text.",
+  }));
 }
 
 // ---------------------------------------------------------------------------
@@ -850,8 +945,9 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   for (const f of lectureFiles) {
     const t = f.parsedText ?? "";
     if (!t.trim()) continue;
-    allBlocks.push(...extractLabelledBlocks(t, f.name, sections));
-    allProofBlocks.push(...extractProofBlocks(t, f.name, sections));
+    const fileSections = extractSectionHeadings(t);
+    allBlocks.push(...extractLabelledBlocks(t, f.name, fileSections));
+    allProofBlocks.push(...extractProofBlocks(t, f.name, fileSections));
   }
   const blocks = dedupeLabelledBlocks(allBlocks);
   const proofBlocks = dedupeLabelledBlocks(allProofBlocks);
@@ -873,9 +969,10 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
 
   const methods = algorithmBlocksToMethods(blocks);
 
-  const chapterTitle =
-    combinedLectureText.split("\n").map((l) => l.trim()).find((l) => /markov|monte carlo|mcmc/i.test(l) && l.length < 120) ??
-    files.find((f) => f.role === "lecture_notes")?.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
+  const primaryStem =
+    files.find((f) => f.role === "lecture_notes")?.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ") ??
+    primaryName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
+  const chapterTitle = inferCourseTitleFromNotes(combinedLectureText, primaryStem);
 
   let courseMap = courseTopicsFromSections(files, combinedLectureText);
   if (!courseMap.length) {

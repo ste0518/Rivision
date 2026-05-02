@@ -1,4 +1,4 @@
-import type { GeneratedDefinitionItem, GeneratedFormulaItem, GeneratedProofItem } from "@/lib/student-revision-schema";
+import type { GeneratedDefinitionItem, GeneratedFormulaItem, GeneratedMethodTemplate, GeneratedProofItem } from "@/lib/student-revision-schema";
 import type { RevisionItem } from "@/lib/types";
 import { withValidation } from "@/lib/validation";
 import { createId } from "@/lib/utils";
@@ -74,6 +74,28 @@ export function cardFromFormula(f: GeneratedFormulaItem): RevisionItem {
     answerLatex: f.latex,
     latexQuality: f.mathStatus === "ok" ? "high" : "medium",
     revisionPackCategory: "formulasToKnow",
+  });
+}
+
+export function cardFromMethod(m: GeneratedMethodTemplate): RevisionItem {
+  const steps = m.steps.join("\n\n");
+  return baseItem({
+    type: "algorithm",
+    title: m.problemType,
+    conceptName: m.problemType,
+    displayTitle: m.problemType,
+    cardFront: m.problemType,
+    taskPrompt: m.relatedPracticeType,
+    statement: steps,
+    sourceFile: "study pack",
+    sourceLocation: m.problemType,
+    tags: ["study_pack", "method", ...m.triggerWords.slice(0, 6)],
+    importance: "must_know",
+    cardPurpose: "method_steps",
+    questionPrompt: `Outline the procedure: ${m.problemType}`,
+    answer: steps,
+    revisionPackCategory: "methodsAndTemplates",
+    priorityLabel: "high",
   });
 }
 

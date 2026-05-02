@@ -1,4 +1,5 @@
 import type { ParsedDocument, ParsedPage, ParsedSection } from "@/lib/types";
+import { extractSectionHeadingsFromText } from "@/lib/section-headings";
 import { normalizeExtractedMathText } from "@/lib/revision-item-utils";
 
 const MIN_PDF_CHARS_PER_PAGE = 80;
@@ -294,38 +295,53 @@ function computeExtractionQuality(charCount: number, warnings: string[], errors:
 }
 
 function detectSections(fullText: string): ParsedSection[] {
-  const lines = fullText.replace(/\r\n/g, "\n").split("\n");
-  const sectionRegexes = [
-    /^(?:#{1,6}\s*)(.+)$/i,
-    /^(Chapter|Section)\s+(\d+(?:\.\d+)*)\s*[:.-]?\s*(.*)$/i,
-    /^(\d+(?:\.\d+)*)\s+(.+)$/,
-    /^(Definition|Theorem|Lemma|Proposition|Corollary)\s+(\d+(?:\.\d+)*)\s*[:.-]?\s*(.*)$/i,
-  ];
-
+  const text = fullText.replace(/\r\n/g, "\n");
   const found: Array<{ title: string; sectionNumber?: string; startOffset: number }> = [];
+
+  for (const h of extractSectionHeadingsFromText(text)) {
+    found.push({
+      title: `${h.sectionNumber} ${h.title}`,
+      sectionNumber: h.sectionNumber,
+      startOffset: h.startOffset,
+    });
+  }
+
   let offset = 0;
-  for (const line of lines) {
+  for (const line of text.split("\n")) {
+    const leading = line.length - line.trimStart().length;
     const trimmed = line.trim();
     if (trimmed) {
-      for (const regex of sectionRegexes) {
-        const match = trimmed.match(regex);
-        if (!match) continue;
-        if (regex === sectionRegexes[0]) {
-          found.push({ title: match[1].trim(), startOffset: offset });
-        } else {
-          const sectionNumber = match[2] && /\d/.test(match[2]) ? match[2] : undefined;
-          const suffix = match[3] ? ` ${match[3].trim()}` : "";
-          const title = `${match[1]}${sectionNumber ? ` ${sectionNumber}` : ""}${suffix}`.trim();
-          found.push({ title, sectionNumber, startOffset: offset });
-        }
-        break;
+      const md = trimmed.match(/^(?:#{1,6}\s*)(.+)$/i);
+      if (md) found.push({ title: md[1].trim(), startOffset: offset + leading });
+
+      const ch = trimmed.match(/^(Chapter|Section)\s+(\d+(?:\.\d+)*)\s*[:.-]?\s*(.*)$/i);
+      if (ch) {
+        const sectionNumber = ch[2];
+        const suffix = ch[3]?.trim() ? ` ${ch[3].trim()}` : "";
+        found.push({
+          title: `${ch[1]} ${sectionNumber}${suffix}`,
+          sectionNumber,
+          startOffset: offset + leading,
+        });
       }
     }
     offset += line.length + 1;
   }
 
-  return found.map((section, index) => {
-    const endOffset = index + 1 < found.length ? found[index + 1].startOffset : fullText.length;
+  found.sort((a, b) => a.startOffset - b.startOffset || a.title.localeCompare(b.title));
+  const deduped: typeof found = [];
+  const seen = new Set<string>();
+  for (const section of found) {
+    const key = `${section.startOffset}|${section.title}`;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    const prev = deduped.at(-1);
+    if (prev && prev.title === section.title && Math.abs(prev.startOffset - section.startOffset) < 4) continue;
+    deduped.push(section);
+  }
+
+  return deduped.map((section, index) => {
+    const endOffset = index + 1 < deduped.length ? deduped[index + 1]!.startOffset : fullText.length;
     return {
       sectionTitle: section.title,
       sectionNumber: section.sectionNumber,

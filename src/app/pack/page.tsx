@@ -199,8 +199,12 @@ export default function PackPage() {
             <CardTitle className="text-xl">{pack.examOverview.courseName ?? "Your course"}</CardTitle>
             <CardDescription>
               {pack.definitions.length} definitions · {pack.formulas.length} formulas · {pack.proofs.length} proofs · {pack.methods.length} methods
-              {activeCards ? ` · ${activeCards} active recall card(s)` : ""}
+              {activeCards ? ` · ${activeCards} review card(s)` : ""}
               <br />
+              {pack.examOverview.reviewCardsWarning ? (
+                <span className="text-amber-800">{pack.examOverview.reviewCardsWarning}</span>
+              ) : null}
+              {pack.examOverview.reviewCardsWarning ? <br /> : null}
               <span className="text-xs text-slate-500">Generated {new Date(pack.generatedAt).toLocaleString()}</span>
             </CardDescription>
           </div>
