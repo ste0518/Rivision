@@ -21,6 +21,38 @@ function titleCaseHeading(title: string): string {
   return t.replace(/\b([a-z])([a-z0-9-]*)/g, (_m, h: string, tail: string) => h.toUpperCase() + tail);
 }
 
+/** Strip merged-in body text after a section heading (PDF often puts the first sentence on the same line). */
+function shortenSectionRawTitle(rawTitle: string): string {
+  let t = rawTitle.replace(/\s+/g, " ").trim();
+  if (!t) return t;
+
+  const lower = t.toLowerCase();
+  const stopRe =
+    /\b(we introduce|we consider|we now|consider the|recall that|this section|this chapter|this suggests|let\s+\w+\s+be|suppose that|in this section|the goal of)\b/i;
+  const stop = stopRe.exec(lower);
+  if (stop && stop.index >= 8) t = t.slice(0, stop.index).replace(/\s+$/u, "").trim();
+
+  // ALL-CAPS banner merged with sentence: keep only consecutive banner words.
+  const words = t.split(/\s+/);
+  if (words.length >= 2 && /^[A-Z0-9\-–—:]+$/.test(words[0]!) && /^[A-Z][A-Z\-–—:]+$/.test(words[1]!)) {
+    const banner: string[] = [];
+    for (const w of words) {
+      if (/^[A-Z0-9][A-Z0-9\-–—:]*$/.test(w) && !/[a-z]/.test(w)) banner.push(w);
+      else break;
+    }
+    if (banner.length >= 1 && banner.join(" ").length >= 6) t = banner.join(" ");
+  }
+
+  if (t.length > 90) {
+    const cut = t.slice(0, 90);
+    const sp = cut.lastIndexOf(" ");
+    t = sp > 40 ? cut.slice(0, sp).trim() : cut.trim();
+  }
+
+  if (t.length < 4) return rawTitle.replace(/\s+/g, " ").trim().slice(0, 90);
+  return t;
+}
+
 function isNoiseNumber(num: string): boolean {
   if (!num.includes(".") && num.length >= 4) return true;
   return false;
@@ -37,7 +69,8 @@ export function extractSectionHeadingsFromText(fullText: string): ExtractedSecti
   const out: ExtractedSectionHeading[] = [];
 
   const push = (sectionNumber: string, rawTitle: string, startOffset: number) => {
-    const title = titleCaseHeading(rawTitle);
+    const clipped = shortenSectionRawTitle(rawTitle);
+    const title = titleCaseHeading(clipped);
     if (title.length < 4 || title.length > 160) return;
     if (/^(definition|theorem|lemma|proposition|corollary|remark|example|proof|algorithm|exercise)\b/i.test(title)) return;
     if (/[=∑∫∏≥≤<>]/.test(rawTitle) && rawTitle.length > 80) return;
@@ -47,7 +80,8 @@ export function extractSectionHeadingsFromText(fullText: string): ExtractedSecti
     out.push({ sectionNumber, title, startOffset });
   };
 
-  const reInline = /(?:^|\n)\s*(\d+(?:\.\d+){0,3})\s+([A-Za-z\u00C0-\u024F][^\n]{3,140})/g;
+  // Cap capture length so one line does not swallow the whole paragraph; shortenSectionRawTitle trims body glue.
+  const reInline = /(?:^|\n)\s*(\d+(?:\.\d+){0,3})\s+([A-Za-z\u00C0-\u024F][^\n]{2,120})/g;
   let m: RegExpExecArray | null;
   while ((m = reInline.exec(text)) !== null) {
     const num = m[1] ?? "";

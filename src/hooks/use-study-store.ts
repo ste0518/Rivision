@@ -15,6 +15,7 @@ import {
   saveStudyState,
   type StudyState,
 } from "@/lib/storage";
+import { createId } from "@/lib/utils";
 import type { GeneratedPracticeQuestion, GeneratedRevisionPack, MathStatus } from "@/lib/student-revision-schema";
 import type { AssessmentMap, CourseKnowledgeMap, CourseMap, CourseStructureMap, CurationReport, EmbeddedRevisionItem, ExamPriorityMap, GuidanceFile, RejectedRevisionItem, RevisionItem, RevisionPack, ReviewRating, ReviewSession, StudyFile } from "@/lib/types";
 import { applyReviewRating } from "@/lib/srs";
@@ -225,10 +226,40 @@ export function useStudyStore() {
         return { ...current, revisionItems, reviewSessions: session ? [session, ...current.reviewSessions] : current.reviewSessions };
       });
     },
-    seedMockData() { setState((current) => ({ ...current, revisionItems: createMockRevisionItems().map(withValidation) })); },
+    seedMockData() {
+      setState((current) => ({
+        ...current,
+        activePackId: current.activePackId || createId("ws"),
+        revisionItems: createMockRevisionItems().map(withValidation),
+      }));
+    },
     resetAll() {
       void resetStudyStateStorage();
       setState(emptyStudyState);
+    },
+    /** Clears uploads, generated pack, cards, practice, progress — empty Study Pack state. */
+    clearCurrentPack() {
+      setState({ ...emptyStudyState, activePackId: createId("ws") });
+    },
+    ensureActivePackId() {
+      setState((current) => (current.activePackId ? current : { ...current, activePackId: createId("ws") }));
+    },
+    /** Replace lecture files and wipe generated content; keeps assessment uploads when `keepGuidance` is true (default). */
+    replaceNotesAndClearGenerated(notesFiles: StudyFile[], keepGuidance = true) {
+      setState((current) => ({
+        ...emptyStudyState,
+        activePackId: createId("ws"),
+        notesFiles,
+        guidanceFiles: keepGuidance ? current.guidanceFiles : [],
+      }));
+    },
+    replaceGuidanceAndClearGenerated(guidanceFiles: GuidanceFile[]) {
+      setState((current) => ({
+        ...emptyStudyState,
+        activePackId: createId("ws"),
+        notesFiles: current.notesFiles,
+        guidanceFiles,
+      }));
     },
     async migrateLocalStorage() {
       const migrated = await migrateLocalStorageStudyStateToIndexedDB();

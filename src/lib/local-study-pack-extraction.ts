@@ -73,9 +73,9 @@ export type LabelledBlock = {
   importance: DefinitionImportance;
 };
 
-/** Label prefix only; body begins after optional `. ` following the number/paren. */
+/** Label prefix; `\b` allows labels after merged PDF text (not only line-start). Body follows number/paren. */
 const LABEL_START_RE =
-  /(?:^|\n)\s*(Definition|Theorem|Proposition|Lemma|Corollary|Example|Exercise|Remark|Algorithm)\s+(\d+(?:\.\d+)*)(?:\s*\(([^)]+)\))?/gi;
+  /\b(Definition|Theorem|Proposition|Lemma|Corollary|Example|Exercise|Remark|Algorithm)\s+(\d+(?:\.\d+)*)(?:\s*\(([^)]+)\))?/gi;
 
 const PROOF_HEAD = /(?:^|\n)\s*Proof\s*[.:]\s*/gim;
 
@@ -97,20 +97,45 @@ export function extractSectionHeadings(text: string): ExtractedSection[] {
 }
 
 function inferCourseTitleFromNotes(combinedLectureText: string, primaryFileStem: string): string {
-  const lines = combinedLectureText.split("\n").map((l) => l.trim()).filter(Boolean);
-  const fullTitle = lines.find(
-    (l) =>
-      l.length >= 35 &&
-      l.length <= 160 &&
-      /stochastic simulation.*uniform random|generative models|stochastic simulation:/i.test(l),
-  );
-  if (fullTitle) return fullTitle.replace(/\s+/g, " ").trim();
-  const keywordTitle = lines.find(
-    (l) =>
-      (/(stochastic simulation|monte carlo|markov chain mcmc|bayesian inference)/i.test(l) && l.length >= 14 && l.length < 130) ||
-      (/simulation|generative models/i.test(l) && l.length > 20 && l.length < 130),
-  );
-  if (keywordTitle) return keywordTitle;
+  const firstPages = combinedLectureText.split(/\[Page\s*3\]/i)[0] ?? combinedLectureText;
+  const lines = firstPages.split("\n").map((l) => l.trim()).filter(Boolean);
+
+  const cutAffiliation = (line: string): string => {
+    let t = line.replace(/\s+/g, " ").trim();
+    const idx =
+      t.search(/\b(Department|Faculty|School)\s+of\b/i) >= 0
+        ? t.search(/\b(Department|Faculty|School)\s+of\b/i)
+        : t.search(/\b(Imperial College|University of|Professor|Prof\.|Dr\.)\b/i);
+    if (idx > 12) t = t.slice(0, idx).trim();
+    const nameCut = t.search(/\b(O\.|Deniz|Akyildiz)\b/i);
+    if (nameCut > 14) t = t.slice(0, nameCut).trim();
+    return t.replace(/[,\s]+$/u, "").trim();
+  };
+
+  for (const line of lines) {
+    if (line.length < 14 || line.length > 200) continue;
+    if (/^\[Page\b/i.test(line)) continue;
+    if (/\b(Department|Imperial College|University of)\b/i.test(line) && !/stochastic simulation/i.test(line)) continue;
+    if (/stochastic simulation/i.test(line)) {
+      const t = cutAffiliation(line);
+      if (t.includes(":")) {
+        const main = t.split(":")[0]!.trim();
+        if (main.length >= 12 && main.length <= 80 && /stochastic simulation/i.test(main)) return main;
+      }
+      if (t.length <= 100) return t;
+      return t.slice(0, 88).replace(/\s+\S*$/u, "").trim();
+    }
+  }
+
+  const keywordTitle = lines.find((l) => {
+    if (l.length < 14 || l.length > 130) return false;
+    if (/\b(Department|University|College|Professor)\b/i.test(l)) return false;
+    return (
+      (/(stochastic simulation|monte carlo|markov chain mcmc|bayesian inference)/i.test(l) && l.length < 130) ||
+      (/simulation|generative models/i.test(l) && l.length > 20 && l.length < 130)
+    );
+  });
+  if (keywordTitle) return cutAffiliation(keywordTitle);
   const mc = lines.find((l) => /markov|monte carlo|\bmcmc\b/i.test(l) && l.length >= 12 && l.length < 120);
   if (mc) return mc;
   return primaryFileStem;
@@ -202,7 +227,7 @@ function inferDisplayTitle(kind: PackItemKind, parenTitle: string | undefined, b
   }
   if (kind === "algorithm") {
     const head = (algorithmHeadLine ?? body.split("\n")[0] ?? "").replace(/^\s+/, "");
-    let cleaned = head.replace(/^pseudocode\s+for\s+/i, "").replace(/^algorithm\s+\d+(?:\.\d+)?\s*[:.]?\s*/i, "").replace(/\s+/g, " ").trim();
+    let cleaned = cleanAlgorithmTitle(head);
     cleaned = cleaned.split(/[.!?]/)[0]?.trim() ?? cleaned;
     if (cleaned.length >= 5 && cleaned.length < 140) return cleaned;
   }
@@ -417,8 +442,8 @@ function looksLikeFormula(line: string): boolean {
   if (/^\d+\s*:\s+/.test(line.trim())) return false;
   const wordCount = line.split(/\s+/).length;
   const symbolDensity = (line.match(/[=∑∫∝<>≥≤_^|]/g) ?? []).length / Math.max(1, wordCount);
-  if (wordCount > 14 && symbolDensity < 0.12) return false;
-  if (wordCount > 10 && symbolDensity < 0.18 && !/\b(p\?\(|p\^\*|∫|∝|F_X|Sigma|det\s*J|mod\b)/i.test(line)) return false;
+  if (wordCount > 18 && symbolDensity < 0.12) return false;
+  if (wordCount > 14 && symbolDensity < 0.18 && !/\b(p\?\(|p\^\*|∫|∝|F_X|Sigma|det\s*J|mod\b)/i.test(line)) return false;
   // Reject lines that contain a long run of natural-English words before any math symbol.
   const proseRun = line.match(/^[A-Z]?[a-z]+(?:\s+[a-z]+){5,}/);
   if (proseRun && proseRun[0].length / line.length > 0.55) return false;
@@ -525,6 +550,18 @@ const FORMULA_PATTERNS: Array<{ name: string; matcher: RegExp; latex: string; wh
     whenToUse: "Posterior under a prior and likelihood (Bayes rule).",
   },
   {
+    name: "Conditional independence (product form)",
+    matcher: /p\s*\(\s*x\s*,\s*y\s*\|\s*z\s*\)\s*=\s*p\s*\(\s*x\s*\|\s*z\s*\)\s*p\s*\(\s*y\s*\|\s*z\s*\)/i,
+    latex: "p(x,y \\mid z) = p(x \\mid z) \\, p(y \\mid z)",
+    whenToUse: "Factorisation when components are conditionally independent given z.",
+  },
+  {
+    name: "Jacobian change of variables (1D)",
+    matcher: /p\s*_?\s*Y\s*\(\s*y\s*\)\s*=\s*p\s*_?\s*X\s*\(\s*g\s*\^\{\s*-1\s*\}\s*\(\s*y\s*\)\s*\)\s*\|.*g\s*\^\{\s*-1\s*\}/i,
+    latex: "p_Y(y) = p_X(g^{-1}(y)) \\left|\\frac{d}{dy} g^{-1}(y)\\right|",
+    whenToUse: "Density under a smooth invertible transform.",
+  },
+  {
     name: "Marginal likelihood",
     matcher: /p\s*\(\s*y\s*\)\s*=\s*\\?int\s*p\s*\(\s*y\s*\|\s*x\s*\)\s*p\s*\(\s*x\s*\)/i,
     latex: "p(y) = \\int p(y \\mid x) \\, p(x) \\, dx",
@@ -582,10 +619,12 @@ function extractCanonicalFormulas(text: string, sourceFile: string, sections: Ex
     if (!m) continue;
     const offset = m.index;
     const v = validateLatexSnippet(`\\(${pat.latex}\\)`);
+    const plain = m[0]?.replace(/\s+/g, " ").trim() ?? "";
     out.push({
       id: createId("form"),
       name: pat.name,
       latex: wrapAsMath(pat.latex),
+      formulaPlain: plain.slice(0, 240),
       whenToUse: pat.whenToUse,
       source: sourceFile,
       sourceFile,
@@ -624,6 +663,7 @@ function extractFormulaLines(text: string, sourceFile: string, sections: Extract
       id: createId("form"),
       name: name.replace(/\s+/g, " "),
       latex: wrapAsMath(normalized),
+      formulaPlain: trimmed.slice(0, 320),
       whenToUse: "Use when revising transition kernels, balance conditions, or acceptance ratios.",
       source: sourceFile,
       sourceFile,
@@ -727,7 +767,7 @@ function proofSkeletonFromBody(title: string, body: string): { skeleton: string;
   };
 }
 
-/** Build proof items from theorem/proposition/lemma/corollary blocks plus paired Proof bodies. */
+/** Build proof items from theorem/proposition/lemma/corollary blocks plus paired Proof bodies only (no orphan Proof paragraphs). */
 function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[]): GeneratedProofItem[] {
   const STMT_KINDS: PackItemKind[] = ["theorem", "proposition", "lemma", "corollary"];
   const stmtBlocks = blocks.filter((b) => STMT_KINDS.includes(b.kind));
@@ -735,14 +775,12 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[]): 
   const items: GeneratedProofItem[] = [];
 
   for (const b of stmtBlocks) {
-    // Find the closest proof in the same file that comes after this block.
     const proof = proofBlocks
       .filter((p) => p.sourceFile === b.sourceFile && p.startOffset > b.startOffset)
       .sort((a, c) => a.startOffset - c.startOffset)[0];
 
     const heading = `${b.formalLabel}: ${b.displayTitle}`;
     const { skeleton, mistake } = proofSkeletonFromBody(b.displayTitle, `${b.body}\n${proof?.body ?? ""}`);
-    // Strip any "Proof." section that may have been included in the proposition body.
     const statementOnly = b.body.split(/(?:^|\n)\s*Proof\s*[.:]/i)[0]!.trim();
     items.push({
       id: createId("prf"),
@@ -760,34 +798,6 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[]): 
     });
   }
 
-  // Also surface any orphan proofs (those not paired with a statement block).
-  const usedProofOffsets = new Set<number>();
-  for (const b of stmtBlocks) {
-    const proof = proofBlocks
-      .filter((p) => p.sourceFile === b.sourceFile && p.startOffset > b.startOffset)
-      .sort((a, c) => a.startOffset - c.startOffset)[0];
-    if (proof) usedProofOffsets.add(proof.startOffset);
-  }
-  for (const p of proofBlocks) {
-    if (usedProofOffsets.has(p.startOffset)) continue;
-    const { skeleton, mistake } = proofSkeletonFromBody(p.displayTitle, p.body);
-    const heading = p.sourceSection ? `Proof · ${p.sourceSection}` : p.sourcePage != null ? `Proof (p. ${p.sourcePage})` : "Proof from notes";
-    items.push({
-      id: createId("prf"),
-      name: heading,
-      proofName: heading,
-      statement: normalizeMathText(p.body.slice(0, 1200)),
-      proofSkeleton: skeleton,
-      commonMistake: mistake,
-      source: p.sourceFile,
-      sourceFile: p.sourceFile,
-      sourcePage: p.sourcePage,
-      sourceSection: p.sourceSection,
-      sourceLabel: p.formalLabel,
-      sourceExcerpt: p.rawBlock.slice(0, 900),
-    });
-  }
-
   return items;
 }
 
@@ -797,11 +807,22 @@ function cleanAlgorithmTitle(rawHeading: string): string {
   t = t.split(/\n\s*\d+\s*[:.]/)[0]!;
   t = t.split(/\n/)[0]!;
   t = t.replace(/^pseudocode\s+for\s+/i, "");
-  t = t.replace(/^algorithm\s+\d+\s*[:.]?\s*/i, "");
+  t = t.replace(/^algorithm\s+\d+(?:\.\d+)?\s*[:.]?\s*/i, "");
+  t = t.replace(/\s+\d+\s*:\s*input\b[\s\S]*$/i, "").trim();
+  t = t.replace(/^\d+\s*:\s*input\s*:?\s*/i, "").trim();
   t = t.replace(/\bmetropolis\s+hastings\b/gi, "Metropolis–Hastings");
   t = t.replace(/\s+/g, " ").trim();
   if (!t) t = "Algorithm";
   return t.length > 120 ? `${t.slice(0, 117)}…` : t;
+}
+
+/** Stop algorithm body before the next labelled environment (e.g. Remark merged after pseudocode). */
+function truncateAlgorithmBody(body: string): string {
+  const text = body.replace(/\r\n/g, "\n");
+  const stop = /\n\s*(Remark|Example|Exercise|Algorithm|Theorem|Proposition|Lemma|Definition|Corollary)\s+\d/i;
+  const m = stop.exec(text);
+  if (m && m.index > 12) return text.slice(0, m.index).trim();
+  return text;
 }
 
 /** Split algorithm body into ordered numbered steps. */
@@ -844,11 +865,12 @@ function cleanAlgorithmSteps(body: string): string[] {
 function algorithmBlocksToMethods(blocks: LabelledBlock[]): GeneratedMethodTemplate[] {
   const algos = blocks.filter((b) => b.kind === "algorithm");
   const methods: GeneratedMethodTemplate[] = algos.map((b) => {
+    const headLine = b.body.split("\n")[0] ?? "";
     const cleanTitle =
       b.parenTitle?.trim() && b.parenTitle.trim().length > 3
         ? b.parenTitle.trim()
-        : cleanAlgorithmTitle(b.displayTitle || b.body);
-    const steps = cleanAlgorithmSteps(b.body).map((s) => normalizeMathText(s));
+        : cleanAlgorithmTitle(b.displayTitle || headLine || b.body);
+    const steps = cleanAlgorithmSteps(truncateAlgorithmBody(b.body)).map((s) => normalizeMathText(s));
     return {
       id: createId("meth"),
       problemType: `${b.formalLabel}: ${cleanTitle}`,
@@ -1044,6 +1066,7 @@ function extractFormulasFromBlocks(blocks: LabelledBlock[], primarySource: strin
         id: createId("form"),
         name: `${b.formalLabel}${b.parenTitle ? ` (${b.parenTitle})` : ""}`,
         latex: wrapAsMath(normalized),
+        formulaPlain: line.slice(0, 320),
         whenToUse: `Central equation from ${b.formalLabel}.`,
         source: b.sourceFile || primarySource,
         sourceFile: b.sourceFile || primarySource,

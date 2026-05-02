@@ -145,6 +145,14 @@ export default function SettingsPage() {
               />
               Persist debug segmentation data (IndexedDB)
             </label>
+            <label className="flex items-center gap-2 text-sm font-medium">
+              <input
+                type="checkbox"
+                checked={storageSettings.uploadReplacePack}
+                onChange={(event) => setStorageSettings((current) => ({ ...current, uploadReplacePack: event.target.checked }))}
+              />
+              Replace current pack on upload (default)
+            </label>
             <Button variant="outline" onClick={() => saveStorageSettings(storageSettings)}>Save interface options</Button>
           </CardContent>
         </Card>

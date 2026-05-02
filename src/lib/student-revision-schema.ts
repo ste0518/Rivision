@@ -65,6 +65,8 @@ export interface GeneratedFormulaItem {
   id: string;
   name: string;
   latex: string;
+  /** Raw equation line from PDF text (before aggressive LaTeX wrapping). */
+  formulaPlain?: string;
   whenToUse: string;
   /** @deprecated Prefer {@link sourceFile}. */
   source: string;

@@ -24,6 +24,8 @@ export default function PackPage() {
   const [editLatex, setEditLatex] = useState("");
 
   const activeCards = store.revisionItems.filter((item) => !item.isDeleted).length;
+  const generatedFrom =
+    store.notesFiles.find((f) => f.role === "lecture_notes")?.name ?? store.notesFiles[0]?.name ?? "";
 
   if (!pack) {
     return (
@@ -198,6 +200,12 @@ export default function PackPage() {
           <div>
             <CardTitle className="text-xl">{pack.examOverview.courseName ?? "Your course"}</CardTitle>
             <CardDescription>
+              {generatedFrom ? (
+                <>
+                  <span className="text-slate-800">Generated from: {generatedFrom}</span>
+                  <br />
+                </>
+              ) : null}
               {pack.definitions.length} definitions · {pack.formulas.length} formulas · {pack.proofs.length} proofs · {pack.methods.length} methods
               {activeCards ? ` · ${activeCards} review card(s)` : ""}
               <br />
@@ -415,6 +423,9 @@ function FormulaSection({
             <CardDescription>{f.whenToUse}</CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
+            {f.formulaPlain ? (
+              <p className="rounded-md border border-slate-100 bg-white px-3 py-2 font-mono text-xs text-slate-700">{f.formulaPlain}</p>
+            ) : null}
             <MathMarkdown content={f.latex} className="rounded-lg bg-slate-50 p-3 text-base" />
             <dl className="grid gap-1 text-xs text-slate-600 sm:grid-cols-2">
               <div>

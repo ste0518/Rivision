@@ -2,9 +2,10 @@
 
 import { useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FileText, UploadCloud } from "lucide-react";
+import { FileText, Trash2, UploadCloud } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Select } from "@/components/ui/select";
 import { PageHeader } from "@/components/page-header";
 import { inferStudyFileRole, studyFileRoleLabel } from "@/lib/course-files";
@@ -18,7 +19,7 @@ import {
   generateStudentRevisionPack,
 } from "@/lib/revision-pack-generator";
 import { extractRevisionItems } from "@/lib/extraction";
-import { clearDebugData, loadStorageSettings, persistRevisionCandidates } from "@/lib/storage";
+import { clearDebugData, loadStorageSettings, persistRevisionCandidates, saveStorageSettings } from "@/lib/storage";
 import { createId } from "@/lib/utils";
 import { useStudyStore } from "@/hooks/use-study-store";
 import { studyFileRoles, type GuidanceFile, type StudyFile, type StudyFileRole } from "@/lib/types";
@@ -40,6 +41,11 @@ export default function UploadPage() {
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
   const [message, setMessage] = useState("");
+  const [replacePack, setReplacePack] = useState(() =>
+    typeof window !== "undefined" ? loadStorageSettings().uploadReplacePack : true,
+  );
+  const [confirmOpen, setConfirmOpen] = useState(false);
+  const [pendingUpload, setPendingUpload] = useState<{ files: File[]; kind: "notes" | "guidance" } | null>(null);
 
   const allFiles = useMemo(() => [...store.notesFiles, ...store.guidanceFiles] as StudyFile[], [store.guidanceFiles, store.notesFiles]);
 
@@ -50,15 +56,18 @@ export default function UploadPage() {
     return hasLecture || hasAssessment;
   }, [allFiles]);
 
-  async function handleFiles(files: FileList | null, kind: "notes" | "guidance") {
-    if (!files?.length) return;
-    setLoading(true);
-    const parsed = await Promise.all(
-      Array.from(files).map(async (file) => {
+  function persistReplaceSetting(next: boolean) {
+    setReplacePack(next);
+    saveStorageSettings({ ...loadStorageSettings(), uploadReplacePack: next });
+  }
+
+  async function parseIncoming(files: File[]): Promise<StudyFile[] | GuidanceFile[]> {
+    return Promise.all(
+      files.map(async (file) => {
         const parsedDocument = await parseStudyFile(file);
         const role = inferStudyFileRole(file.name);
         return {
-          id: createId(kind),
+          id: createId("upload"),
           name: file.name,
           role,
           mimeType: file.type || "unknown",
@@ -70,9 +79,35 @@ export default function UploadPage() {
         };
       }),
     );
-    if (kind === "notes") store.addNotesFiles(parsed as StudyFile[]);
-    else store.addGuidanceFiles(parsed.map((file) => ({ ...file, kind: "guidance" })) as GuidanceFile[]);
-    setLoading(false);
+  }
+
+  async function commitUpload(files: File[], kind: "notes" | "guidance") {
+    const parsed = await parseIncoming(files);
+    if (kind === "notes") {
+      if (replacePack) store.replaceNotesAndClearGenerated(parsed as StudyFile[], true);
+      else store.addNotesFiles(parsed as StudyFile[]);
+    } else if (replacePack) {
+      store.replaceGuidanceAndClearGenerated(parsed.map((file) => ({ ...file, kind: "guidance" })) as GuidanceFile[]);
+    } else {
+      store.addGuidanceFiles(parsed.map((file) => ({ ...file, kind: "guidance" })) as GuidanceFile[]);
+    }
+  }
+
+  async function handleFiles(files: FileList | null, kind: "notes" | "guidance") {
+    if (!files?.length) return;
+    const list = Array.from(files);
+    const wouldOverwritePack = Boolean(store.studentRevisionPack) || store.revisionItems.some((item) => !item.isDeleted);
+    if (replacePack && wouldOverwritePack) {
+      setPendingUpload({ files: list, kind });
+      setConfirmOpen(true);
+      return;
+    }
+    setLoading(true);
+    try {
+      await commitUpload(list, kind);
+    } finally {
+      setLoading(false);
+    }
   }
 
   async function runGeneratePack() {
@@ -80,6 +115,7 @@ export default function UploadPage() {
     setGenerating(true);
     setMessage("");
     try {
+      store.ensureActivePackId();
       const uploadedFiles = [...store.notesFiles, ...store.guidanceFiles];
       const allParsedDocuments = uploadedFiles.map(toRoleParsedDocument);
       const notesDocuments = allParsedDocuments.filter((d) => d.role === "lecture_notes" || d.role === "formula_sheet" || d.role === "other");
@@ -118,7 +154,7 @@ export default function UploadPage() {
       const recallFromPack = typedCount > 0 ? buildRevisionItemsFromStudentPack(studentPack) : [];
       const recallWarning =
         typedCount === 0 && result.items.length > 0
-          ? "Review cards were generated by legacy fallback; regenerate after extraction improves."
+          ? "Some review cards were generated by fallback extraction."
           : undefined;
       const studentPackWithNote = {
         ...studentPack,
@@ -150,19 +186,99 @@ export default function UploadPage() {
     }
   }
 
+  const primaryNotesName =
+    store.notesFiles.find((f) => f.role === "lecture_notes")?.name ?? store.notesFiles[0]?.name ?? "";
+
   return (
     <div className="space-y-8">
       <PageHeader
         title="Upload course materials"
-        description="Classify files so Rivision can weight lectures vs assessment evidence. Then generate your revision pack — everything runs on your device."
+        description="Classify files so Rivision can weight lectures vs assessment evidence. By default a new upload replaces the current pack — switch to “Add to current pack” only when you mean to merge sources."
       />
 
+      <Card>
+        <CardHeader className="space-y-4">
+          <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
+            <div className="space-y-1">
+              <CardTitle className="text-base">Upload behaviour</CardTitle>
+              <CardDescription>Controls whether new files replace your saved study pack and progress.</CardDescription>
+            </div>
+            <label className="flex cursor-pointer items-center gap-2 text-sm">
+              <input
+                type="checkbox"
+                checked={replacePack}
+                onChange={(event) => persistReplaceSetting(event.target.checked)}
+                className="rounded border-slate-300"
+              />
+              Replace current pack (recommended)
+            </label>
+          </div>
+          {!replacePack ? (
+            <p className="text-sm text-amber-900">
+              Advanced: new files will be appended. Generate again to merge them into one pack; older cards may mix sources.
+            </p>
+          ) : null}
+          <div className="flex flex-wrap gap-2">
+            <Button type="button" variant="outline" size="sm" className="gap-2 text-red-800 border-red-200 hover:bg-red-50" onClick={() => store.clearCurrentPack()}>
+              <Trash2 className="h-4 w-4" />
+              Clear current pack
+            </Button>
+          </div>
+          {primaryNotesName ? (
+            <p className="text-sm text-slate-600">
+              <span className="font-medium text-slate-800">Current file:</span> {primaryNotesName}
+            </p>
+          ) : null}
+        </CardHeader>
+      </Card>
+
+      <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
+        <DialogContent>
+          <h2 className="text-lg font-semibold text-slate-950">Replace current study pack?</h2>
+          <p className="text-sm text-slate-600">
+            This will clear the current pack, review cards, practice questions, and progress for the previous upload before adding the new file(s).
+          </p>
+          <div className="mt-4 flex flex-wrap justify-end gap-2">
+            <Button type="button" variant="outline" onClick={() => { setConfirmOpen(false); setPendingUpload(null); }}>
+              Cancel
+            </Button>
+            <Button
+              type="button"
+              className="bg-blue-700 hover:bg-blue-800"
+              onClick={() => {
+                const job = pendingUpload;
+                setConfirmOpen(false);
+                setPendingUpload(null);
+                if (!job) return;
+                void (async () => {
+                  setLoading(true);
+                  try {
+                    await commitUpload(job.files, job.kind);
+                  } finally {
+                    setLoading(false);
+                  }
+                })();
+              }}
+            >
+              Replace and continue
+            </Button>
+          </div>
+        </DialogContent>
+      </Dialog>
+
       <div className="grid gap-6 lg:grid-cols-2">
-        <UploadBox title="Lecture notes & sources" description="Notes, chapters, formula sheets" onChange={(files) => handleFiles(files, "notes")} disabled={loading} />
+        <UploadBox
+          title="Lecture notes & sources"
+          description="Notes, chapters, formula sheets"
+          buttonLabel={replacePack ? "Upload file and replace current pack" : "Add lecture files"}
+          onChange={(files) => void handleFiles(files, "notes")}
+          disabled={loading}
+        />
         <UploadBox
           title="Assessment & evidence"
           description="Exam guidance, past papers, problem sheets, solutions"
-          onChange={(files) => handleFiles(files, "guidance")}
+          buttonLabel={replacePack ? "Upload and replace assessment slot" : "Add assessment files"}
+          onChange={(files) => void handleFiles(files, "guidance")}
           disabled={loading}
         />
       </div>
@@ -195,11 +311,13 @@ export default function UploadPage() {
 function UploadBox({
   title,
   description,
+  buttonLabel,
   onChange,
   disabled,
 }: {
   title: string;
   description: string;
+  buttonLabel: string;
   onChange: (files: FileList | null) => void;
   disabled?: boolean;
 }) {
@@ -212,8 +330,8 @@ function UploadBox({
       <CardContent>
         <label className="flex cursor-pointer flex-col items-center justify-center rounded-xl border-2 border-dashed border-slate-300 bg-white p-10 text-center hover:bg-slate-50">
           <UploadCloud className="mb-3 text-blue-700" />
-          <span className="font-medium">Choose files</span>
-          <span className="text-sm text-slate-500">PDF, Word, text, or Markdown</span>
+          <span className="font-medium">{buttonLabel}</span>
+          <span className="mt-1 text-sm text-slate-500">PDF, Word, text, or Markdown</span>
           <input type="file" multiple className="sr-only" accept=".pdf,.md,.txt,.docx,text/*" disabled={disabled} onChange={(e) => onChange(e.target.files)} />
         </label>
       </CardContent>

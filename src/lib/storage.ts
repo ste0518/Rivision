@@ -24,6 +24,8 @@ import type {
 } from "@/lib/types";
 
 export type StudyState = {
+  /** Workspace id for the current upload/pack; changes when replacing the pack or clearing. */
+  activePackId: string;
   notesFiles: StudyFile[];
   guidanceFiles: GuidanceFile[];
   revisionItems: RevisionItem[];
@@ -122,6 +124,7 @@ type StoredRevisionPack = {
   studentRevisionPack?: GeneratedRevisionPack;
   practiceQuestions?: GeneratedPracticeQuestion[];
   practiceAttempts?: Array<{ questionId: string; attemptedAt: string }>;
+  activePackId?: string;
 };
 
 export type LocalStorageKeyUsage = { key: string; bytes: number };
@@ -142,6 +145,8 @@ export type StorageSettings = {
   interfaceMode: "simple" | "advanced";
   /** When true (or interfaceMode advanced), show extraction/debug tooling. */
   developerMode: boolean;
+  /** Default: new uploads replace the current lecture file(s) and generated pack. */
+  uploadReplacePack: boolean;
   revisionStyle: RevisionStyleSetting;
   aiStrictness: AiStrictnessSetting;
   mathFormatting: MathFormattingSetting;
@@ -177,6 +182,7 @@ type FullProjectExport = {
 };
 
 export const emptyStudyState: StudyState = {
+  activePackId: "",
   notesFiles: [],
   guidanceFiles: [],
   revisionItems: [],
@@ -200,6 +206,7 @@ const defaultStorageSettings: StorageSettings = {
   persistDebugData: false,
   interfaceMode: "simple",
   developerMode: false,
+  uploadReplacePack: true,
   revisionStyle: "concise_exam",
   aiStrictness: "balanced",
   mathFormatting: "auto_clean",
@@ -558,6 +565,7 @@ async function loadProjectFromIndexedDb(projectId: string): Promise<StudyState> 
     practiceQuestions: revisionPack?.practiceQuestions ?? [],
     practiceAttempts: revisionPack?.practiceAttempts ?? [],
     curationReport: normalizedCuration.curationReport,
+    activePackId: revisionPack?.activePackId ?? "",
   };
 }
 
@@ -624,6 +632,7 @@ function normalizeStoredStudyState(parsed: Partial<StudyState>): StudyState {
   return {
     ...emptyStudyState,
     ...parsed,
+    activePackId: typeof parsed.activePackId === "string" ? parsed.activePackId : "",
     notesFiles: normalizeStudyFiles(parsed.notesFiles, "lecture_notes"),
     guidanceFiles: normalizeStudyFiles(parsed.guidanceFiles, "exam_guidance") as GuidanceFile[],
     revisionItems: migrateStoredCards(parsed.revisionItems),
@@ -814,6 +823,7 @@ function toStoredRevisionPack(projectId: string, state: StudyState): StoredRevis
     studentRevisionPack: state.studentRevisionPack,
     practiceQuestions: state.practiceQuestions,
     practiceAttempts: state.practiceAttempts,
+    activePackId: state.activePackId || undefined,
   };
 }
 
@@ -870,6 +880,7 @@ function stateFromProjectImport(parsed: Partial<FullProjectExport> & Partial<Stu
     studentRevisionPack: parsed.revisionPack?.studentRevisionPack,
     practiceQuestions: parsed.revisionPack?.practiceQuestions ?? [],
     practiceAttempts: parsed.revisionPack?.practiceAttempts ?? [],
+    activePackId: parsed.revisionPack?.activePackId ?? "",
   };
 }
 

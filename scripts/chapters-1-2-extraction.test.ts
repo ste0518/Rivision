@@ -69,6 +69,24 @@ const nonemptyTabs =
 assert.ok(nonemptyTabs, "definitions, formulas, proofs, and methods should all be non-empty for this fixture");
 
 assert.ok(/stochastic simulation/i.test(pack.examOverview.courseName ?? ""), `course title: ${pack.examOverview.courseName}`);
+const courseName = pack.examOverview.courseName ?? "";
+assert.ok(courseName.length < 100, `course title should be short, got len=${courseName.length}: ${courseName}`);
+assert.ok(!/\b(department|imperial college|akyildiz)\b/i.test(courseName), `title should not include author/affiliation: ${courseName}`);
+
+for (const topic of pack.courseMap) {
+  assert.ok(
+    topic.title.length <= 100,
+    `course map heading should be a title, not a paragraph: ${topic.title.slice(0, 120)}…`,
+  );
+}
+
+const algo2 = pack.methods.find((m) => /algorithm\s*2/i.test(m.problemType));
+assert.ok(algo2, "expected Algorithm 2 in methods");
+assert.ok(!/\d+\s*:\s*input/i.test(algo2.problemType), `Algorithm 2 label should not include "1: Input": ${algo2.problemType}`);
+const remarkInSteps = algo2.steps.some((s) => /remark\s*2\.1/i.test(s));
+assert.ok(!remarkInSteps, "Algorithm 2 steps should not contain Remark 2.1");
+
+assert.ok(pack.formulas.some((f) => Boolean(f.formulaPlain)), "expected formulaPlain on heuristic formulas");
 
 console.log("chapters 1–2 extraction acceptance test passed.");
 console.log(`  sections sample: ${sections.slice(0, 6).map((s) => `${s.sectionNumber} ${s.title}`).join("; ")}`);
