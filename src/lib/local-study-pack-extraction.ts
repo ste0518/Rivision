@@ -1,6 +1,13 @@
 /**
  * Local heuristic extraction for the student-facing Study Pack (no APIs).
- * Parses labelled mathematical blocks, sections, formulas, proofs, and methods.
+ *
+ * Pipeline:
+ *   1. Parse section headings ("4.1 ..." style) per file.
+ *   2. Extract labelled blocks (Definition/Theorem/Proposition/.../Algorithm).
+ *   3. Pair Theorem/Proposition/Lemma/Corollary blocks with following "Proof." bodies.
+ *   4. Build typed item collections (definitions, formulas, proofs, methods).
+ *   5. Pull formulas from raw lines AND from labelled-block central equations.
+ *   6. Build the cram sheet from typed items only — never directly from raw blocks.
  */
 
 import { mathStatusFromValidation, validateLatexSnippet } from "@/lib/latex-validate";
@@ -21,6 +28,7 @@ import type {
 } from "@/lib/student-revision-schema";
 import type { StudyFileRole } from "@/lib/types";
 import { createId } from "@/lib/utils";
+
 /** Mirrors {@link PackSourceFile} without importing revision-pack-generator (avoid circular deps). */
 export type LecturePackFile = {
   id: string;
@@ -97,27 +105,37 @@ function pageAtOffset(fullText: string, offset: number): number | undefined {
   return pageNumber;
 }
 
-/** Extract section headings like "4.1 Discrete state space Markov chains". */
+/** Extract section headings like "4.1 Discrete state space Markov chains" (any case). */
 export function extractSectionHeadings(text: string): ExtractedSection[] {
   const sections: ExtractedSection[] = [];
   let offset = 0;
   for (const line of text.split("\n")) {
     const leading = line.length - line.trimStart().length;
     const trimmed = line.trim();
-    const m = trimmed.match(/^(\d+(?:\.\d+)+)\s+(.{3,200})$/);
+    // Accept "4.1", "4.1.2" etc. The title may be lowercase as in PDF text extraction.
+    const m = trimmed.match(/^(\d+(?:\.\d+)+)\s+([A-Za-z][^]{1,200})$/);
     if (m) {
       const rest = m[2].trim();
-      if (!/^(definition|theorem|lemma|proposition|corollary|remark|example|proof|algorithm)\b/i.test(rest)) {
-        sections.push({
-          sectionNumber: m[1],
-          title: rest,
-          startOffset: offset + leading,
-        });
+      // Skip lines that are actually labelled blocks (Definition 4.1 ..., etc.).
+      if (!/^(definition|theorem|lemma|proposition|corollary|remark|example|proof|algorithm|exercise)\b/i.test(rest)) {
+        // Reject super-noisy headings that look like equations or table rows.
+        if (!/[=∑∫∏≥≤<>]/.test(rest) && rest.length <= 160) {
+          sections.push({
+            sectionNumber: m[1],
+            title: titleCase(rest.replace(/\s+/g, " ").trim()),
+            startOffset: offset + leading,
+          });
+        }
       }
     }
     offset += line.length + 1;
   }
   return sections;
+}
+
+function titleCase(value: string): string {
+  // Simple capitalisation for headings like "discrete state space markov chains".
+  return value.replace(/\b([a-z])([a-z0-9-]*)/g, (_m, head: string, tail: string) => head.toUpperCase() + tail);
 }
 
 function sectionForOffset(sections: ExtractedSection[], offset: number): string | undefined {
@@ -152,9 +170,10 @@ function importanceForKind(kind: PackItemKind): DefinitionImportance {
 
 function titleForBlock(kind: PackItemKind, parenTitle: string | undefined, body: string): string {
   if (parenTitle?.trim()) return parenTitle.trim().replace(/\s+/g, " ");
-  const first = body.replace(/^\s+/, "").split(/(?<=[.!?])\s+/)[0] ?? body;
-  const sentence = first.length > 140 ? `${first.slice(0, 137)}…` : first;
-  if (sentence.length >= 12 && sentence.length < 160) return sentence.replace(/\s+/g, " ").trim();
+  // Take first line up to ~140 chars for prose blocks.
+  const firstLine = body.replace(/^\s+/, "").split(/\n/)[0] ?? body;
+  const cleaned = firstLine.replace(/\s+/g, " ").trim();
+  if (cleaned.length >= 8 && cleaned.length < 160) return cleaned.length > 140 ? `${cleaned.slice(0, 137)}…` : cleaned;
   return `${kind} statement`;
 }
 
@@ -184,7 +203,7 @@ function extractLabelledBlocks(fullText: string, sourceFile: string, sections: E
     if (body.length < 8 && rawBlock.length < 15) continue;
 
     const kind = kindFromWord(cur.kind);
-    const formalLabel = `${cur.kind} ${cur.number}`;
+    const formalLabel = `${capitalize(cur.kind)} ${cur.number}`;
     const displayTitle = titleForBlock(kind, cur.paren, body);
     const offset = cur.index;
     blocks.push({
@@ -205,7 +224,11 @@ function extractLabelledBlocks(fullText: string, sourceFile: string, sections: E
   return blocks;
 }
 
-/** Strip duplicate header line from proof body if present. */
+function capitalize(value: string): string {
+  if (!value) return value;
+  return value.charAt(0).toUpperCase() + value.slice(1).toLowerCase();
+}
+
 function extractProofBlocks(fullText: string, sourceFile: string, sections: ExtractedSection[]): LabelledBlock[] {
   const text = fullText.replace(/\r\n/g, "\n");
   const out: LabelledBlock[] = [];
@@ -216,17 +239,24 @@ function extractProofBlocks(fullText: string, sourceFile: string, sections: Extr
     const contentStart = pm.index + pm[0].length;
     proofMatches.push({ start: pm.index, contentStart });
   }
+  // Stop a proof body when the next labelled head is encountered, not just the next Proof.
+  const labelledStarts: number[] = [];
+  LABELLED_HEAD.lastIndex = 0;
+  let lm: RegExpExecArray | null;
+  while ((lm = LABELLED_HEAD.exec(text)) !== null) labelledStarts.push(lm.index);
+
   for (let i = 0; i < proofMatches.length; i += 1) {
     const cur = proofMatches[i]!;
-    const next = proofMatches[i + 1];
-    const after = next ? next.start : text.length;
+    const nextProof = proofMatches[i + 1]?.start ?? text.length;
+    const nextLabelled = labelledStarts.find((idx) => idx > cur.contentStart) ?? text.length;
+    const after = Math.min(nextProof, nextLabelled);
     const body = text.slice(cur.contentStart, after).trim();
     if (body.length < 15) continue;
     out.push({
       kind: "proof",
       formalLabel: "Proof",
       number: "",
-      displayTitle: `Proof (${pageAtOffset(text, cur.start) ?? "notes"})`,
+      displayTitle: `Proof (p. ${pageAtOffset(text, cur.start) ?? "—"})`,
       body,
       rawBlock: text.slice(cur.start, after).trim(),
       sourceFile,
@@ -337,50 +367,156 @@ export function normalizeMathText(text: string): string {
   return convertCommonMathToLatex(t, profile, ctx);
 }
 
+// ---------------------------------------------------------------------------
+// Formulas
+// ---------------------------------------------------------------------------
+
+const FORMULA_LIKE = /[=∑∫]|\\sum|\\int|\\propto|∝|\\\(|\$|\\frac|\\mathbb\{P\}|M\^\{|M\^|p\^\*|p_n|K\(|\bsum\b|\bmin\b|\balpha\b|q\(/i;
+
+const FORMULA_SECONDARY = /[=]|\\sum|\\int|∑|∫|∝|\\\\propto|conditional|\\mathbb\{P\}|M_\{|M\^|p_n|p\^\*|K\(|q\(|\bP\(|\br\(x|\bMij\b/i;
+
+function looksLikeFormula(line: string): boolean {
+  if (line.length < 6 || line.length > 500) return false;
+  if (!FORMULA_LIKE.test(line)) return false;
+  if (!FORMULA_SECONDARY.test(line)) return false;
+  // Reject English prose lines that incidentally contain "=".
+  const wordCount = line.split(/\s+/).length;
+  const symbolDensity = (line.match(/[=∑∫∝<>≥≤_^|]/g) ?? []).length / Math.max(1, wordCount);
+  if (wordCount > 14 && symbolDensity < 0.15) return false;
+  return true;
+}
+
+/** Specific patterns we want to surface even when the parsed PDF text is messy. */
+const FORMULA_PATTERNS: Array<{ name: string; matcher: RegExp; latex: string; whenToUse: string }> = [
+  {
+    name: "Transition matrix entries",
+    matcher: /\bMij\s*=\s*P\(\s*Xn\+1\s*=\s*j[\s\S]{0,40}Xn\s*=\s*i\s*\)|\bMij\s*=\s*P\(/i,
+    latex: "M_{ij} = \\Pr(X_{n+1}=j \\mid X_n=i)",
+    whenToUse: "Definition of the one-step transition matrix.",
+  },
+  {
+    name: "Row stochasticity of M",
+    matcher: /\bsum.{0,8}j\s*=\s*1[^\n]{0,20}Mij\s*=\s*1|∑[^\n]{0,30}Mij\s*=\s*1/i,
+    latex: "\\sum_{j=1}^d M_{ij} = 1",
+    whenToUse: "Each row of a stochastic transition matrix sums to 1.",
+  },
+  {
+    name: "n-step transition (matrix power)",
+    matcher: /M\s*\(\s*n\s*\)\s*=\s*M\s*n\b|M\^\{?\(n\)\}?\s*=\s*M\^n/i,
+    latex: "M^{(n)} = M^n",
+    whenToUse: "n-step transition matrix as the n-th matrix power of M.",
+  },
+  {
+    name: "Chapman–Kolmogorov",
+    matcher: /M\s*\(\s*m\+n\s*\)\s*=\s*M\s*\(\s*m\s*\)\s*M\s*\(\s*n\s*\)/i,
+    latex: "M^{(m+n)} = M^{(m)} M^{(n)}",
+    whenToUse: "Chapman–Kolmogorov equation for transition matrices.",
+  },
+  {
+    name: "Distribution one-step evolution",
+    matcher: /\bp\s*n\s*=\s*p\s*n\s*-?\s*1\s*M\b|\bpn\s*=\s*pn-1M\b/i,
+    latex: "p_n = p_{n-1} M",
+    whenToUse: "One-step evolution of the marginal distribution under M.",
+  },
+  {
+    name: "Distribution n-step evolution",
+    matcher: /\bp\s*n\s*=\s*p\s*0\s*M\s*n\b|\bpn\s*=\s*p0Mn\b/i,
+    latex: "p_n = p_0 M^n",
+    whenToUse: "Marginal at step n via n-th matrix power.",
+  },
+  {
+    name: "Detailed balance (discrete)",
+    matcher: /p\?\(\s*i\s*\)\s*Mij\s*=\s*p\?\(\s*j\s*\)\s*Mji|p\^\*\(i\)\s*M_\{ij\}\s*=\s*p\^\*\(j\)\s*M_\{ji\}/i,
+    latex: "p^\\star(i) M_{ij} = p^\\star(j) M_{ji}",
+    whenToUse: "Discrete detailed-balance condition implies stationarity.",
+  },
+  {
+    name: "K-invariance (continuous)",
+    matcher: /p\?\(\s*x\s*\)\s*=\s*\\?int|p\?\(x\)\s*=[\s\S]{0,30}K\(\s*x\s*\|\s*x['′]/i,
+    latex: "p^\\star(x) = \\int_X K(x \\mid x') p^\\star(x') \\, dx'",
+    whenToUse: "Continuous-state K-invariance / stationarity equation.",
+  },
+  {
+    name: "Detailed balance (continuous)",
+    matcher: /K\(\s*x['′]\s*\|\s*x\s*\)\s*p\?\(\s*x\s*\)\s*=\s*K\(\s*x\s*\|\s*x['′]\s*\)\s*p\?\(\s*x['′]\s*\)/i,
+    latex: "K(x' \\mid x) p^\\star(x) = K(x \\mid x') p^\\star(x')",
+    whenToUse: "Continuous-state detailed-balance condition.",
+  },
+  {
+    name: "Metropolis–Hastings acceptance ratio",
+    matcher: /r\(\s*x\s*,\s*x['′]\s*\)\s*=\s*p\?\(\s*x['′]\s*\)\s*q\(\s*x\s*\|\s*x['′]\s*\)|p\?\(x['′]\)q\(x\|x['′]\)/i,
+    latex: "r(x, x') = \\dfrac{p^\\star(x') \\, q(x \\mid x')}{p^\\star(x) \\, q(x' \\mid x)}",
+    whenToUse: "Metropolis–Hastings ratio. Accept with probability min(1, r).",
+  },
+  {
+    name: "MH acceptance probability",
+    matcher: /\balpha\s*\(.{0,40}\)\s*=\s*min\s*\{?\s*1\s*,|min\s*\{\s*1,\s*p\?\(/i,
+    latex: "\\alpha(x, x') = \\min\\!\\left\\{1, \\, r(x, x')\\right\\}",
+    whenToUse: "MH acceptance probability cap at 1.",
+  },
+];
+
+function extractCanonicalFormulas(text: string, sourceFile: string, sections: ExtractedSection[]): GeneratedFormulaItem[] {
+  const out: GeneratedFormulaItem[] = [];
+  for (const pat of FORMULA_PATTERNS) {
+    pat.matcher.lastIndex = 0;
+    const m = pat.matcher.exec(text);
+    if (!m) continue;
+    const offset = m.index;
+    const v = validateLatexSnippet(`\\(${pat.latex}\\)`);
+    out.push({
+      id: createId("form"),
+      name: pat.name,
+      latex: pat.latex,
+      whenToUse: pat.whenToUse,
+      source: sourceFile,
+      sourceFile,
+      sourceSection: sectionForOffset(sections, offset),
+      sourcePage: pageAtOffset(text, offset),
+      sourceExcerpt: text.slice(Math.max(0, offset - 40), offset + 200).slice(0, 420),
+      mathStatus: mathStatusFromValidation(v),
+    });
+  }
+  return out;
+}
+
 function extractFormulaLines(text: string, sourceFile: string, sections: ExtractedSection[]): GeneratedFormulaItem[] {
   const lines = text.split("\n");
   let offset = 0;
   const out: GeneratedFormulaItem[] = [];
   const seen = new Set<string>();
 
-  const formulaLike =
-    /[=∑∫]|\\sum|\\int|\\propto|∝|\\\(|\$|\\frac|\\mathbb\{P\}|M\^\{|M\^|p\^\*|p_n|K\(|detailed balance|transition/i;
-
   for (const line of lines) {
     const trimmed = line.trim();
-    const isCandidate =
-      trimmed.length >= 8 &&
-      trimmed.length < 500 &&
-      formulaLike.test(trimmed) &&
-      (/[=]/.test(trimmed) || /\\sum|\\int|∑|∫|∝|\\\\propto|conditional|\\mathbb\{P\}|M_\{|M\^|p_n|p\^\*|K\(/i.test(trimmed));
-
-    if (isCandidate) {
-      const normalized = normalizeMathText(trimmed);
-      const sig = normalized.replace(/\s+/g, " ").slice(0, 160).toLowerCase();
-      if (seen.has(sig)) {
-        offset += line.length + 1;
-        continue;
-      }
-      seen.add(sig);
-      const v = validateLatexSnippet(normalized);
-      const nameGuess = trimmed.match(/^([^=:{]+)[:=]/);
-      const name = nameGuess ? nameGuess[1]!.trim().slice(0, 72) : `Relation near “${trimmed.slice(0, 40)}…”`;
-      out.push({
-        id: createId("form"),
-        name: name.replace(/\s+/g, " "),
-        latex: normalized,
-        whenToUse: "Use when revising transition kernels, balance conditions, or acceptance ratios in MCMC.",
-        source: sourceFile,
-        sourceFile,
-        sourceSection: sectionForOffset(sections, offset),
-        sourcePage: pageAtOffset(text.replace(/\r\n/g, "\n"), offset),
-        sourceExcerpt: trimmed.slice(0, 420),
-        mathStatus: mathStatusFromValidation(v),
-      });
+    if (!looksLikeFormula(trimmed)) {
+      offset += line.length + 1;
+      continue;
     }
+    const normalized = normalizeMathText(trimmed);
+    const sig = normalized.replace(/\s+/g, " ").slice(0, 160).toLowerCase();
+    if (seen.has(sig)) {
+      offset += line.length + 1;
+      continue;
+    }
+    seen.add(sig);
+    const v = validateLatexSnippet(normalized);
+    const nameGuess = trimmed.match(/^([^=:{]+)[:=]/);
+    const name = nameGuess ? nameGuess[1]!.trim().slice(0, 72) : `Relation near “${trimmed.slice(0, 40)}…”`;
+    out.push({
+      id: createId("form"),
+      name: name.replace(/\s+/g, " "),
+      latex: normalized,
+      whenToUse: "Use when revising transition kernels, balance conditions, or acceptance ratios.",
+      source: sourceFile,
+      sourceFile,
+      sourceSection: sectionForOffset(sections, offset),
+      sourcePage: pageAtOffset(text, offset),
+      sourceExcerpt: trimmed.slice(0, 420),
+      mathStatus: mathStatusFromValidation(v),
+    });
     offset += line.length + 1;
   }
-  return dedupeFormulas(out);
+  return out;
 }
 
 function dedupeFormulas(items: GeneratedFormulaItem[]): GeneratedFormulaItem[] {
@@ -394,36 +530,14 @@ function dedupeFormulas(items: GeneratedFormulaItem[]): GeneratedFormulaItem[] {
   return out.slice(0, 40);
 }
 
-function proofSkeletonFromBody(body: string): { skeleton: string; mistake: string } {
-  const lower = body.toLowerCase();
-  if (lower.includes("detailed balance") && lower.includes("stationary")) {
-    return {
-      skeleton: "Assume detailed balance → multiply by appropriate marginals → sum/integrate → conclude π is invariant.",
-      mistake: "Forgetting to verify summability / interchange limits when passing from pointwise balance to global stationarity.",
-    };
-  }
-  if (lower.includes("metropolis") && lower.includes("accept")) {
-    return {
-      skeleton: "Write proposal ratio r(x,x′) → verify reversibility with target × proposal → acceptance min(1,r).",
-      mistake: "Using the wrong conditional order in q(x′|x) vs q(x|x′) in the ratio.",
-    };
-  }
-  if (lower.includes("gibbs") && (lower.includes("invariant") || lower.includes("kernel"))) {
-    return {
-      skeleton: "Express kernel as composition / conditional updates → show each leaves π invariant → conclude Gibbs kernel invariant.",
-      mistake: "Assuming order of Gibbs updates does not matter without checking (random scan vs systematic).",
-    };
-  }
-  return {
-    skeleton: "State assumptions → expand definitions → algebraic manipulation → conclude.",
-    mistake: "Skipping hypotheses (irreducibility, aperiodicity, positivity) when invoking limit theorems.",
-  };
-}
+// ---------------------------------------------------------------------------
+// Definitions, proofs, methods
+// ---------------------------------------------------------------------------
 
 function blocksToDefinitions(blocks: LabelledBlock[]): GeneratedDefinitionItem[] {
-  const defKinds: PackItemKind[] = ["definition", "theorem", "proposition", "lemma", "corollary", "remark", "example", "exercise"];
+  // Strict: only true definitions belong in the Definitions tab.
   return blocks
-    .filter((b) => defKinds.includes(b.kind))
+    .filter((b) => b.kind === "definition")
     .map((b) => {
       const defText = normalizeMathText(b.body.slice(0, 3500));
       const snippet = defText.slice(0, 700);
@@ -446,43 +560,156 @@ function blocksToDefinitions(blocks: LabelledBlock[]): GeneratedDefinitionItem[]
     });
 }
 
-function blocksToProofs(blocks: LabelledBlock[]): GeneratedProofItem[] {
-  return blocks
-    .filter((b) => b.kind === "proof")
-    .map((b) => {
-      const { skeleton, mistake } = proofSkeletonFromBody(b.body);
-      const heading =
-        b.sourceSection != null ? `Proof · ${b.sourceSection}` : b.sourcePage != null ? `Proof (p. ${b.sourcePage})` : "Proof from notes";
-      return {
-        id: createId("prf"),
-        name: heading,
-        proofName: heading,
-        statement: normalizeMathText(b.body.slice(0, 1200)),
-        proofSkeleton: skeleton,
-        commonMistake: mistake,
-        source: b.sourceFile,
-        sourceFile: b.sourceFile,
-        sourcePage: b.sourcePage,
-        sourceSection: b.sourceSection,
-        sourceLabel: b.formalLabel,
-        sourceExcerpt: b.rawBlock.slice(0, 900),
-      };
+function proofSkeletonFromBody(title: string, body: string): { skeleton: string; mistake: string } {
+  const lower = `${title} ${body}`.toLowerCase();
+  if (lower.includes("detailed balance") && (lower.includes("stationar") || lower.includes("invariant"))) {
+    return {
+      skeleton: "Assume detailed balance K(x'|x)p*(x)=K(x|x')p*(x') → integrate both sides over x' → use that K(·|x) integrates to 1 → conclude p*(x) = ∫ K(x|x')p*(x')dx', i.e. K-invariance.",
+      mistake: "Forgetting that K(·|x) integrates to 1 (in the discrete case Σ_j Mij = 1) when collapsing the integral.",
+    };
+  }
+  if (lower.includes("metropolis") && (lower.includes("detailed balance") || lower.includes("accept"))) {
+    return {
+      skeleton: "Write MH kernel K(x'|x) = α(x,x')q(x'|x) + (1-a(x))δx(x'). Multiply by p*(x). For the proposal term, expand α = min{1, p*(x')q(x|x')/[p*(x)q(x'|x)]} and use min{a,b}·a = min{ab,b·a}=min{c,d}·b form to swap (x,x') → (x',x). Dirac term is symmetric in (x,x'). Conclude p*(x)K(x'|x)=p*(x')K(x|x').",
+      mistake: "Using the wrong conditional order in q(x'|x) vs q(x|x') in the ratio, or forgetting the rejection (Dirac) term contributes symmetrically.",
+    };
+  }
+  if (lower.includes("gibbs") && (lower.includes("invariant") || lower.includes("kernel") || lower.includes("conditional"))) {
+    return {
+      skeleton: "Each Gibbs sweep updates one block from its full conditional p*(x_k | x_{-k}). Show that p* is invariant under one such update by integrating over the updated coordinate. Compose updates: each leaves p* invariant, so the sweep does too.",
+      mistake: "Assuming the random/systematic scan order does not matter without verifying invariance per update; ignoring reducibility on disconnected supports.",
+    };
+  }
+  if (lower.includes("chapman") || (lower.includes("m^n") || /m\s*\(\s*n\s*\)\s*=\s*m\s*n/.test(lower))) {
+    return {
+      skeleton: "Condition on Xn at intermediate time → apply Markov property → recognise sum/integral as matrix/kernel product → induct to obtain M^{(n)} = M^n.",
+      mistake: "Conditioning incorrectly (Markov property requires conditioning on the most recent state).",
+    };
+  }
+  return {
+    skeleton: "State assumptions → expand definitions → algebraic manipulation → conclude.",
+    mistake: "Skipping hypotheses (irreducibility, aperiodicity, positivity) when invoking limit theorems.",
+  };
+}
+
+/** Build proof items from theorem/proposition/lemma/corollary blocks plus paired Proof bodies. */
+function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[]): GeneratedProofItem[] {
+  const STMT_KINDS: PackItemKind[] = ["theorem", "proposition", "lemma", "corollary"];
+  const stmtBlocks = blocks.filter((b) => STMT_KINDS.includes(b.kind));
+
+  const items: GeneratedProofItem[] = [];
+
+  for (const b of stmtBlocks) {
+    // Find the closest proof in the same file that comes after this block.
+    const proof = proofBlocks
+      .filter((p) => p.sourceFile === b.sourceFile && p.startOffset > b.startOffset)
+      .sort((a, c) => a.startOffset - c.startOffset)[0];
+
+    const heading = `${b.formalLabel}: ${b.displayTitle}`;
+    const { skeleton, mistake } = proofSkeletonFromBody(b.displayTitle, `${b.body}\n${proof?.body ?? ""}`);
+    items.push({
+      id: createId("prf"),
+      name: heading,
+      proofName: heading,
+      statement: normalizeMathText(b.body.slice(0, 1500)),
+      proofSkeleton: proof ? `Proof outline: ${normalizeMathText(proof.body.slice(0, 800))}\n\nKey idea: ${skeleton}` : skeleton,
+      commonMistake: mistake,
+      source: b.sourceFile,
+      sourceFile: b.sourceFile,
+      sourcePage: b.sourcePage,
+      sourceSection: b.sourceSection,
+      sourceLabel: b.formalLabel,
+      sourceExcerpt: b.rawBlock.slice(0, 900),
     });
+  }
+
+  // Also surface any orphan proofs (those not paired with a statement block).
+  const usedProofOffsets = new Set<number>();
+  for (const b of stmtBlocks) {
+    const proof = proofBlocks
+      .filter((p) => p.sourceFile === b.sourceFile && p.startOffset > b.startOffset)
+      .sort((a, c) => a.startOffset - c.startOffset)[0];
+    if (proof) usedProofOffsets.add(proof.startOffset);
+  }
+  for (const p of proofBlocks) {
+    if (usedProofOffsets.has(p.startOffset)) continue;
+    const { skeleton, mistake } = proofSkeletonFromBody(p.displayTitle, p.body);
+    const heading = p.sourceSection ? `Proof · ${p.sourceSection}` : p.sourcePage != null ? `Proof (p. ${p.sourcePage})` : "Proof from notes";
+    items.push({
+      id: createId("prf"),
+      name: heading,
+      proofName: heading,
+      statement: normalizeMathText(p.body.slice(0, 1200)),
+      proofSkeleton: skeleton,
+      commonMistake: mistake,
+      source: p.sourceFile,
+      sourceFile: p.sourceFile,
+      sourcePage: p.sourcePage,
+      sourceSection: p.sourceSection,
+      sourceLabel: p.formalLabel,
+      sourceExcerpt: p.rawBlock.slice(0, 900),
+    });
+  }
+
+  return items;
+}
+
+/** Clean up algorithm titles like "Algorithm 9 Pseudocode for Metropolis Hastings method". */
+function cleanAlgorithmTitle(rawHeading: string): string {
+  let t = rawHeading.replace(/^\s+/, "");
+  t = t.split(/\n\s*\d+\s*[:.]/)[0]!;
+  t = t.split(/\n/)[0]!;
+  t = t.replace(/^pseudocode\s+for\s+/i, "");
+  t = t.replace(/^algorithm\s+\d+\s*[:.]?\s*/i, "");
+  t = t.replace(/\bmetropolis\s+hastings\b/gi, "Metropolis–Hastings");
+  t = t.replace(/\s+/g, " ").trim();
+  if (!t) t = "Algorithm";
+  return t.length > 120 ? `${t.slice(0, 117)}…` : t;
+}
+
+/** Split algorithm body into ordered numbered steps. */
+function cleanAlgorithmSteps(body: string): string[] {
+  const text = body.replace(/\r\n/g, "\n");
+  // Find positions of step markers like "1:", "2:", at line start (with leading whitespace allowed).
+  const stepRe = /(?:^|\n)\s*(\d+)\s*[:.]\s+/g;
+  const matches: Array<{ index: number; match: string; step: number }> = [];
+  let m: RegExpExecArray | null;
+  while ((m = stepRe.exec(text)) !== null) {
+    matches.push({ index: m.index, match: m[0], step: Number(m[1]) });
+  }
+  if (matches.length < 2) {
+    // Fallback: split on sentences.
+    return body
+      .split(/(?:\n|;|\.)\s+/)
+      .map((s) => s.trim())
+      .filter((s) => s.length > 8)
+      .slice(0, 12);
+  }
+  const steps: string[] = [];
+  for (let i = 0; i < matches.length; i += 1) {
+    const start = matches[i]!.index + matches[i]!.match.length;
+    const end = matches[i + 1]?.index ?? text.length;
+    const stepText = text.slice(start, end).replace(/\s+/g, " ").trim();
+    if (stepText) steps.push(stepText);
+  }
+  return steps.slice(0, 16);
 }
 
 function algorithmBlocksToMethods(blocks: LabelledBlock[]): GeneratedMethodTemplate[] {
   const algos = blocks.filter((b) => b.kind === "algorithm");
-  const methods: GeneratedMethodTemplate[] = algos.map((b) => ({
-    id: createId("meth"),
-    problemType: `${b.formalLabel}: ${b.displayTitle}`,
-    steps: normalizeMathText(b.body)
-      .split(/(?:\n|;|\.)\s+/)
-      .map((s) => s.trim())
-      .filter((s) => s.length > 8)
-      .slice(0, 8),
-    triggerWords: [b.displayTitle, "MCMC", "Metropolis", "Gibbs"].filter(Boolean),
-    relatedPracticeType: "Exam-style algorithm recall",
-  }));
+  const methods: GeneratedMethodTemplate[] = algos.map((b) => {
+    const cleanTitle = b.parenTitle?.trim() && b.parenTitle.trim().length > 3
+      ? b.parenTitle.trim()
+      : cleanAlgorithmTitle(b.body);
+    const steps = cleanAlgorithmSteps(b.body).map((s) => normalizeMathText(s));
+    return {
+      id: createId("meth"),
+      problemType: `${b.formalLabel}: ${cleanTitle}`,
+      steps,
+      triggerWords: [cleanTitle, "MCMC", "Metropolis", "Gibbs"].filter(Boolean),
+      relatedPracticeType: "Exam-style algorithm recall",
+    };
+  });
 
   const textBlob = blocks.map((b) => b.body).join("\n").toLowerCase();
   const extras: Array<{ title: string; steps: string[]; triggers: string[] }> = [
@@ -511,16 +738,6 @@ function algorithmBlocksToMethods(blocks: LabelledBlock[]): GeneratedMethodTempl
       triggers: ["detailed balance"],
     },
     {
-      title: "Run Metropolis–Hastings",
-      steps: ["Choose proposal q(x'|x).", "Compute acceptance ratio r(x,x′).", "Accept/reject; repeat.", "Verify detailed balance for correctness intuition."],
-      triggers: ["metropolis", "hastings", "acceptance"],
-    },
-    {
-      title: "Derive the MH acceptance ratio",
-      steps: ["Start from detailed balance with π∝p*", "Include proposal densities q(x'|x) and q(x|x').", "Simplify to min(1,r) form."],
-      triggers: ["acceptance ratio", "r(x"],
-    },
-    {
       title: "Derive a Gibbs sampler from full conditionals",
       steps: ["Write full conditional distributions.", "Cycle updates (systematic or random scan).", "Each update leaves π invariant — verify using conditional detail."],
       triggers: ["gibbs", "full conditional"],
@@ -541,10 +758,17 @@ function algorithmBlocksToMethods(blocks: LabelledBlock[]): GeneratedMethodTempl
   return methods.slice(0, 14);
 }
 
+// ---------------------------------------------------------------------------
+// Course map
+// ---------------------------------------------------------------------------
+
 function courseTopicsFromSections(files: LecturePackFile[], lectureText: string): GeneratedCourseTopic[] {
   const sections = extractSectionHeadings(lectureText);
   if (sections.length) {
-    return sections.map((s) => ({
+    // Prefer top-level sections (X.Y) for the Course Map; nested X.Y.Z stay as evidence.
+    const topLevel = sections.filter((s) => s.sectionNumber.split(".").length === 2);
+    const chosen = topLevel.length ? topLevel : sections;
+    return chosen.map((s) => ({
       id: createId("topic"),
       title: `${s.sectionNumber} ${s.title}`,
       sourceFileNames: files.filter((f) => f.role === "lecture_notes" || !f.role).map((f) => f.name),
@@ -554,6 +778,10 @@ function courseTopicsFromSections(files: LecturePackFile[], lectureText: string)
   }
   return [];
 }
+
+// ---------------------------------------------------------------------------
+// Pack assembly
+// ---------------------------------------------------------------------------
 
 export type HeuristicPackContext = {
   files: LecturePackFile[];
@@ -570,23 +798,29 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const sections = extractSectionHeadings(combinedLectureText);
 
   const allBlocks: LabelledBlock[] = [];
+  const allProofBlocks: LabelledBlock[] = [];
   for (const f of lectureFiles) {
     const t = f.parsedText ?? "";
     if (!t.trim()) continue;
     allBlocks.push(...extractLabelledBlocks(t, f.name, sections));
-    allBlocks.push(...extractProofBlocks(t, f.name, sections));
+    allProofBlocks.push(...extractProofBlocks(t, f.name, sections));
   }
   const blocks = dedupeLabelledBlocks(allBlocks);
+  const proofBlocks = dedupeLabelledBlocks(allProofBlocks);
 
   let definitions = blocksToDefinitions(blocks);
   definitions = dedupeDefinitions(definitions);
 
-  const formulas = extractFormulaLines(combinedLectureText.replace(/\r\n/g, "\n"), primaryName, sections).map((f) => {
+  const cleanText = combinedLectureText.replace(/\r\n/g, "\n");
+  const lineFormulas = extractFormulaLines(cleanText, primaryName, sections);
+  const canonicalFormulas = extractCanonicalFormulas(cleanText, primaryName, sections);
+  const blockFormulas = extractFormulasFromBlocks(blocks, primaryName);
+  const formulas = dedupeFormulas([...canonicalFormulas, ...blockFormulas, ...lineFormulas]).map((f) => {
     const v = validateLatexSnippet(f.latex);
     return { ...f, mathStatus: mathStatusFromValidation(v) };
   });
 
-  let proofs = blocksToProofs(blocks);
+  let proofs = blocksToProofs(blocks, proofBlocks);
   proofs = dedupeProofs(proofs);
 
   const methods = algorithmBlocksToMethods(blocks);
@@ -620,13 +854,13 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const cram: GeneratedCramSheet = {
     definitionBullets: definitions.slice(0, 10).map((d) => `${d.formalLabel ?? d.term}: ${d.definition.slice(0, 100)}${d.definition.length > 100 ? "…" : ""}`),
     formulaBullets: formulas.slice(0, 10).map((f) => `${f.name}: ${f.latex}`),
-    proofSkeletonBullets: proofs.slice(0, 8).map((p) => `${p.name}: ${p.proofSkeleton}`),
+    proofSkeletonBullets: proofs.slice(0, 8).map((p) => `${p.name}: ${p.proofSkeleton.split("\n")[0]!.slice(0, 200)}`),
     trapBullets: mistakes.map((m) => `${m.mistake} — ${m.howToAvoid}`),
   };
 
   const overview = {
     courseName: chapterTitle,
-    summary: `Structured locally from ${files.length} file(s). ${definitions.filter((d) => !CORE_IDEA_PLACEHOLDER.test(d.term)).length} labelled items detected; style ${settings.revisionStyle.replace(/_/g, " ")}.`,
+    summary: `Structured locally from ${files.length} file(s). ${definitions.filter((d) => !CORE_IDEA_PLACEHOLDER.test(d.term)).length} definitions, ${formulas.length} formulas, ${proofs.length} proof items, ${methods.length} methods detected.`,
     likelyExamStructure: hasPastEvidence
       ? "Past/problem-sheet evidence present — cross-check emphasis against these notes."
       : "Lecture-only snapshot: definitions, algorithms, and balance conditions — add past papers to estimate exam weighting.",
@@ -645,6 +879,40 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     commonMistakes: mistakes,
     cramSheet: cram,
   };
+}
+
+/**
+ * Pull central equations out of labelled blocks (Definition/Theorem/Proposition/Algorithm).
+ * Anchors formulas to their formal label so traceability is preserved.
+ */
+function extractFormulasFromBlocks(blocks: LabelledBlock[], primarySource: string): GeneratedFormulaItem[] {
+  const out: GeneratedFormulaItem[] = [];
+  const include: PackItemKind[] = ["definition", "theorem", "proposition", "lemma", "algorithm"];
+  for (const b of blocks) {
+    if (!include.includes(b.kind)) continue;
+    const lines = b.body.split("\n").map((l) => l.trim()).filter(Boolean);
+    for (const line of lines) {
+      if (!looksLikeFormula(line)) continue;
+      const normalized = normalizeMathText(line).slice(0, 400);
+      const v = validateLatexSnippet(normalized);
+      out.push({
+        id: createId("form"),
+        name: `${b.formalLabel}${b.parenTitle ? ` (${b.parenTitle})` : ""}`,
+        latex: normalized,
+        whenToUse: `Central equation from ${b.formalLabel}.`,
+        source: b.sourceFile || primarySource,
+        sourceFile: b.sourceFile || primarySource,
+        sourceSection: b.sourceSection,
+        sourcePage: b.sourcePage,
+        sourceLabel: b.formalLabel,
+        sourceExcerpt: line.slice(0, 420),
+        mathStatus: mathStatusFromValidation(v),
+      });
+      // Only the first equation per block as the "central" one; the rest will be picked up by line scanning.
+      break;
+    }
+  }
+  return out;
 }
 
 function dedupeDefinitions(items: GeneratedDefinitionItem[]): GeneratedDefinitionItem[] {
@@ -668,7 +936,7 @@ function dedupeDefinitions(items: GeneratedDefinitionItem[]): GeneratedDefinitio
 function dedupeProofs(items: GeneratedProofItem[]): GeneratedProofItem[] {
   const out: GeneratedProofItem[] = [];
   for (const p of items) {
-    if (out.some((x) => jaccardSimilarity(x.statement, p.statement) > 0.85)) continue;
+    if (out.some((x) => (x.sourceLabel && x.sourceLabel === p.sourceLabel) || jaccardSimilarity(x.statement, p.statement) > 0.85)) continue;
     out.push(p);
   }
   return out.slice(0, 16);
