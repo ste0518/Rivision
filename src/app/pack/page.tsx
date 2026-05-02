@@ -198,8 +198,10 @@ export default function PackPage() {
           <div>
             <CardTitle className="text-xl">{pack.examOverview.courseName ?? "Your course"}</CardTitle>
             <CardDescription>
-              Generated {new Date(pack.generatedAt).toLocaleString()}
+              {pack.definitions.length} definitions · {pack.formulas.length} formulas · {pack.proofs.length} proofs · {pack.methods.length} methods
               {activeCards ? ` · ${activeCards} active recall card(s)` : ""}
+              <br />
+              <span className="text-xs text-slate-500">Generated {new Date(pack.generatedAt).toLocaleString()}</span>
             </CardDescription>
           </div>
           <div className="flex flex-wrap gap-2">
@@ -263,7 +265,18 @@ function OverviewSection({ overview }: { overview: GeneratedRevisionPack["examOv
   );
 }
 
+function EmptyState({ message }: { message: string }) {
+  return (
+    <Card className="border-dashed">
+      <CardContent className="py-8 text-center text-sm text-slate-600">{message}</CardContent>
+    </Card>
+  );
+}
+
 function CourseMapSection({ topics }: { topics: GeneratedRevisionPack["courseMap"] }) {
+  if (!topics.length) {
+    return <EmptyState message="No course map detected. Re-upload your lecture notes — we look for numbered section headings such as 4.1, 4.2." />;
+  }
   return (
     <div className="grid gap-3 md:grid-cols-2">
       {topics.map((t) => (
@@ -293,6 +306,9 @@ function DefinitionSection({
   onExplain: (d: GeneratedDefinitionItem) => void;
   onPractice: (d: GeneratedDefinitionItem) => void;
 }) {
+  if (!items.length) {
+    return <EmptyState message="No definitions detected. Check whether your PDF contains labelled definitions (e.g. 'Definition 4.1') or try regenerating the pack." />;
+  }
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4">
       {items.map((d) => (
@@ -383,6 +399,9 @@ function FormulaSection({
   onMarkOk: (id: string) => void;
   onEdit: (f: GeneratedFormulaItem) => void;
 }) {
+  if (!items.length) {
+    return <EmptyState message="No formulas detected. Re-upload notes that contain equations (e.g. transition matrices, balance conditions) or try regenerating the pack." />;
+  }
   return (
     <div className="mx-auto flex max-w-3xl flex-col gap-4">
       {items.map((f) => (
@@ -469,6 +488,9 @@ function ProofSection({
   onExplain: (p: GeneratedProofItem) => void;
   onPractice: (p: GeneratedProofItem) => void;
 }) {
+  if (!items.length) {
+    return <EmptyState message="No proof items detected. We pair Theorem/Proposition/Lemma blocks with their following 'Proof.' bodies — re-upload notes that include either." />;
+  }
   return (
     <div className="mx-auto max-w-3xl space-y-4">
       {items.map((p) => (
@@ -538,6 +560,9 @@ function ProofSection({
 }
 
 function MethodSection({ methods }: { methods: GeneratedRevisionPack["methods"] }) {
+  if (!methods.length) {
+    return <EmptyState message="No algorithms or method templates detected. We look for 'Algorithm N' blocks and recognised pattern names." />;
+  }
   return (
     <div className="space-y-4">
       {methods.map((m) => (

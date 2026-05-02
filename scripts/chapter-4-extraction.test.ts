@@ -93,6 +93,26 @@ for (const lbl of ["Proposition 4.1", "Proposition 4.2", "Proposition 4.3"]) {
 // 7. No "Core idea N" placeholder titles when labelled blocks exist.
 assert.ok(!pack.definitions.some((d) => /^Core idea\s+\d+$/i.test(d.term)), "definitions should not use Core idea placeholder when labelled blocks exist");
 
+// 8. Proposition 4.1 statement must not include Remark 4.2 / Exercise content.
+const prop41 = pack.proofs.find((p) => p.sourceLabel === "Proposition 4.1");
+assert.ok(prop41, "Proposition 4.1 proof item should be present");
+assert.ok(!/Remark\s*4\.2/i.test(prop41.statement), `Proposition 4.1 statement leaked Remark 4.2; got: ${prop41.statement.slice(0, 200)}`);
+assert.ok(!/Exercise\s*4\./i.test(prop41.statement), `Proposition 4.1 statement leaked an Exercise; got: ${prop41.statement.slice(0, 200)}`);
+assert.ok(!/^Proof\b/i.test(prop41.statement), "Proposition 4.1 statement should not start with the proof body");
+
+// 9. Cram sheet definitions list is non-empty and well-formed.
+assert.ok(pack.cramSheet.definitionBullets.length >= 4, `expected ≥4 cram-sheet definition bullets, got ${pack.cramSheet.definitionBullets.length}`);
+
+// 10. Formula latex is wrapped in math delimiters so MathMarkdown can render it.
+const wrappedFormulas = pack.formulas.filter((f) => /\\\(|\\\[|\$/.test(f.latex));
+assert.ok(wrappedFormulas.length >= pack.formulas.length - 1, `most formulas should be wrapped in math delimiters; ${wrappedFormulas.length}/${pack.formulas.length}`);
+
+// 11. Algorithm 9 first step looks like the input declaration.
+assert.ok(/Input/i.test(algo9.steps[0]!), `Algorithm 9 step 1 should describe the input; got: ${algo9.steps[0]}`);
+// Last algorithm step should not absorb a paragraph of trailing prose.
+const lastStep = algo9.steps[algo9.steps.length - 1]!;
+assert.ok(lastStep.length < 250, `Algorithm 9 last step should be short, got ${lastStep.length} chars: ${lastStep.slice(0, 200)}`);
+
 console.log("chapter-4 extraction acceptance test passed.");
 console.log(`  sections=${sectionNumbers.join(",")}`);
 console.log(`  definitions=${defLabels.join(", ")}`);

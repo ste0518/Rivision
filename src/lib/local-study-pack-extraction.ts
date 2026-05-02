@@ -379,11 +379,42 @@ function looksLikeFormula(line: string): boolean {
   if (line.length < 6 || line.length > 500) return false;
   if (!FORMULA_LIKE.test(line)) return false;
   if (!FORMULA_SECONDARY.test(line)) return false;
+  // Reject continuation fragments that start with "=" (no LHS).
+  if (/^[=≤≥<>+\-]/.test(line.trim())) return false;
+  // Reject lines that contain runs of dots from PDF rendering (e.g. "M = ........" or "M = .. .. . .").
+  if (/\.{4,}/.test(line)) return false;
+  if ((line.match(/\.{2,}/g)?.length ?? 0) >= 3) return false;
+  // Reject lines that are mostly punctuation/dots after the first '=' (rendered ASCII matrices).
+  const afterEq = line.split("=").slice(1).join("=");
+  if (afterEq && afterEq.replace(/[\s.0-9·,]/g, "").length === 0) return false;
+  // Reject lines that are clearly numeric table rows (>=3 decimal numbers separated by spaces).
+  const decimalRunMatches = line.match(/(?:^|\s)\d+\.\d+(?:\s+\d+\.\d+){2,}/);
+  if (decimalRunMatches) return false;
+  // Reject lines that are stand-alone matrix-entry rows like "Xt-1 = 1 0.6 0.2 0.2".
+  if (/^[A-Za-z][\w−\-]*\s*=\s*\d+(\s+\d+(\.\d+)?){2,}$/.test(line.trim())) return false;
+  // Reject step lines like "2: for n = 1,..." (these belong to algorithms, not the formula tab).
+  if (/^\d+\s*:\s+/.test(line.trim())) return false;
   // Reject English prose lines that incidentally contain "=".
   const wordCount = line.split(/\s+/).length;
   const symbolDensity = (line.match(/[=∑∫∝<>≥≤_^|]/g) ?? []).length / Math.max(1, wordCount);
-  if (wordCount > 14 && symbolDensity < 0.15) return false;
+  if (wordCount > 10 && symbolDensity < 0.18) return false;
+  // Reject lines that contain a long run of natural-English words before any math symbol.
+  const proseRun = line.match(/^[A-Z]?[a-z]+(?:\s+[a-z]+){5,}/);
+  if (proseRun && proseRun[0].length / line.length > 0.55) return false;
+  // Reject lines that are dominated by free prose with a single trailing reference like "(4.2)".
+  if (/[A-Za-z]{2,}\s+[A-Za-z]{2,}\s+[A-Za-z]{2,}\s+[A-Za-z]{2,}\s+[A-Za-z]{2,}/.test(line) && wordCount > 10) {
+    const mathSpan = (line.match(/[=∑∫∝<>≥≤_^|]/g) ?? []).length;
+    if (mathSpan < 2) return false;
+  }
   return true;
+}
+
+/** Wrap raw LaTeX in `\(...\)` so MathMarkdown picks it up as math. */
+function wrapAsMath(latex: string): string {
+  const trimmed = latex.trim();
+  if (!trimmed) return trimmed;
+  if (/\\\(|\\\[|\$/.test(trimmed)) return trimmed;
+  return `\\[ ${trimmed} \\]`;
 }
 
 /** Specific patterns we want to surface even when the parsed PDF text is messy. */
@@ -454,6 +485,12 @@ const FORMULA_PATTERNS: Array<{ name: string; matcher: RegExp; latex: string; wh
     latex: "\\alpha(x, x') = \\min\\!\\left\\{1, \\, r(x, x')\\right\\}",
     whenToUse: "MH acceptance probability cap at 1.",
   },
+  {
+    name: "MALA / Langevin proposal",
+    matcher: /q\(\s*x['′]?\s*\|\s*x\s*\)\s*=\s*N\s*\([^)]*\bgamma\b|N\s*\(\s*x['′]\s*;\s*x\s*\+\s*\\?γ?gamma?\s*\\?nabla?∇?\s*log/i,
+    latex: "q(x' \\mid x) = \\mathcal{N}\\!\\left(x';\\, x + \\gamma \\nabla \\log p^\\star(x),\\, 2\\gamma I\\right)",
+    whenToUse: "MALA proposal centred on a gradient ascent step on log-target.",
+  },
 ];
 
 function extractCanonicalFormulas(text: string, sourceFile: string, sections: ExtractedSection[]): GeneratedFormulaItem[] {
@@ -467,7 +504,7 @@ function extractCanonicalFormulas(text: string, sourceFile: string, sections: Ex
     out.push({
       id: createId("form"),
       name: pat.name,
-      latex: pat.latex,
+      latex: wrapAsMath(pat.latex),
       whenToUse: pat.whenToUse,
       source: sourceFile,
       sourceFile,
@@ -505,7 +542,7 @@ function extractFormulaLines(text: string, sourceFile: string, sections: Extract
     out.push({
       id: createId("form"),
       name: name.replace(/\s+/g, " "),
-      latex: normalized,
+      latex: wrapAsMath(normalized),
       whenToUse: "Use when revising transition kernels, balance conditions, or acceptance ratios.",
       source: sourceFile,
       sourceFile,
@@ -607,11 +644,13 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[]): 
 
     const heading = `${b.formalLabel}: ${b.displayTitle}`;
     const { skeleton, mistake } = proofSkeletonFromBody(b.displayTitle, `${b.body}\n${proof?.body ?? ""}`);
+    // Strip any "Proof." section that may have been included in the proposition body.
+    const statementOnly = b.body.split(/(?:^|\n)\s*Proof\s*[.:]/i)[0]!.trim();
     items.push({
       id: createId("prf"),
       name: heading,
       proofName: heading,
-      statement: normalizeMathText(b.body.slice(0, 1500)),
+      statement: normalizeMathText(statementOnly.slice(0, 1500)),
       proofSkeleton: proof ? `Proof outline: ${normalizeMathText(proof.body.slice(0, 800))}\n\nKey idea: ${skeleton}` : skeleton,
       commonMistake: mistake,
       source: b.sourceFile,
@@ -689,7 +728,16 @@ function cleanAlgorithmSteps(body: string): string[] {
   for (let i = 0; i < matches.length; i += 1) {
     const start = matches[i]!.index + matches[i]!.match.length;
     const end = matches[i + 1]?.index ?? text.length;
-    const stepText = text.slice(start, end).replace(/\s+/g, " ").trim();
+    let raw = text.slice(start, end);
+    if (i === matches.length - 1) {
+      // Last step has no following step marker; cap at paragraph break or first sentence
+      // to avoid absorbing trailing prose that follows the algorithm body.
+      const breakIdx = raw.search(/\n\s*\n/);
+      if (breakIdx > 20) raw = raw.slice(0, breakIdx);
+      const periodIdx = raw.search(/\.\s+[A-Z]/);
+      if (periodIdx > 20) raw = raw.slice(0, periodIdx + 1);
+    }
+    const stepText = raw.replace(/\s+/g, " ").trim();
     if (stepText) steps.push(stepText);
   }
   return steps.slice(0, 16);
@@ -860,7 +908,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
 
   const overview = {
     courseName: chapterTitle,
-    summary: `Structured locally from ${files.length} file(s). ${definitions.filter((d) => !CORE_IDEA_PLACEHOLDER.test(d.term)).length} definitions, ${formulas.length} formulas, ${proofs.length} proof items, ${methods.length} methods detected.`,
+    summary: `Structured locally from ${files.length} file(s): ${definitions.filter((d) => !CORE_IDEA_PLACEHOLDER.test(d.term)).length} definitions · ${formulas.length} formulas · ${proofs.length} proofs · ${methods.length} methods.`,
     likelyExamStructure: hasPastEvidence
       ? "Past/problem-sheet evidence present — cross-check emphasis against these notes."
       : "Lecture-only snapshot: definitions, algorithms, and balance conditions — add past papers to estimate exam weighting.",
@@ -898,7 +946,7 @@ function extractFormulasFromBlocks(blocks: LabelledBlock[], primarySource: strin
       out.push({
         id: createId("form"),
         name: `${b.formalLabel}${b.parenTitle ? ` (${b.parenTitle})` : ""}`,
-        latex: normalized,
+        latex: wrapAsMath(normalized),
         whenToUse: `Central equation from ${b.formalLabel}.`,
         source: b.sourceFile || primarySource,
         sourceFile: b.sourceFile || primarySource,
