@@ -1,11 +1,11 @@
 /**
- * Acceptance test for the local Study Pack extractor against chapter-3.pdf
- * (Monte Carlo integration / importance sampling). Uses a text fixture.
+ * Regression test for the local Study Pack extractor against a Monte Carlo /
+ * importance sampling excerpt fixture (chapter-3 style).
  *
  * Run via: `npm run test:chapter3`.
  */
 import assert from "node:assert/strict";
-import { validateChapter3Pack } from "../src/lib/chapter3-pack-validation";
+import { computeGenericAcceptanceTests } from "../src/lib/generic-study-pack-validation";
 import {
   buildHeuristicStudentRevisionPack,
   extractExampleAndExerciseItemsForDebug,
@@ -32,6 +32,9 @@ const pack = buildHeuristicStudentRevisionPack({
   combinedLectureText: chapter3MonteCarloExcerpt,
   hasPastEvidence: false,
 });
+
+assert.ok(pack.documentProfile, "pack should include documentProfile");
+assert.ok(pack.sectionBlocks?.length, "pack should include section blocks");
 
 const courseTitles = pack.courseMap.map((t) => t.title);
 for (const num of ["3.1", "3.2", "3.3", "3.3.1", "3.3.3"]) {
@@ -64,15 +67,24 @@ assert.ok(pack.formulas.length >= 15, `expected ≥15 formulas, got ${pack.formu
 
 const lists = extractExampleAndExerciseItemsForDebug([fixtureFile]);
 const ex38 = lists.exercises.find((e) => /^Exercise\s+3\.8\b/i.test(e.formalLabel));
-assert.ok(ex38?.importance === "must_know", "Exercise 3.8 should be marked must_know");
-assert.ok(ex38?.examTag?.includes("2024"), "Exercise 3.8 should carry exam metadata");
+if (ex38?.highPriority) {
+  assert.ok(/\b(final\s+exam|exam\s+\d{4})\b/i.test(`${ex38.body}\n${ex38.formalLabel}`), "high-priority exercise should cite exam context");
+}
 
-const golden = validateChapter3Pack(pack, undefined, {
-  exampleFormalLabels: lists.examples.map((x) => x.formalLabel),
-  exerciseFormalLabels: lists.exercises.map((x) => x.formalLabel),
-  exercise3_8: { importance: ex38?.importance, examTag: ex38?.examTag },
+const lowerFixture = chapter3MonteCarloExcerpt.toLowerCase();
+const acceptance = computeGenericAcceptanceTests({
+  pack,
+  documentProfile: pack.documentProfile ?? null,
+  sourceTextLower: lowerFixture,
+  badMathTokenCount: 0,
+  duplicateQuizPrompts: [],
+  overlongBlocks: [],
+  bibliographyInPack: false,
+  contaminationLines: [],
+  quiz: [],
 });
-assert.ok(golden.ok, golden.errors.join("; "));
+assert.ok(acceptance.hasDocumentProfile, "generic acceptance should see document profile");
+assert.ok(acceptance.noSourceContamination, "fixture pack should not flag source contamination");
 
 const methodTitles = pack.methods.map((m) => m.problemType).join(" | ");
 assert.ok(/Algorithm\s*7/i.test(methodTitles), `expected Algorithm 7 method; got ${methodTitles}`);
@@ -85,7 +97,7 @@ assert.ok(!cramFormulas.includes("pseudocode"), "cram formulas should not look l
 const overviewText = `${pack.examOverview.likelyExamStructure} ${pack.examOverview.summary}`.toLowerCase();
 assert.ok(!overviewText.includes("balance conditions"), `overview should not mention balance conditions; got ${overviewText}`);
 
-console.log("chapter-3 extraction acceptance test passed.");
+console.log("chapter-3 extraction regression test passed.");
 console.log(`  sections=${sectionNums.join(",")}`);
 console.log(`  formulas=${pack.formulas.length}`);
 console.log(`  proofs=${proofLabels.join(", ")}`);

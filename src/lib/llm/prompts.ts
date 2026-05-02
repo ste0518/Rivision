@@ -57,8 +57,7 @@ For definitions:
 Keep core definitions in required or central sections.
 Make cardFront the concept name, not an instruction sentence.
 
-For mathematical course notes, important items may appear as headings, examples, model equations, conditions, procedures, diagnostics, or summary tables, not only as explicit Definition/Theorem labels. In time-series material, actively look for stationarity, ACVS/ACF, white noise, MA(q), AR(p), ARMA(p,q), ARCH(p), ARIMA(p,d,q), GLP, stationarity/invertibility root conditions, spectral density, periodogram, Ljung-Box, residual analysis, and forecasting.
-In Monte Carlo integration or importance-sampling material, actively generate exam-style cards for Monte Carlo integration, test functions, empirical distributions, Dirac delta measures, MC/IS/SNIS estimators, variance formulas, error rate \\(O(1/\\sqrt N)\\), importance weights, proposal distributions, proof ideas, algorithms, and worked example templates.
+For mathematical course notes, important items may appear as headings, examples, model equations, conditions, procedures, diagnostics, or summary tables, not only as explicit Definition/Theorem labels. Infer topics only from the uploaded notes (time series, Monte Carlo, spatial statistics, etc.) — do not inject titles or definitions from unrelated syllabi.
 
 For conceptual distinctions:
 Create cards for important relationships and contrasts, even if not explicitly labelled as Definition or Theorem.

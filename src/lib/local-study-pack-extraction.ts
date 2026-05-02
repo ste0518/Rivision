@@ -10,10 +10,12 @@
  *   6. Build the cram sheet from typed items only — never directly from raw blocks.
  */
 
+import { profileDocument, sanitiseExtractedText, splitDocumentTextLayers, type DocumentProfile } from "@/lib/document-profile";
 import { mathStatusFromValidation, validateLatexSnippet } from "@/lib/latex-validate";
 import { applyMathNormalisation } from "@/lib/math-normalisation";
 import { cleanUploadedStudySourceText } from "@/lib/source-text-cleanup";
 import { convertCommonMathToLatex } from "@/lib/revision-item-utils";
+import { buildSectionBlocks } from "@/lib/section-blocks";
 import {
   extractSectionHeadingsFromText,
   findFirstInteriorSectionHeadingIndex,
@@ -22,16 +24,19 @@ import {
   type ExtractedSectionHeading,
 } from "@/lib/section-headings";
 import type {
+  CourseMapChapterEntry,
   DefinitionImportance,
   GeneratedCommonMistake,
   GeneratedCourseTopic,
   GeneratedCramSheet,
   GeneratedDefinitionItem,
+  GeneratedDerivationItem,
   GeneratedFormulaItem,
   GeneratedMethodTemplate,
   GeneratedPastPaperPattern,
   GeneratedProofItem,
   GeneratedRevisionPack,
+  SourceGrounding,
   StudyPackEntryKind,
   TopicImportance,
 } from "@/lib/student-revision-schema";
@@ -44,6 +49,7 @@ export type LecturePackFile = {
   name: string;
   role?: StudyFileRole;
   parsedText?: string;
+  pages?: Array<{ pageNumber: number; text: string }>;
 };
 
 export type PackGeneratorSettings = {
@@ -113,7 +119,7 @@ function mergeSectionHeadingsForPack(files: LecturePackFile[], combinedLectureTe
 }
 
 function inferCourseTitleFromNotes(combinedLectureText: string, primaryFileStem: string): string {
-  const firstPages = combinedLectureText.split(/\[Page\s*3\]/i)[0] ?? combinedLectureText;
+  const firstPages = combinedLectureText.split(/\[Page\s*5\]/i)[0] ?? combinedLectureText;
   const lines = firstPages.split("\n").map((l) => l.trim()).filter(Boolean);
 
   const cutAffiliation = (line: string): string => {
@@ -127,6 +133,19 @@ function inferCourseTitleFromNotes(combinedLectureText: string, primaryFileStem:
     if (nameCut > 14) t = t.slice(0, nameCut).trim();
     return t.replace(/[,\s]+$/u, "").trim();
   };
+
+  const blob = combinedLectureText.slice(0, 80_000).toLowerCase();
+  if (/\b(time\s+series|autocovariance|autocorrelation|arma|arima|stationar|white\s+noise)\b/.test(blob)) {
+    const tsLine = lines.find(
+      (l) =>
+        l.length >= 14 &&
+        l.length < 200 &&
+        /\b(time\s+series|analysis|econometrics|forecast)\b/i.test(l) &&
+        !/^\[Page\b/i.test(l),
+    );
+    if (tsLine) return cutAffiliation(tsLine).slice(0, 120);
+    return "Time series analysis";
+  }
 
   for (const line of lines) {
     if (line.length < 14 || line.length > 200) continue;
@@ -556,10 +575,13 @@ export function normalizeMathText(text: string): string {
   t = t.replace(/Pd\s+j\s*=\s*1/gi, "\\( \\sum_{j=1}^d \\)");
   t = t.replace(/\bp\*\(/g, "\\( p^\\star(");
   const profileHint = t.toLowerCase();
-  const profile =
-    /\b(monte\s*carlo|importance\s*sampling|self[-\s]?normali|snis|proposal\s+distribution|empirical\s+measure|mc\s+estimator|is\s+estimator|effective\s+sample|ess\b|test\s+function)\b/.test(
-      profileHint,
-    )
+  const profile = /\b(time\s+series|autocovariance|autocorrelation|arma|arima|sarima|stationar|white\s+noise|backshift|acf\b|pacf\b)\b/.test(
+    profileHint,
+  )
+    ? "time_series"
+    : /\b(monte\s*carlo|importance\s*sampling|self[-\s]?normali|snis|proposal\s+distribution|empirical\s+measure|mc\s+estimator|is\s+estimator|effective\s+sample|ess\b|test\s+function)\b/.test(
+        profileHint,
+      )
       ? "monte_carlo_sampling"
       : /\b(markov|mcmc|metropolis|gibbs|transition\s+matrix|detailed\s+balance|irreducible|aperiodic)\b/.test(profileHint)
         ? "monte_carlo_sampling"
@@ -915,15 +937,90 @@ const FORMULA_PATTERNS: Array<{ name: string; matcher: RegExp; latex: string; wh
   },
 ];
 
+/** Canonical matchers that only apply when the source discusses Monte Carlo / importance sampling. */
+const MONTE_CARLO_CANONICAL_NAMES = new Set([
+  "Expectation under target p*",
+  "Empirical measure",
+  "Monte Carlo estimator",
+  "MC estimator variance",
+  "Empirical variance estimator",
+  "Indicator probability estimator",
+  "Estimator bias",
+  "Estimator variance (general)",
+  "Mean squared error",
+  "MSE decomposition",
+  "Importance weights ratio",
+  "Importance sampling estimator",
+  "IS estimator variance",
+  "IS identity (change of measure)",
+  "Finite variance condition (IS)",
+  "Optimal IS proposal",
+  "Unnormalised weight W(x)",
+  "SNIS estimator",
+  "Normalised importance weights",
+  "Effective sample size ESS",
+  "Root mean squared error (RMSE)",
+  "Relative absolute error (RAE)",
+  "Mixture importance sampling proposal",
+  "Log-weight stabilisation",
+]);
+
+/** Matchers specific to Markov chains / MCMC kernels. */
+const MARKOV_MCMC_CANONICAL_NAMES = new Set([
+  "Transition matrix entries",
+  "Row stochasticity of M",
+  "n-step transition (matrix power)",
+  "Chapman–Kolmogorov",
+  "Distribution one-step evolution",
+  "Distribution n-step evolution",
+  "Detailed balance (discrete)",
+  "K-invariance (continuous)",
+  "Detailed balance (continuous)",
+  "Metropolis–Hastings acceptance ratio",
+  "MH acceptance probability",
+  "MALA / Langevin proposal",
+]);
+
+function filterCanonicalFormulaPatterns(sourceLower: string) {
+  const mc =
+    /\bmonte\s*carlo\b|\bimportance\s+sampling\b|\bsnis\b|\beffective\s+sample\b|\bess\b|\bmc\s+estimator\b|\bself[-\s]?normali/i.test(sourceLower);
+  const mk =
+    /\b(markov\s+chain|\bmcmc\b|\bmetropolis\b|\bgibbs\b|\btransition\s+matrix|\bdetailed\s+balance)\b/i.test(sourceLower);
+  return FORMULA_PATTERNS.filter((p) => {
+    if (MONTE_CARLO_CANONICAL_NAMES.has(p.name) && !mc) return false;
+    if (MARKOV_MCMC_CANONICAL_NAMES.has(p.name) && !mk) return false;
+    return true;
+  });
+}
+
+function sourceGroundingPack(
+  sourceFile: string,
+  sourcePage: number | undefined,
+  sourceSection: string | undefined,
+  excerpt: string,
+): SourceGrounding {
+  const ex = excerpt.trim();
+  const groundingConfidence = ex.length >= 48 ? 0.88 : ex.length >= 20 ? 0.72 : 0.45;
+  return {
+    sourceFile,
+    sourcePage: sourcePage ?? null,
+    sourceSection: sourceSection ?? null,
+    sourceExcerpt: ex.slice(0, 900),
+    groundingConfidence,
+  };
+}
+
 function extractCanonicalFormulas(text: string, sourceFile: string, sections: ExtractedSection[]): GeneratedFormulaItem[] {
+  const lower = text.toLowerCase();
   const out: GeneratedFormulaItem[] = [];
-  for (const pat of FORMULA_PATTERNS) {
+  for (const pat of filterCanonicalFormulaPatterns(lower)) {
     pat.matcher.lastIndex = 0;
     const m = pat.matcher.exec(text);
     if (!m) continue;
     const offset = m.index;
     const v = validateLatexSnippet(`\\(${pat.latex}\\)`);
     const plain = m[0]?.replace(/\s+/g, " ").trim() ?? "";
+    const excerpt = text.slice(Math.max(0, offset - 40), offset + 200).slice(0, 420);
     out.push({
       id: createId("form"),
       name: pat.name,
@@ -934,8 +1031,9 @@ function extractCanonicalFormulas(text: string, sourceFile: string, sections: Ex
       sourceFile,
       sourceSection: sectionForOffset(sections, offset),
       sourcePage: pageAtOffset(text, offset),
-      sourceExcerpt: text.slice(Math.max(0, offset - 40), offset + 200).slice(0, 420),
+      sourceExcerpt: excerpt,
       mathStatus: mathStatusFromValidation(v),
+      grounding: sourceGroundingPack(sourceFile, pageAtOffset(text, offset), sectionForOffset(sections, offset), excerpt),
     });
   }
   return out;
@@ -963,6 +1061,7 @@ function extractFormulaLines(text: string, sourceFile: string, sections: Extract
     const v = validateLatexSnippet(normalized);
     const nameGuess = trimmed.match(/^([^=:{]+)[:=]/);
     const name = nameGuess ? nameGuess[1]!.trim().slice(0, 72) : `Relation near “${trimmed.slice(0, 40)}…”`;
+    const excerpt = trimmed.slice(0, 420);
     out.push({
       id: createId("form"),
       name: name.replace(/\s+/g, " "),
@@ -973,15 +1072,16 @@ function extractFormulaLines(text: string, sourceFile: string, sections: Extract
       sourceFile,
       sourceSection: sectionForOffset(sections, offset),
       sourcePage: pageAtOffset(text, offset),
-      sourceExcerpt: trimmed.slice(0, 420),
+      sourceExcerpt: excerpt,
       mathStatus: mathStatusFromValidation(v),
+      grounding: sourceGroundingPack(sourceFile, pageAtOffset(text, offset), sectionForOffset(sections, offset), excerpt),
     });
     offset += line.length + 1;
   }
   return out;
 }
 
-function dedupeFormulas(items: GeneratedFormulaItem[]): GeneratedFormulaItem[] {
+function dedupeFormulas(items: GeneratedFormulaItem[], maxItems = 120): GeneratedFormulaItem[] {
   const out: GeneratedFormulaItem[] = [];
   for (const f of items) {
     const sig = f.latex.replace(/\s+/g, " ").slice(0, 120).toLowerCase();
@@ -989,7 +1089,7 @@ function dedupeFormulas(items: GeneratedFormulaItem[]): GeneratedFormulaItem[] {
     if (out.some((x) => jaccardSimilarity(x.latex, f.latex) > 0.92)) continue;
     out.push(f);
   }
-  return out.slice(0, 80);
+  return out.slice(0, maxItems);
 }
 
 function defaultFormulaWhenToUse(lectureText: string): string {
@@ -1055,6 +1155,7 @@ function blocksToDefinitions(blocks: LabelledBlock[]): GeneratedDefinitionItem[]
       const defText = normalizeMathText(clipped);
       const snippet = defText.slice(0, 700);
       const v = validateLatexSnippet(snippet);
+      const excerpt = b.rawBlock.slice(0, 900);
       return {
         id: createId("def"),
         term: b.displayTitle,
@@ -1064,74 +1165,96 @@ function blocksToDefinitions(blocks: LabelledBlock[]): GeneratedDefinitionItem[]
         sourcePage: b.sourcePage,
         sourceSection: b.sourceSection,
         sourceLabel: b.formalLabel,
-        sourceExcerpt: b.rawBlock.slice(0, 900),
+        sourceExcerpt: excerpt,
         formalLabel: b.formalLabel,
         definitionKind: "formal" as const,
         itemKind: b.kind as StudyPackEntryKind,
         importance: b.importance,
         mathStatus: mathStatusFromValidation(v),
+        grounding: sourceGroundingPack(b.sourceFile, b.sourcePage, b.sourceSection, excerpt),
       };
     });
 }
 
-const CONCEPTUAL_REVISION_SEEDS: Array<{ term: string; pattern: RegExp }> = [
-  { term: "Monte Carlo integration", pattern: /\bmonte\s*carlo\s+integration\b/i },
-  { term: "Test function", pattern: /\btest\s+function\b/i },
-  { term: "Empirical measure", pattern: /\bempirical\s+(measure|distribution)\b/i },
-  { term: "Dirac delta measure", pattern: /\bdirac\s+delta\b/i },
-  { term: "Monte Carlo estimator", pattern: /\bmonte\s*carlo\s+estimator\b|\bMC\s+estimator\b/i },
-  { term: "Unbiased estimator", pattern: /\bunbiased\s+estimator\b/i },
-  { term: "Estimator variance", pattern: /\bestimator\s+variance\b|\bvariance\s+of\s+the\s+estimator\b/i },
-  { term: "Empirical variance estimator", pattern: /\bempirical\s+variance\b/i },
-  { term: "Bias", pattern: /\bbias\s*\(\s*\\?hat|\bbias\s+of\s+the\s+estimator\b/i },
-  { term: "Mean squared error (MSE)", pattern: /\bMSE\b|\bmean\s+squared\s+error\b/i },
-  { term: "Root mean squared error (RMSE)", pattern: /\bRMSE\b|\broot\s+mean\s+squared\b/i },
-  { term: "Relative absolute error (RAE)", pattern: /\bRAE\b|\brelative\s+absolute\b/i },
-  { term: "Proposal distribution", pattern: /\bproposal\s+distribution\b/i },
-  { term: "Importance weight", pattern: /\bimportance\s+weight/i },
-  { term: "Support condition for importance sampling", pattern: /\bsupport\s+condition\b/i },
-  { term: "Finite variance condition for importance sampling", pattern: /\bfinite\s+variance\b/i },
-  { term: "Optimal proposal", pattern: /\boptimal\s+proposal\b/i },
-  { term: "Self-normalised importance sampling", pattern: /\bself[-\s]?normali[sz]ed\s+importance\s+sampling\b|\bSNIS\b/i },
-  { term: "Unnormalised weight", pattern: /\bunnormali[sz]ed\s+weight\b/i },
-  { term: "Normalised weight", pattern: /\bnormali[sz]ed\s+weight\b|\bnormalised\s+weights\b/i },
-  { term: "Effective sample size", pattern: /\beffective\s+sample\s+size\b|\bESS\b/i },
-  { term: "Mixture importance sampling", pattern: /\bmixture\s+importance\b/i },
-  { term: "Log-weight trick", pattern: /\blog[-\s]?weight\b|\blog\s+trick\b/i },
-];
-
+/** Concept cards from headings + document topics + definition-shaped sentences (no fixed syllabus list). */
 function harvestConceptualDefinitions(
   lectureText: string,
   primaryFile: string,
   sections: ExtractedSection[],
   formalDefs: GeneratedDefinitionItem[],
+  profile: DocumentProfile,
 ): GeneratedDefinitionItem[] {
   const used = new Set(formalDefs.map((d) => d.term.toLowerCase()));
   const out: GeneratedDefinitionItem[] = [];
-  for (const seed of CONCEPTUAL_REVISION_SEEDS) {
-    if (used.has(seed.term.toLowerCase())) continue;
-    const hit = seed.pattern.exec(lectureText);
+
+  const candidateTerms: string[] = [];
+  for (const s of sections) {
+    const t = `${s.title}`.trim();
+    if (t.length >= 6 && t.length < 120) candidateTerms.push(t);
+  }
+  for (const t of profile.detectedTopics) {
+    if (t.length >= 5 && t.length < 90) candidateTerms.push(t);
+  }
+
+  for (const rawTerm of candidateTerms) {
+    const term = rawTerm.replace(/\s+/g, " ").trim();
+    const key = term.toLowerCase();
+    if (used.has(key)) continue;
+    const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const hit = new RegExp(`\\b${escaped}\\b`, "i").exec(lectureText);
     if (!hit || hit.index === undefined) continue;
-    const excerptStart = Math.max(0, hit.index - 40);
-    const excerptEnd = Math.min(lectureText.length, hit.index + 280);
-    const def = normalizeMathText(lectureText.slice(excerptStart, excerptEnd).replace(/\s+/g, " ").trim());
-    if (def.length < 28) continue;
+    const excerptStart = Math.max(0, hit.index - 60);
+    const excerptEnd = Math.min(lectureText.length, hit.index + 420);
+    const window = lectureText.slice(excerptStart, excerptEnd).replace(/\s+/g, " ").trim();
+    const def = normalizeMathText(window);
+    if (def.length < 32) continue;
+    const sourceExcerpt = lectureText.slice(hit.index, Math.min(lectureText.length, hit.index + 160));
     const v = validateLatexSnippet(def.slice(0, 600));
     out.push({
       id: createId("def"),
-      term: seed.term,
+      term,
       definition: def,
       source: primaryFile,
       sourceFile: primaryFile,
       sourcePage: pageAtOffset(lectureText, hit.index),
       sourceSection: sectionForOffset(sections, hit.index),
-      sourceExcerpt: lectureText.slice(hit.index, hit.index + 120),
+      sourceExcerpt,
       importance: "high",
       definitionKind: "conceptual",
       mathStatus: mathStatusFromValidation(v),
+      grounding: sourceGroundingPack(primaryFile, pageAtOffset(lectureText, hit.index), sectionForOffset(sections, hit.index), sourceExcerpt),
     });
-    used.add(seed.term.toLowerCase());
+    used.add(key);
   }
+
+  for (const m of lectureText.matchAll(
+    /\b((?:[A-Z][a-z]+\s+){1,4}[a-z]+)\s+is\s+(?:called|defined\s+as|said\s+to\s+be)\b[^.!?]{0,200}[.!?]/gi,
+  )) {
+    const phrase = m[1]?.trim();
+    if (!phrase || phrase.length < 10 || phrase.length > 90) continue;
+    const key = phrase.toLowerCase();
+    if (used.has(key)) continue;
+    const block = m[0]?.trim() ?? "";
+    if (block.length < 40) continue;
+    const idx = m.index ?? 0;
+    const v = validateLatexSnippet(block.slice(0, 600));
+    out.push({
+      id: createId("def"),
+      term: phrase,
+      definition: normalizeMathText(block),
+      source: primaryFile,
+      sourceFile: primaryFile,
+      sourcePage: pageAtOffset(lectureText, idx),
+      sourceSection: sectionForOffset(sections, idx),
+      sourceExcerpt: block.slice(0, 220),
+      importance: "medium",
+      definitionKind: "conceptual",
+      mathStatus: mathStatusFromValidation(v),
+      grounding: sourceGroundingPack(primaryFile, pageAtOffset(lectureText, idx), sectionForOffset(sections, idx), block.slice(0, 320)),
+    });
+    used.add(key);
+  }
+
   return out;
 }
 
@@ -1261,6 +1384,7 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[]): 
       b.kind === "proposition" && MC_PROP_COMMON_MISTAKE[b.number] ? MC_PROP_COMMON_MISTAKE[b.number] : mistake;
     const steps = proofStepsFromBody(proof.body);
 
+    const proofExcerpt = b.rawBlock.slice(0, 900);
     items.push({
       id: createId("prf"),
       name: heading,
@@ -1275,7 +1399,8 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[]): 
       sourcePage: b.sourcePage,
       sourceSection: b.sourceSection,
       sourceLabel: b.formalLabel,
-      sourceExcerpt: b.rawBlock.slice(0, 900),
+      sourceExcerpt: proofExcerpt,
+      grounding: sourceGroundingPack(b.sourceFile, b.sourcePage, b.sourceSection, proofExcerpt),
     });
   }
 
@@ -1364,7 +1489,9 @@ function algorithmBlocksToMethods(blocks: LabelledBlock[]): GeneratedMethodTempl
 
   const textBlob = blocks.map((b) => b.body).join("\n").toLowerCase();
   const markovPresent = /\b(markov|transition\s+matrix|mcmc|gibbs|metropolis|detailed\s+balance)\b/i.test(textBlob);
-  const extras: Array<{ title: string; steps: string[]; triggers: string[]; requiresMarkovContext?: boolean }> = [
+  const monteCarloPresent = /\b(monte\s*carlo|importance\s+sampling|snis|self[-\s]?normali)\b/i.test(textBlob);
+  const extras: Array<{ title: string; steps: string[]; triggers: string[]; requiresMarkovContext?: boolean; requiresMonteCarlo?: boolean }> =
+    [
     {
       title: "Simulate a discrete Markov chain",
       steps: [
@@ -1401,6 +1528,7 @@ function algorithmBlocksToMethods(blocks: LabelledBlock[]): GeneratedMethodTempl
         "Use the resampled points as an (approximate) target sample (often after optional rejuvenation).",
       ],
       triggers: ["sampling importance resampling"],
+      requiresMonteCarlo: true,
     },
     {
       title: "Derive a Gibbs sampler from full conditionals",
@@ -1412,6 +1540,7 @@ function algorithmBlocksToMethods(blocks: LabelledBlock[]): GeneratedMethodTempl
 
   for (const ex of extras) {
     if (ex.requiresMarkovContext && !markovPresent) continue;
+    if (ex.requiresMonteCarlo && !monteCarloPresent) continue;
     if (!ex.triggers.some((t) => textBlob.includes(t))) continue;
     if (methods.some((m) => m.problemType.toLowerCase().includes(ex.title.slice(0, 12).toLowerCase()))) continue;
     methods.push({
@@ -1445,6 +1574,83 @@ function courseTopicsFromSections(files: LecturePackFile[], sections: ExtractedS
 // Pack assembly
 // ---------------------------------------------------------------------------
 
+function buildRichCourseMap(
+  profile: DocumentProfile,
+  definitions: GeneratedDefinitionItem[],
+  formulas: GeneratedFormulaItem[],
+  derivations: GeneratedDerivationItem[],
+): CourseMapChapterEntry[] {
+  if (!profile.chapterMap.length) return [];
+  return profile.chapterMap.map((ch) => {
+    const mustKnowDefinitions = definitions
+      .filter((d) => {
+        const p = d.sourcePage;
+        if (p != null && p >= ch.startPage && p <= ch.endPage) return true;
+        return ch.sectionHeadings.some((h) => (d.sourceSection ?? "").includes(h.slice(0, 36)));
+      })
+      .map((d) => d.term)
+      .slice(0, 28);
+    const mustKnowFormulas = formulas
+      .filter((f) => {
+        const p = f.sourcePage;
+        return p != null && p >= ch.startPage && p <= ch.endPage;
+      })
+      .map((f) => f.name)
+      .slice(0, 28);
+    const weight = mustKnowDefinitions.length + mustKnowFormulas.length;
+    const examRisk: CourseMapChapterEntry["examRisk"] = weight > 14 ? "high" : weight > 6 ? "medium" : "low";
+    const workedExamples = derivations
+      .filter((d) => {
+        const p = d.sourcePage;
+        if (p == null) return ch.sectionHeadings.some((h) => d.title.includes(h.slice(0, 20)));
+        return p >= ch.startPage && p <= ch.endPage;
+      })
+      .map((d) => d.title)
+      .slice(0, 12);
+    return {
+      chapter: /chapter/i.test(ch.chapterLabel) ? ch.chapterLabel : `Chapter ${ch.chapterLabel}`,
+      title: ch.chapterTitle,
+      coreTopics: ch.sectionHeadings.slice(0, 20),
+      mustKnowDefinitions,
+      mustKnowFormulas,
+      workedExamples,
+      examRisk,
+    };
+  });
+}
+
+function extractDerivationCards(text: string, primaryFile: string, sections: ExtractedSection[]): GeneratedDerivationItem[] {
+  const out: GeneratedDerivationItem[] = [];
+  const chunkRe =
+    /(?:^|\n)\s*(Worked\s+example\s*:[^\n]+)\n([\s\S]{60,14000}?)(?=\n\s*(?:Chapter\s+\d+|\d+(?:\.\d+)+\s+[A-Za-z]|Worked\s+example|Definition\s+\d|Theorem\s+\d|Proposition\s+\d)\b)/gi;
+  let m: RegExpExecArray | null;
+  while ((m = chunkRe.exec(text)) !== null) {
+    const title = m[1]!.trim().slice(0, 180);
+    const body = m[2]!.trim();
+    if (body.length < 80) continue;
+    const offset = m.index ?? 0;
+    const steps = body
+      .split(/\n+/)
+      .map((l) => l.trim())
+      .filter((l) => l.length > 18)
+      .slice(0, 24);
+    const excerpt = body.slice(0, 720);
+    out.push({
+      id: createId("der"),
+      title,
+      summary: body.slice(0, 520).replace(/\s+/g, " ").trim(),
+      steps,
+      sourceFile: primaryFile,
+      sourcePage: pageAtOffset(text, offset),
+      sourceSection: sectionForOffset(sections, offset),
+      sourceExcerpt: excerpt,
+      groundingConfidence: /\b(hence|therefore|show\s+that|thus)\b/i.test(body) ? 0.82 : 0.68,
+    });
+    if (out.length >= 28) break;
+  }
+  return out;
+}
+
 export type HeuristicPackContext = {
   files: LecturePackFile[];
   settings: PackGeneratorSettings;
@@ -1458,15 +1664,36 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const lectureFiles = files.filter((f) => f.role === "lecture_notes" || f.role === "formula_sheet" || f.role === "other");
   const primaryName = lectureFiles[0]?.name ?? files[0]?.name ?? "your materials";
   const cleanedCombined = applyMathNormalisation(cleanUploadedStudySourceText(combinedLectureText.replace(/\r\n/g, "\n")));
-  const sectionsMerged = mergeSectionHeadingsForPack(lectureFiles, cleanedCombined);
-  const sections = extractSectionHeadings(cleanedCombined);
-  const courseContext = cleanedCombined;
+  const layers = splitDocumentTextLayers(cleanedCombined);
+  const extractionBase =
+    layers.printedText.replace(/\s+/g, " ").trim().length > 400 ? layers.printedText : cleanedCombined;
+  const cleanedPrinted = applyMathNormalisation(cleanUploadedStudySourceText(extractionBase.replace(/\r\n/g, "\n")));
+
+  const cleanedPages = lectureFiles.flatMap((f) =>
+    (f.pages ?? []).map((p) => ({
+      pageNumber: p.pageNumber,
+      text: sanitiseExtractedText(applyMathNormalisation(cleanUploadedStudySourceText(p.text.replace(/\r\n/g, "\n")))),
+    })),
+  );
+
+  const documentProfile = profileDocument({
+    cleanedPages: cleanedPages.length ? cleanedPages : [{ pageNumber: 1, text: cleanedPrinted }],
+    combinedPrintedText: cleanedPrinted,
+  });
+
+  const sectionBlocks = buildSectionBlocks(cleanedPrinted, primaryName.replace(/\.[^.]+$/, ""));
+
+  const sectionsMerged = mergeSectionHeadingsForPack(lectureFiles, cleanedPrinted);
+  const sections = extractSectionHeadings(cleanedPrinted);
+  const courseContext = cleanedPrinted;
 
   const allBlocks: LabelledBlock[] = [];
   const allProofBlocks: LabelledBlock[] = [];
   for (const f of lectureFiles) {
-    const t = applyMathNormalisation(cleanUploadedStudySourceText(f.parsedText ?? ""));
-    if (!t.trim()) continue;
+    const raw = applyMathNormalisation(cleanUploadedStudySourceText(f.parsedText ?? ""));
+    if (!raw.trim()) continue;
+    const split = splitDocumentTextLayers(raw);
+    const t = split.printedText.replace(/\s+/g, " ").trim().length > 120 ? split.printedText : raw;
     const fileSections = extractSectionHeadings(t);
     allBlocks.push(...extractLabelledBlocks(t, f.name, fileSections, courseContext));
     allProofBlocks.push(...extractProofBlocks(t, f.name, fileSections));
@@ -1476,14 +1703,19 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const proofBlocks = dedupeLabelledBlocks(allProofBlocks);
 
   const formalDefs = blocksToDefinitions(blocks);
-  const definitions = dedupeDefinitions([...formalDefs, ...harvestConceptualDefinitions(cleanedCombined, primaryName, sections, formalDefs)]);
+  const definitions = dedupeDefinitions([
+    ...formalDefs,
+    ...harvestConceptualDefinitions(cleanedPrinted, primaryName, sections, formalDefs, documentProfile),
+  ]);
 
-  const cleanText = cleanedCombined;
+  const cleanText = cleanedPrinted;
   const whenHint = defaultFormulaWhenToUse(cleanText);
   const lineFormulas = extractFormulaLines(cleanText, primaryName, sections, whenHint);
   const canonicalFormulas = extractCanonicalFormulas(cleanText, primaryName, sections);
-  const blockFormulas = extractFormulasFromBlocks(blocks, primaryName);
-  let formulas = dedupeFormulas([...canonicalFormulas, ...blockFormulas, ...lineFormulas]).map((f) => {
+  const blockFormulas = extractFormulasFromBlocks(blocks, primaryName, cleanText);
+  const pageCount = documentProfile.pageCount;
+  const maxFormulas = pageCount < 15 ? 90 : pageCount <= 50 ? 150 : 220;
+  let formulas = dedupeFormulas([...canonicalFormulas, ...blockFormulas, ...lineFormulas], maxFormulas).map((f) => {
     const v = validateLatexSnippet(f.latex);
     return { ...f, mathStatus: mathStatusFromValidation(v) };
   });
@@ -1492,75 +1724,110 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   let proofs = blocksToProofs(blocks, proofBlocks);
   proofs = dedupeProofs(proofs);
 
+  const derivations = extractDerivationCards(cleanedPrinted, primaryName, sections);
+
   const methods = algorithmBlocksToMethods(blocks);
 
   const primaryStem =
     files.find((f) => f.role === "lecture_notes")?.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ") ??
     primaryName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
-  const chapterTitle = inferCourseTitleFromNotes(cleanedCombined, primaryStem);
+  const inferredTitle = inferCourseTitleFromNotes(cleanedPrinted, primaryStem);
+  const chapterTitle = documentProfile.courseName ?? documentProfile.title ?? inferredTitle;
 
   let courseMap = courseTopicsFromSections(files, sectionsMerged);
   if (!courseMap.length) {
     courseMap = guessTopicsFallback(files);
   }
 
-  const mistakes: GeneratedCommonMistake[] = isMonteCarloIntegrationHeavyContext(cleanedCombined)
-    ? [
-        {
-          id: createId("mis"),
-          mistake: "Using MC variance formulas under proposal draws",
-          whyItHappens: "IS/SNIS moments depend on q unless weights are handled explicitly.",
-          howToAvoid: "State whether expectations are under q or p* before manipulating variance expressions.",
-        },
-        {
-          id: createId("mis"),
-          mistake: "Ignoring support overlap between target and proposal",
-          whyItHappens: "Weights explode where q≈0 but p*>0.",
-          howToAvoid: "Verify q>0 on the support of p* (and finite-variance conditions).",
-        },
-      ]
-    : [
-        {
-          id: createId("mis"),
-          mistake: "Confusing stationarity with detailed balance",
-          whyItHappens: "Detailed balance is sufficient but not necessary for π.",
-          howToAvoid: "When checking invariance, verify πK=π directly if detailed balance is unclear.",
-        },
-        {
-          id: createId("mis"),
-          mistake: "Wrong proposal direction in MH ratio",
-          whyItHappens: "Asymmetric proposals need q(x′|x) and q(x|x′) consistently.",
-          howToAvoid: "Write the ratio before cancelling terms; track conditioning carefully.",
-        },
-      ];
+  const lowerCtx = cleanedPrinted.toLowerCase();
+  const mistakes: GeneratedCommonMistake[] = [];
+  if (isMonteCarloIntegrationHeavyContext(cleanedPrinted)) {
+    mistakes.push(
+      {
+        id: createId("mis"),
+        mistake: "Using MC variance formulas under proposal draws",
+        whyItHappens: "IS/SNIS moments depend on q unless weights are handled explicitly.",
+        howToAvoid: "State whether expectations are under q or p* before manipulating variance expressions.",
+      },
+      {
+        id: createId("mis"),
+        mistake: "Ignoring support overlap between target and proposal",
+        whyItHappens: "Weights explode where q≈0 but p*>0.",
+        howToAvoid: "Verify q>0 on the support of p* (and finite-variance conditions).",
+      },
+    );
+  } else if (/\b(markov|mcmc|metropolis|detailed\s+balance)\b/i.test(lowerCtx)) {
+    mistakes.push(
+      {
+        id: createId("mis"),
+        mistake: "Wrong proposal direction in MH ratio",
+        whyItHappens: "Asymmetric proposals need q(x′|x) and q(x|x′) consistently.",
+        howToAvoid: "Write the ratio before cancelling terms; track conditioning carefully.",
+      },
+      {
+        id: createId("mis"),
+        mistake: "Assuming irreducibility / aperiodicity without checking the chain",
+        whyItHappens: "Limit theorems need hypotheses stated in your notes.",
+        howToAvoid: "Quote the exact assumptions from the lecture before applying convergence results.",
+      },
+    );
+  } else if (/\b(time\s+series|arma|arima|stationar|autocovariance)\b/i.test(lowerCtx)) {
+    mistakes.push(
+      {
+        id: createId("mis"),
+        mistake: "Confusing strict and weak stationarity",
+        whyItHappens: "Second-order stationarity does not imply strict stationarity without extra assumptions.",
+        howToAvoid: "State which notion you mean and what finite moments are assumed.",
+      },
+      {
+        id: createId("mis"),
+        mistake: "Mixing up AR and MA signatures from the ACF alone",
+        whyItHappens: "Different processes can produce similar rough ACF shapes at small lags.",
+        howToAvoid: "Cross-check PACF / model equations and stationarity/invertibility root conditions.",
+      },
+    );
+  } else {
+    mistakes.push({
+      id: createId("mis"),
+      mistake: "Applying a theorem without checking its hypotheses",
+      whyItHappens: "Lecture proofs often hide regularity conditions in earlier pages.",
+      howToAvoid: "List hypotheses explicitly before using a formula or limit theorem.",
+    });
+  }
 
   const patterns = buildPastPaperPatterns(hasPastEvidence, settings);
+
+  const courseMapChapters = buildRichCourseMap(documentProfile, definitions, formulas, derivations);
 
   const cramFormulaSource = formulas.filter(
     (f) => !/^algorithm\s+\d/i.test(f.sourceLabel ?? "") && !/^algorithm\s+\d/i.test(f.name) && !/\bpseudocode\b/i.test(f.name),
   );
 
   const cram: GeneratedCramSheet = {
-    definitionBullets: definitions.slice(0, 10).map((d) => `${d.formalLabel ?? d.term}: ${d.definition.slice(0, 100)}${d.definition.length > 100 ? "…" : ""}`),
-    formulaBullets: cramFormulaSource.slice(0, 10).map((f) => `${f.name}: ${f.latex}`),
-    proofSkeletonBullets: proofs.slice(0, 8).map((p) => `${p.name}: ${p.proofSkeleton.split("\n")[0]!.slice(0, 200)}`),
+    definitionBullets: definitions.slice(0, 12).map((d) => `${d.formalLabel ?? d.term}: ${d.definition.slice(0, 100)}${d.definition.length > 100 ? "…" : ""}`),
+    formulaBullets: cramFormulaSource.slice(0, 12).map((f) => `${f.name}: ${f.latex}`),
+    proofSkeletonBullets: proofs.slice(0, 10).map((p) => `${p.name}: ${p.proofSkeleton.split("\n")[0]!.slice(0, 200)}`),
     trapBullets: mistakes.map((m) => `${m.mistake} — ${m.howToAvoid}`),
   };
 
   const overview = {
     courseName: chapterTitle,
-    summary: `Structured locally from ${files.length} file(s): ${definitions.filter((d) => !CORE_IDEA_PLACEHOLDER.test(d.term)).length} definitions · ${formulas.length} formulas · ${proofs.length} proofs · ${methods.length} methods.`,
-    likelyExamStructure: buildLikelyExamStructureSnippet(cleanedCombined, hasPastEvidence),
-    highPriorityTopics: courseMap.filter((t) => t.importance === "high").map((t) => t.title).slice(0, 10),
+    summary: `Structured locally from ${files.length} file(s): ${definitions.filter((d) => !CORE_IDEA_PLACEHOLDER.test(d.term)).length} definitions · ${formulas.length} formulas · ${proofs.length} proofs · ${derivations.length} derivations · ${methods.length} methods.`,
+    likelyExamStructure: buildLikelyExamStructureSnippet(cleanedPrinted, hasPastEvidence),
+    highPriorityTopics: courseMap.filter((t) => t.importance === "high").map((t) => t.title).slice(0, 12),
   };
 
   return {
     generatedAt: new Date().toISOString(),
     examOverview: overview,
+    documentProfile,
+    sectionBlocks,
     courseMap,
+    courseMapChapters,
     definitions,
     formulas,
     proofs,
+    derivations,
     methods,
     pastPaperPatterns: patterns,
     commonMistakes: mistakes,
@@ -1572,34 +1839,33 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
  * Pull central equations out of labelled blocks (Definition/Theorem/Proposition/Algorithm).
  * Anchors formulas to their formal label so traceability is preserved.
  */
-function extractFormulasFromBlocks(blocks: LabelledBlock[], primarySource: string): GeneratedFormulaItem[] {
+function extractFormulasFromBlocks(blocks: LabelledBlock[], primarySource: string, fullTextForOffset: string): GeneratedFormulaItem[] {
   const out: GeneratedFormulaItem[] = [];
   const include: PackItemKind[] = ["definition", "theorem", "proposition", "lemma"];
   for (const b of blocks) {
     if (!include.includes(b.kind)) continue;
-    if (b.kind === "proposition" && b.number === "3.5" && /snis|mean\s+squared|mse/i.test(`${b.body} ${b.displayTitle}`)) {
-      continue;
-    }
     const lines = b.body.split("\n").map((l) => l.trim()).filter(Boolean);
     for (const line of lines) {
       if (!looksLikeFormula(line)) continue;
       const normalized = normalizeMathText(line).slice(0, 400);
       const v = validateLatexSnippet(normalized);
+      const excerpt = line.slice(0, 420);
+      const sf = b.sourceFile || primarySource;
       out.push({
         id: createId("form"),
         name: `${b.formalLabel}${b.parenTitle ? ` (${b.parenTitle})` : ""}`,
         latex: wrapAsMath(normalized),
         formulaPlain: line.slice(0, 320),
         whenToUse: `Central equation from ${b.formalLabel}.`,
-        source: b.sourceFile || primarySource,
-        sourceFile: b.sourceFile || primarySource,
+        source: sf,
+        sourceFile: sf,
         sourceSection: b.sourceSection,
         sourcePage: b.sourcePage,
         sourceLabel: b.formalLabel,
-        sourceExcerpt: line.slice(0, 420),
+        sourceExcerpt: excerpt,
         mathStatus: mathStatusFromValidation(v),
+        grounding: sourceGroundingPack(sf, b.sourcePage, b.sourceSection, excerpt),
       });
-      // Only the first equation per block as the "central" one; the rest will be picked up by line scanning.
       break;
     }
   }
@@ -1708,6 +1974,8 @@ export type DebugExampleExerciseItem = {
   subQuestions?: Array<{ label: string; text: string }>;
   /** Set when the block matches exam-critical wording (e.g. cited past finals). */
   highPriority?: boolean;
+  sourceExcerpt?: string;
+  groundingConfidence?: number;
 };
 
 function splitExerciseSubQuestions(body: string): Array<{ label: string; text: string }> | undefined {
@@ -1741,11 +2009,11 @@ export function extractExampleAndExerciseItemsForDebug(files: LecturePackFile[])
   }
   const map = (b: LabelledBlock, kind: "example" | "exercise"): DebugExampleExerciseItem => {
     const blob = `${b.body}\n${b.rawBlock}`;
-    const chapterMajor = inferChapterMajorPrefixFromFilename(b.sourceFile);
-    const isCh3Ex38 = kind === "exercise" && chapterMajor === "3." && b.number === "3.8";
-    const highPriority = isCh3Ex38 || (kind === "exercise" && b.number === "3.8" && /\bfinal\s+exam\b/i.test(blob) && /\b2024\b/.test(blob));
+    const examReferenced =
+      kind === "exercise" && (/\bfinal\s+exam\b/i.test(blob) || /\bexam\s+\d{4}\b/i.test(blob) || /\bpast\s+paper\b/i.test(blob));
     const problem = b.body.split(/\n\s*\n/)[0]?.trim() ?? b.body.trim();
     const subQ = kind === "exercise" ? splitExerciseSubQuestions(b.body) : undefined;
+    const excerpt = `${b.formalLabel}\n${problem}`.slice(0, 600);
     const base: DebugExampleExerciseItem = {
       id: createId(kind === "example" ? "ex" : "exe"),
       kind,
@@ -1759,15 +2027,11 @@ export function extractExampleAndExerciseItemsForDebug(files: LecturePackFile[])
       sourcePage: b.sourcePage,
       sourceSection: b.sourceSection,
       rawBlock: normalizeMathText(b.rawBlock),
+      sourceExcerpt: excerpt,
+      groundingConfidence: examReferenced ? 0.85 : 0.7,
     };
     if (subQ?.length) base.subQuestions = subQ;
-    if (isCh3Ex38) {
-      base.importance = "must_know";
-      base.examTag = "Final Exam Q2, 2024";
-      base.highPriority = true;
-    } else if (highPriority) {
-      base.highPriority = true;
-    }
+    if (examReferenced) base.highPriority = true;
     return base;
   };
   return {

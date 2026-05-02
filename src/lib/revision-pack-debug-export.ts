@@ -1,6 +1,7 @@
 import { APP_VERSION } from "@/lib/app-version";
-import type { Chapter3PackValidation } from "@/lib/chapter3-pack-validation";
-import { validateChapter3Pack } from "@/lib/chapter3-pack-validation";
+import { detectSourceContamination } from "@/lib/document-profile";
+import type { GenericAcceptanceTests } from "@/lib/generic-study-pack-validation";
+import { computeGenericAcceptanceTests, validateGenericStudyPack } from "@/lib/generic-study-pack-validation";
 import { extractExampleAndExerciseItemsForDebug, type DebugExampleExerciseItem, type LecturePackFile } from "@/lib/local-study-pack-extraction";
 import { cleanUploadedStudySourceText } from "@/lib/source-text-cleanup";
 import type { StudyState } from "@/lib/storage";
@@ -17,6 +18,9 @@ export type RevisionPackDebugJson = {
     appVersion: string | null;
     modelUsed: string | null;
   };
+  documentProfile: unknown | null;
+  chapterMap: unknown[];
+  sectionBlocks: unknown[];
   rawExtraction: {
     text: string | null;
     pages: Array<{ pageNumber: number; text: string }>;
@@ -32,6 +36,8 @@ export type RevisionPackDebugJson = {
     definitions: unknown[];
     formulas: unknown[];
     proofs: unknown[];
+    derivations?: unknown[];
+    courseMapChapters?: unknown[];
     examples: unknown[];
     exercises: unknown[];
     flashcards: unknown[];
@@ -46,27 +52,13 @@ export type RevisionPackDebugJson = {
     sourceContamination: string[];
     duplicateQuizPrompts: string[];
     overlongBlocks: string[];
-    acceptanceTests?: AcceptanceTests;
-    /** Present when the primary notes file looks like `chapter-3.pdf`. */
-    chapter3Validation?: Chapter3PackValidation;
+    acceptanceTests?: GenericAcceptanceTests;
     criticalQualityFailure?: boolean;
     acceptanceWarningMessage?: string | null;
+    recommendations?: string[];
+    generatedItemStatsByChapter?: Record<string, { definitions: number; formulas: number; proofs: number }>;
+    handwritingNoisePages?: number[];
   };
-};
-
-export type AcceptanceTests = {
-  hasAtLeast10Definitions: boolean;
-  hasAtLeast15Formulas: boolean;
-  hasSixProofCards: boolean;
-  hasExamples3_1To3_9Only: boolean;
-  hasExercises3_1To3_12: boolean;
-  exercise3_8HighPriority: boolean;
-  noReferenceOnlyExamples: boolean;
-  noBibliographyLeakage: boolean;
-  noKnownUnrelatedTopics: boolean;
-  noBadMathTokensInStudyPack: boolean;
-  noDuplicateQuizQuestions: boolean;
-  noOverlongBlocks: boolean;
 };
 
 const SOFT_HYPHEN = "\u00ad";
@@ -80,6 +72,7 @@ function toLecturePackFiles(notesFiles: StudyFile[]): LecturePackFile[] {
     name: f.name,
     role: f.role,
     parsedText: f.content || f.parsedDocument?.fullText,
+    pages: f.parsedDocument?.pages?.map((p) => ({ pageNumber: p.pageNumber, text: p.text })),
   }));
 }
 
@@ -175,6 +168,11 @@ function* iterPackStrings(
     yield p.commonMistake;
     for (const s of p.proofSteps ?? []) yield s;
   }
+  for (const d of pack.derivations ?? []) {
+    yield d.title;
+    yield d.summary;
+    for (const s of d.steps ?? []) yield s;
+  }
   for (const m of pack.methods) {
     yield m.problemType;
     yield m.steps.join("\n");
@@ -232,22 +230,9 @@ function collectExtendedQuality(
   examples: DebugExampleExerciseItem[],
   exercises: DebugExampleExerciseItem[],
 ): { sourceContamination: string[]; duplicateQuizPrompts: string[]; overlongBlocks: string[] } {
-  const sourceContamination: string[] = [];
   const src = sourceText.toLowerCase();
   const lowerGen = generatedPackBlob(pack, examples, exercises, practiceQuestions).toLowerCase();
-  const contaminationTerms = [
-    "simple kriging",
-    "ordinary kriging",
-    "markov chain",
-    "irreducibility",
-    "aperiodicity",
-    "detailed balance",
-  ];
-  for (const term of contaminationTerms) {
-    if (lowerGen.includes(term) && !src.includes(term)) {
-      sourceContamination.push(`Generated output mentions “${term}” but combined source text does not — verify hallucination.`);
-    }
-  }
+  const sourceContamination = detectSourceContamination(lowerGen, src);
   if (/\bbibliography\b/i.test(lowerGen) && !/\bbibliography\b/i.test(src)) {
     sourceContamination.push("Possible bibliography leakage in generated study pack strings.");
   }
@@ -330,46 +315,18 @@ function findBadMathTokens(
   return [...found];
 }
 
-function computeAcceptanceTests(
-  sourceFilename: string,
-  pack: GeneratedRevisionPack,
-  exBlocks: DebugExampleExerciseItem[],
-  exeBlocks: DebugExampleExerciseItem[],
-  badMath: string[],
-  duplicateQuizPrompts: string[],
-  overlongBlocks: string[],
-): AcceptanceTests {
-  const ch3 = /chapter[-_\s]*3\.pdf$/i.test(sourceFilename);
-  const exLabels = exBlocks.map((x) => x.formalLabel);
-  const exeLabels = exeBlocks.map((x) => x.formalLabel);
-  const expectedEx = Array.from({ length: 9 }, (_, i) => `Example 3.${i + 1}`);
-  const expectedExe = Array.from({ length: 12 }, (_, i) => `Exercise 3.${i + 1}`);
-  const ex38 = exeBlocks.find((e) => /^Exercise\s+3\.8\b/i.test(e.formalLabel));
-  const blob = generatedPackBlob(pack, exBlocks, exeBlocks).toLowerCase();
-
-  return {
-    hasAtLeast10Definitions: pack.definitions.length >= 10,
-    hasAtLeast15Formulas: pack.formulas.length >= 15,
-    hasSixProofCards: pack.proofs.length >= 6,
-    hasExamples3_1To3_9Only:
-      !ch3 || (expectedEx.every((x) => exLabels.includes(x)) && !exLabels.some((x) => /Example\s+(2|4)\./i.test(x))),
-    hasExercises3_1To3_12: !ch3 || expectedExe.every((x) => exeLabels.includes(x)),
-    exercise3_8HighPriority:
-      !ch3 || (ex38?.importance === "must_know" && Boolean(ex38?.examTag?.includes("2024") || ex38?.examTag?.includes("Final"))),
-    noReferenceOnlyExamples: !exLabels.some((x) => /Example\s+(2\.3|4\.9)/i.test(x)),
-    noBibliographyLeakage: !/\bBIBLIOGRAPHY\b/i.test(blob),
-    noKnownUnrelatedTopics:
-      !/(simple kriging|ordinary kriging|markov chain|irreducibility|aperiodicity|detailed balance)/i.test(blob),
-    noBadMathTokensInStudyPack: badMath.length === 0,
-    noDuplicateQuizQuestions: duplicateQuizPrompts.length === 0,
-    noOverlongBlocks: overlongBlocks.length === 0,
-  };
-}
-
-function criticalFailureFromAcceptance(ch3: boolean, at: AcceptanceTests): boolean {
-  if (!at.hasSixProofCards || !at.hasAtLeast15Formulas || !at.noBadMathTokensInStudyPack || !at.noBibliographyLeakage) return true;
-  if (!at.noReferenceOnlyExamples) return true;
-  if (ch3 && (!at.exercise3_8HighPriority || !at.hasExamples3_1To3_9Only || !at.hasExercises3_1To3_12)) return true;
+function criticalFailureFromAcceptance(at: GenericAcceptanceTests, manualFailures: string[]): boolean {
+  if (
+    !at.noBadMathTokensInStudyPack ||
+    !at.noBibliographyLeakage ||
+    !at.noSourceContamination ||
+    !at.noDuplicateQuizQuestions ||
+    !at.noOverlongBlocks
+  ) {
+    return true;
+  }
+  if (!at.hasDefinitionsForMainTopics || !at.hasFormulasFromFormulaDenseSections) return true;
+  if (manualFailures.length) return true;
   return false;
 }
 
@@ -469,29 +426,39 @@ export function buildRevisionPackDebugJson(store: RevisionPackDebugInput): Revis
   const sourceUnion = (raw.text ? cleanUploadedStudySourceText(raw.text) : "") || lectureFiles.map((f) => f.parsedText ?? "").join("\n\n");
   const extended = collectExtendedQuality(pack, store.practiceQuestions, sourceUnion, exBlocks, exeBlocks);
 
-  const acceptanceTests = computeAcceptanceTests(sourceFilename, pack, exBlocks, exeBlocks, badMath, extended.duplicateQuizPrompts, extended.overlongBlocks);
-  const ch3Pack = /chapter[-_\s]*3\.pdf$/i.test(sourceFilename);
-  const ex38 = exeBlocks.find((e) => /^Exercise\s+3\.8\b/i.test(e.formalLabel));
-  const chapter3Validation: Chapter3PackValidation | undefined = ch3Pack
-    ? validateChapter3Pack(pack, store.practiceQuestions, {
-        exampleFormalLabels: exBlocks.map((e) => e.formalLabel),
-        exerciseFormalLabels: exeBlocks.map((e) => e.formalLabel),
-        exercise3_8: { importance: ex38?.importance, examTag: ex38?.examTag },
-      })
-    : undefined;
-  const criticalQualityFailure = criticalFailureFromAcceptance(ch3Pack, acceptanceTests);
+  const genBlob = generatedPackBlob(pack, exBlocks, exeBlocks, store.practiceQuestions);
+  const manualFailures: string[] = [];
+  if (!pack.documentProfile) {
+    manualFailures.push("Critical failure: document profile missing — regenerate the study pack after upload.");
+  }
+  const pc = pack.documentProfile?.pageCount ?? 1;
+  if (pc > 55 && pack.formulas.length < 6 && sourceUnion.includes("=")) {
+    manualFailures.push(`Critical failure: only ${pack.formulas.length} formulas extracted from a ${pc}-page document that appears equation-heavy.`);
+  }
+
+  const validation = validateGenericStudyPack(pack, pack.documentProfile ?? null, sourceUnion);
+  const acceptanceTests: GenericAcceptanceTests = computeGenericAcceptanceTests({
+    pack,
+    documentProfile: pack.documentProfile ?? null,
+    sourceTextLower: sourceUnion.toLowerCase(),
+    badMathTokenCount: badMath.length,
+    duplicateQuizPrompts: extended.duplicateQuizPrompts,
+    overlongBlocks: extended.overlongBlocks,
+    bibliographyInPack: /\bBIBLIOGRAPHY\b/i.test(genBlob.toLowerCase()),
+    contaminationLines: extended.sourceContamination,
+    quiz: store.practiceQuestions,
+  });
+
+  const criticalQualityFailure = criticalFailureFromAcceptance(acceptanceTests, [...manualFailures, ...validation.recommendations]);
   const acceptanceWarningMessage = criticalQualityFailure
     ? "Study pack generated, but quality checks failed. Review Debug JSON."
     : null;
 
-  const qcWarnings: string[] = [];
+  const qcWarnings: string[] = [...validation.recommendations];
   for (const e of extractionErrors) qcWarnings.push(`Extraction error: ${e}`);
   if (acceptanceWarningMessage) qcWarnings.push(acceptanceWarningMessage);
-  if (criticalQualityFailure) {
-    for (const err of chapter3Validation?.errors ?? []) {
-      const line = `Chapter 3 validation: ${err}`;
-      if (!qcWarnings.includes(line)) qcWarnings.push(line);
-    }
+  for (const m of manualFailures) {
+    if (!qcWarnings.includes(m)) qcWarnings.push(m);
   }
 
   const overview =
@@ -504,6 +471,9 @@ export function buildRevisionPackDebugJson(store: RevisionPackDebugInput): Revis
       appVersion: APP_VERSION ?? null,
       modelUsed: null,
     },
+    documentProfile: pack.documentProfile ?? null,
+    chapterMap: pack.documentProfile?.chapterMap ?? [],
+    sectionBlocks: pack.sectionBlocks ?? [],
     rawExtraction: raw,
     cleanedExtraction: cleaned,
     studyPack: {
@@ -513,6 +483,8 @@ export function buildRevisionPackDebugJson(store: RevisionPackDebugInput): Revis
       definitions: pack.definitions,
       formulas: pack.formulas,
       proofs: pack.proofs,
+      derivations: pack.derivations ?? [],
+      courseMapChapters: pack.courseMapChapters ?? [],
       examples: exBlocks,
       exercises: exeBlocks,
       flashcards: flashcardsFromRevisionItems(store.revisionItems),
@@ -528,9 +500,11 @@ export function buildRevisionPackDebugJson(store: RevisionPackDebugInput): Revis
       duplicateQuizPrompts: extended.duplicateQuizPrompts,
       overlongBlocks: extended.overlongBlocks,
       acceptanceTests,
-      chapter3Validation,
       criticalQualityFailure,
       acceptanceWarningMessage,
+      recommendations: [...manualFailures, ...validation.recommendations],
+      generatedItemStatsByChapter: validation.generatedItemStatsByChapter,
+      handwritingNoisePages: pack.documentProfile?.hasHandwrittenAnnotations ? [] : [],
     },
   };
 
