@@ -31,7 +31,7 @@ export const majorLabelWords = [
 const labelWords = [...majorLabelWords, "Formula", "Equation"];
 
 export const ITEM_LABEL_RE = new RegExp(
-  `\\b(${majorLabelWords.join("|")})\\s*(\\d+(?:\\.\\d+)*)?\\s*(?:\\[[^\\]]+\\])?\\s*[\\.:]?`,
+  `\\b(${majorLabelWords.join("|")})\\s*(\\d+(?:\\.\\d+)*)?\\s*(?:\\([^)]+\\))?\\s*(?:\\[[^\\]]+\\])?\\s*[\\.:]?`,
   "g",
 );
 
@@ -162,7 +162,10 @@ export function buildSegmentationDebug(parsedDocuments: ParsedDocument[]): Segme
 
 export function stripLeadingLabel(rawText: string) {
   return rawText
-    .replace(/^\s*(Definition|Theorem|Lemma|Proposition|Corollary|Remark|Example|Question|Assumption|Property|Formula|Equation|Proof|Algorithm)\s*\d*(?:\.\d+)*\s*(?:\[[^\]]+\])?\s*[:.)-]?\s*/i, "")
+    .replace(
+      /^\s*(Definition|Theorem|Lemma|Proposition|Corollary|Remark|Example|Question|Assumption|Property|Formula|Equation|Proof|Algorithm)\s*\d*(?:\.\d+)*\s*(?:\([^)]+\))?\s*(?:\[[^\]]+\])?\s*[:.)-]?\s*/i,
+      "",
+    )
     .replace(/^\[[^\]]{1,24}\]\s*/, "")
     .replace(/\s+/g, " ")
     .trim();
@@ -303,7 +306,7 @@ function collectSectionMarkers(text: string) {
     const leadingWhitespace = line.length - line.trimStart().length;
     const sectionMatch =
       trimmed.match(/^(?:Chapter|Section)\s+\d+(?:\.\d+)*\s*[:.-]?\s+\S/i) ??
-      trimmed.match(/^\d+(?:\.\d+)*\s+[A-Z][^\n.]{2,90}$/);
+      trimmed.match(/^\d+(?:\.\d+)*\s+[A-Za-z][^\n]{2,120}$/);
     if (sectionMatch) {
       markers.push({
         kind: "section",
@@ -327,7 +330,7 @@ function collectHeadingMarkers(text: string) {
       offset += line.length + 1;
       continue;
     }
-    const numericHeading = trimmed.match(/^(\d+(?:\.\d+){1,4})\s+([A-Z][A-Za-z0-9(),\- /]{3,120})$/);
+    const numericHeading = trimmed.match(/^(\d+(?:\.\d+){1,4})\s+([A-Za-z][A-Za-z0-9(),\- /]{3,120})$/);
     const chapterHeading = trimmed.match(/^(?:Chapter|Section)\s+(\d+(?:\.\d+)*)\s*[:.-]?\s+(.{3,120})$/i);
     const modelHeading = trimmed.match(/^\[(\d+)\]\s+(.{3,120})$/);
     const workedExample = trimmed.match(/^(?:Worked\s+example|Example)\s*[:.-]\s+(.{3,140})$/i);

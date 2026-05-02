@@ -2,6 +2,7 @@
 
 import { useState } from "react";
 import Link from "next/link";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
@@ -91,7 +92,7 @@ export default function PackPage() {
                 expectedAnswer: d.definition,
                 topic: d.term,
                 difficulty: "easy",
-                sourceBasis: d.source,
+                sourceBasis: d.sourceFile ?? d.source,
                 hints: ["Close the book", "Say aloud first"],
               },
             ]);
@@ -119,7 +120,7 @@ export default function PackPage() {
                 expectedAnswer: f.whenToUse,
                 topic: f.name,
                 difficulty: "medium",
-                sourceBasis: f.source,
+                sourceBasis: f.sourceFile ?? f.source,
                 hints: ["State formula", "Check conditions"],
               },
             ]);
@@ -152,7 +153,7 @@ export default function PackPage() {
                 expectedAnswer: p.proofSkeleton,
                 topic: p.name,
                 difficulty: "hard",
-                sourceBasis: p.source ?? "study pack",
+                sourceBasis: p.sourceFile ?? p.source ?? "study pack",
                 hints: ["State assumptions", "Main lemmas"],
               },
             ]);
@@ -293,16 +294,73 @@ function DefinitionSection({
   onPractice: (d: GeneratedDefinitionItem) => void;
 }) {
   return (
-    <div className="grid gap-3 md:grid-cols-2">
+    <div className="mx-auto flex max-w-3xl flex-col gap-4">
       {items.map((d) => (
         <div className="rounded-lg border border-slate-200 p-4" key={d.id}>
-          <p className="font-semibold text-slate-950">{d.term}</p>
-          <p className="mt-2 text-sm text-slate-700">{d.definition}</p>
-          <p className="mt-2 text-xs text-slate-500">Source: {d.source} · {d.importance}</p>
-          <div className="mt-3 flex flex-wrap gap-2">
-            <Button size="sm" type="button" variant="outline" onClick={() => onMakeCard(d)}>Make card</Button>
-            <Button size="sm" type="button" variant="outline" onClick={() => onExplain(d)}>Explain</Button>
-            <Button size="sm" type="button" variant="outline" onClick={() => onPractice(d)}>Generate practice question</Button>
+          <div className="flex flex-wrap items-center gap-2">
+            <p className="font-semibold text-slate-950">{d.term}</p>
+            {d.formalLabel ? (
+              <Badge variant="outline" className="font-normal">
+                {d.formalLabel}
+              </Badge>
+            ) : null}
+            {d.itemKind && d.itemKind !== "definition" ? (
+              <Badge variant="outline" className="font-normal capitalize">
+                {d.itemKind}
+              </Badge>
+            ) : null}
+          </div>
+          <MathMarkdown content={d.definition} className="mt-2 text-sm text-slate-800" />
+          <dl className="mt-3 grid gap-1 text-xs text-slate-600 sm:grid-cols-2">
+            <div>
+              <dt className="font-medium text-slate-700">Source file</dt>
+              <dd>{d.sourceFile ?? d.source}</dd>
+            </div>
+            {d.sourceLabel ? (
+              <div>
+                <dt className="font-medium text-slate-700">Label</dt>
+                <dd>{d.sourceLabel}</dd>
+              </div>
+            ) : null}
+            {d.sourceSection ? (
+              <div className="sm:col-span-2">
+                <dt className="font-medium text-slate-700">Section</dt>
+                <dd>{d.sourceSection}</dd>
+              </div>
+            ) : null}
+            {d.sourcePage != null ? (
+              <div>
+                <dt className="font-medium text-slate-700">Page</dt>
+                <dd>{d.sourcePage}</dd>
+              </div>
+            ) : null}
+            <div>
+              <dt className="font-medium text-slate-700">Importance</dt>
+              <dd>{d.importance}</dd>
+            </div>
+            {d.mathStatus ? (
+              <div>
+                <dt className="font-medium text-slate-700">Math status</dt>
+                <dd>{d.mathStatus}</dd>
+              </div>
+            ) : null}
+          </dl>
+          {d.sourceExcerpt ? (
+            <details className="mt-3 text-sm">
+              <summary className="cursor-pointer text-slate-600 hover:text-slate-900">Show source excerpt</summary>
+              <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-slate-50 p-3 font-sans text-xs text-slate-800">{d.sourceExcerpt}</pre>
+            </details>
+          ) : null}
+          <div className="mt-4 flex flex-wrap items-center gap-2">
+            <Button size="sm" type="button" className="bg-blue-700 hover:bg-blue-800" onClick={() => onMakeCard(d)}>
+              Add to review
+            </Button>
+            <Button size="sm" type="button" variant="outline" className="text-xs h-8" onClick={() => onExplain(d)}>
+              Explain
+            </Button>
+            <Button size="sm" type="button" variant="outline" className="text-xs h-8" onClick={() => onPractice(d)}>
+              Practice
+            </Button>
           </div>
         </div>
       ))}
@@ -326,7 +384,7 @@ function FormulaSection({
   onEdit: (f: GeneratedFormulaItem) => void;
 }) {
   return (
-    <div className="grid gap-4 md:grid-cols-2">
+    <div className="mx-auto flex max-w-3xl flex-col gap-4">
       {items.map((f) => (
         <Card key={f.id}>
           <CardHeader className="pb-2">
@@ -335,20 +393,63 @@ function FormulaSection({
           </CardHeader>
           <CardContent className="space-y-3">
             <MathMarkdown content={f.latex} className="rounded-lg bg-slate-50 p-3 text-base" />
-            <p className="text-xs text-slate-500">Source: {f.source}</p>
+            <dl className="grid gap-1 text-xs text-slate-600 sm:grid-cols-2">
+              <div>
+                <dt className="font-medium text-slate-700">Source file</dt>
+                <dd>{f.sourceFile ?? f.source}</dd>
+              </div>
+              {f.sourceSection ? (
+                <div className="sm:col-span-2">
+                  <dt className="font-medium text-slate-700">Section</dt>
+                  <dd>{f.sourceSection}</dd>
+                </div>
+              ) : null}
+              {f.sourcePage != null ? (
+                <div>
+                  <dt className="font-medium text-slate-700">Page</dt>
+                  <dd>{f.sourcePage}</dd>
+                </div>
+              ) : null}
+              {f.sourceLabel ? (
+                <div>
+                  <dt className="font-medium text-slate-700">Label</dt>
+                  <dd>{f.sourceLabel}</dd>
+                </div>
+              ) : null}
+              <div>
+                <dt className="font-medium text-slate-700">Math status</dt>
+                <dd>{f.mathStatus}</dd>
+              </div>
+            </dl>
+            {f.sourceExcerpt ? (
+              <details className="text-sm">
+                <summary className="cursor-pointer text-slate-600 hover:text-slate-900">Show source excerpt</summary>
+                <pre className="mt-2 max-h-36 overflow-auto whitespace-pre-wrap rounded-md bg-slate-50 p-2 font-sans text-xs">{f.sourceExcerpt}</pre>
+              </details>
+            ) : null}
             {f.mathStatus !== "ok" ? (
               <div className="rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm text-amber-950">
                 This formula may need checking.
                 <div className="mt-2 flex flex-wrap gap-2">
-                  <Button size="sm" type="button" variant="outline" onClick={() => onEdit(f)}>Edit</Button>
-                  <Button size="sm" type="button" onClick={() => onMarkOk(f.id)}>Mark as OK</Button>
+                  <Button size="sm" type="button" variant="outline" onClick={() => onEdit(f)}>
+                    Edit
+                  </Button>
+                  <Button size="sm" type="button" onClick={() => onMarkOk(f.id)}>
+                    Mark as OK
+                  </Button>
                 </div>
               </div>
             ) : null}
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm" type="button" variant="outline" onClick={() => onMakeCard(f)}>Make card</Button>
-              <Button size="sm" type="button" variant="outline" onClick={() => onExplain(f)}>Explain</Button>
-              <Button size="sm" type="button" variant="outline" onClick={() => onPractice(f)}>Generate practice question</Button>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" type="button" className="bg-blue-700 hover:bg-blue-800" onClick={() => onMakeCard(f)}>
+                Add to review
+              </Button>
+              <Button size="sm" type="button" variant="outline" className="text-xs h-8" onClick={() => onExplain(f)}>
+                Explain
+              </Button>
+              <Button size="sm" type="button" variant="outline" className="text-xs h-8" onClick={() => onPractice(f)}>
+                Practice
+              </Button>
             </div>
           </CardContent>
         </Card>
@@ -369,16 +470,40 @@ function ProofSection({
   onPractice: (p: GeneratedProofItem) => void;
 }) {
   return (
-    <div className="space-y-4">
+    <div className="mx-auto max-w-3xl space-y-4">
       {items.map((p) => (
         <Card key={p.id}>
           <CardHeader>
-            <CardTitle className="text-base">{p.name}</CardTitle>
+            <CardTitle className="text-base">{p.proofName ?? p.name}</CardTitle>
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
+            <dl className="grid gap-1 text-xs text-slate-600 sm:grid-cols-2">
+              <div>
+                <dt className="font-medium text-slate-700">Source file</dt>
+                <dd>{p.sourceFile ?? p.source ?? "—"}</dd>
+              </div>
+              {p.sourceSection ? (
+                <div className="sm:col-span-2">
+                  <dt className="font-medium text-slate-700">Section</dt>
+                  <dd>{p.sourceSection}</dd>
+                </div>
+              ) : null}
+              {p.sourcePage != null ? (
+                <div>
+                  <dt className="font-medium text-slate-700">Page</dt>
+                  <dd>{p.sourcePage}</dd>
+                </div>
+              ) : null}
+              {p.sourceLabel ? (
+                <div>
+                  <dt className="font-medium text-slate-700">Label</dt>
+                  <dd>{p.sourceLabel}</dd>
+                </div>
+              ) : null}
+            </dl>
             <div>
               <p className="font-medium text-slate-800">Statement</p>
-              <p className="mt-1 text-slate-700">{p.statement}</p>
+              <MathMarkdown content={p.statement} className="mt-1 text-slate-700" />
             </div>
             <div>
               <p className="font-medium text-slate-800">Skeleton</p>
@@ -388,10 +513,22 @@ function ProofSection({
               <p className="font-medium text-slate-800">Common mistake</p>
               <p className="mt-1 text-amber-900">{p.commonMistake}</p>
             </div>
-            <div className="flex flex-wrap gap-2">
-              <Button size="sm" type="button" variant="outline" onClick={() => onMakeCard(p)}>Make card</Button>
-              <Button size="sm" type="button" variant="outline" onClick={() => onExplain(p)}>Explain</Button>
-              <Button size="sm" type="button" variant="outline" onClick={() => onPractice(p)}>Generate practice question</Button>
+            {p.sourceExcerpt ? (
+              <details className="text-sm">
+                <summary className="cursor-pointer text-slate-600 hover:text-slate-900">Show source excerpt</summary>
+                <pre className="mt-2 max-h-48 overflow-auto whitespace-pre-wrap rounded-md bg-slate-50 p-3 font-sans text-xs">{p.sourceExcerpt}</pre>
+              </details>
+            ) : null}
+            <div className="flex flex-wrap items-center gap-2">
+              <Button size="sm" type="button" className="bg-blue-700 hover:bg-blue-800" onClick={() => onMakeCard(p)}>
+                Add to review
+              </Button>
+              <Button size="sm" type="button" variant="outline" className="text-xs h-8" onClick={() => onExplain(p)}>
+                Explain
+              </Button>
+              <Button size="sm" type="button" variant="outline" className="text-xs h-8" onClick={() => onPractice(p)}>
+                Practice
+              </Button>
             </div>
           </CardContent>
         </Card>

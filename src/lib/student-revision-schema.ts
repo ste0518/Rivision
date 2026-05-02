@@ -9,6 +9,18 @@ export type DefinitionImportance = "must_know" | "high" | "medium" | "low";
 
 export type MathStatus = "ok" | "needs_check" | "broken";
 
+/** Structured study-pack entry kinds for labelled lecture notes. */
+export type StudyPackEntryKind =
+  | "definition"
+  | "theorem"
+  | "proposition"
+  | "lemma"
+  | "corollary"
+  | "remark"
+  | "example"
+  | "exercise"
+  | "algorithm";
+
 /** Alias for documentation — main structured output of `generateStudentRevisionPack`. */
 export type StudentRevisionPack = GeneratedRevisionPack;
 
@@ -31,8 +43,20 @@ export interface GeneratedDefinitionItem {
   id: string;
   term: string;
   definition: string;
+  /** @deprecated Prefer {@link sourceFile}; retained for persisted packs. */
   source: string;
   importance: DefinitionImportance;
+  /** Formal numbering, e.g. "Definition 4.1". */
+  formalLabel?: string;
+  /** Semantic kind from notes (definition vs theorem, etc.). */
+  itemKind?: StudyPackEntryKind;
+  sourceFile?: string;
+  sourcePage?: number;
+  sourceSection?: string;
+  /** Same as formalLabel when from labelled extraction. */
+  sourceLabel?: string;
+  sourceExcerpt?: string;
+  mathStatus?: MathStatus;
 }
 
 export interface GeneratedFormulaItem {
@@ -40,17 +64,31 @@ export interface GeneratedFormulaItem {
   name: string;
   latex: string;
   whenToUse: string;
+  /** @deprecated Prefer {@link sourceFile}. */
   source: string;
   mathStatus: MathStatus;
+  sourceFile?: string;
+  sourcePage?: number;
+  sourceSection?: string;
+  sourceLabel?: string;
+  sourceExcerpt?: string;
 }
 
 export interface GeneratedProofItem {
   id: string;
   name: string;
+  /** Short heading for cram sheets / lists. */
+  proofName?: string;
   statement: string;
   proofSkeleton: string;
   commonMistake: string;
+  /** @deprecated Prefer {@link sourceFile}. */
   source?: string;
+  sourceFile?: string;
+  sourcePage?: number;
+  sourceSection?: string;
+  sourceLabel?: string;
+  sourceExcerpt?: string;
 }
 
 export interface GeneratedMethodTemplate {

@@ -642,7 +642,7 @@ function buildChapters(document: ParsedDocument): CourseMap["chapters"] {
 
 function inferSectionsFromText(document: ParsedDocument): CourseMap["chapters"][number]["sections"] {
   const sections: CourseMap["chapters"][number]["sections"] = [];
-  const regex = /(?:^|\n)(\d+(?:\.\d+){0,3})\s+([A-Z][^\n]{3,120})(?=\n)/g;
+  const regex = /(?:^|\n)(\d+(?:\.\d+){0,3})\s+([A-Za-z][^\n]{3,120})(?=\n)/g;
   for (const match of document.fullText.matchAll(regex)) {
     const start = match.index ?? 0;
     sections.push({

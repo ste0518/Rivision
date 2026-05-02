@@ -401,7 +401,12 @@ function detectBrokenMathIssues(target: string): string[] {
 function resolveMathProfile(profile: MathNormalizationProfile, hint: string): Exclude<MathNormalizationProfile, "auto"> {
   if (profile !== "auto") return profile;
   const lower = hint.toLowerCase();
-  if (/\b(monte carlo|importance sampling|self[-\s]?normalised|self[-\s]?normalized|proposal distribution|importance weights?|snis|mc estimator|is estimator|estimator)\b/.test(lower)) return "monte_carlo_sampling";
+  if (
+    /\b(monte carlo|markov chain|mcmc|metropolis|gibbs|detailed balance|transition matrix|importance sampling|self[-\s]?normalised|self[-\s]?normalized|proposal distribution|importance weights?|snis|mc estimator|is estimator|estimator)\b/.test(
+      lower,
+    )
+  )
+    return "monte_carlo_sampling";
   if (/\b(arima|arma|ar\(|ma\(|autocovariance|autocorrelation|periodogram|spectral density|ljung-box|stationarity)\b/.test(lower)) return "time_series";
   if (/\b(semivariogram|kriging|spatial|random field|covariance function)\b/.test(lower)) return "spatial_statistics";
   if (/\b(option|portfolio|volatility|black-scholes|martingale)\b/.test(lower)) return "financial_math";
