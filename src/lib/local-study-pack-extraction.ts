@@ -4,15 +4,20 @@
  * Pipeline:
  *   1. Parse section headings ("4.1 ..." style) per file.
  *   2. Extract labelled blocks (Definition/Theorem/Proposition/.../Algorithm).
- *   3. Pair Theorem/Proposition/Lemma/Corollary blocks with following "Proof." bodies.
+ *   3. Pair Theorem/Proposition/Lemma blocks with following "Proof." bodies.
  *   4. Build typed item collections (definitions, formulas, proofs, methods).
- *   5. Pull formulas from raw lines AND from labelled-block central equations.
+ *   5. Pull formulas from raw lines and from non-algorithm labelled blocks (not pseudocode).
  *   6. Build the cram sheet from typed items only — never directly from raw blocks.
  */
 
 import { mathStatusFromValidation, validateLatexSnippet } from "@/lib/latex-validate";
 import { convertCommonMathToLatex } from "@/lib/revision-item-utils";
-import { extractSectionHeadingsFromText, type ExtractedSectionHeading } from "@/lib/section-headings";
+import {
+  extractSectionHeadingsFromText,
+  mergeExtractedSectionHeadings,
+  truncateBodyBeforeInteriorSectionHeading,
+  type ExtractedSectionHeading,
+} from "@/lib/section-headings";
 import type {
   DefinitionImportance,
   GeneratedCommonMistake,
@@ -94,6 +99,14 @@ function pageAtOffset(fullText: string, offset: number): number | undefined {
 /** Section headings: single-chapter `1 INTRODUCTION`, nested `1.1.2 …`, banners, etc. */
 export function extractSectionHeadings(text: string): ExtractedSection[] {
   return extractSectionHeadingsFromText(text);
+}
+
+function mergeSectionHeadingsForPack(files: LecturePackFile[], combinedLectureText: string): ExtractedSection[] {
+  const fromCombined = extractSectionHeadingsFromText(combinedLectureText);
+  const fromFiles = files
+    .filter((f) => f.role === "lecture_notes" || f.role === "formula_sheet" || f.role === "other" || !f.role)
+    .flatMap((f) => extractSectionHeadingsFromText(f.parsedText ?? ""));
+  return mergeExtractedSectionHeadings(fromCombined, fromFiles);
 }
 
 function inferCourseTitleFromNotes(combinedLectureText: string, primaryFileStem: string): string {
@@ -199,8 +212,31 @@ function importanceForKind(kind: PackItemKind): DefinitionImportance {
   return "high";
 }
 
+function inferTitleFromStatement(kind: PackItemKind, body: string): string | undefined {
+  if (kind !== "proposition" && kind !== "theorem" && kind !== "lemma") return undefined;
+  const raw = body.replace(/^\s+/, "").replace(/\s+/g, " ");
+  const lower = raw.toLowerCase();
+  if (kind === "proposition") {
+    if (/unbiased.*monte\s*carlo|monte\s*carlo.*unbiased|\bmc\s+estimator\b.*unbiased/i.test(lower)) return "Monte Carlo estimator is unbiased";
+    if (/variance.*monte\s*carlo|monte\s*carlo.*variance|var\s*\(\s*\\?hat\s*\\?phi/i.test(lower)) return "Monte Carlo estimator variance";
+    if (/importance\s*sampling.*unbiased|unbiased.*importance\s*sampling/i.test(lower)) return "Importance sampling estimator is unbiased";
+    if (/importance\s*sampling.*variance|variance.*importance\s*sampling/i.test(lower)) return "Importance sampling estimator variance";
+    if (/snis|self[-\s]?normalised.*mse|self[-\s]?normalized.*mse|mse.*snis/i.test(lower)) return "SNIS MSE bound";
+  }
+  const sentence = raw.split(/(?<=[.!?])\s+/)[0] ?? raw;
+  let s = sentence.replace(/^Let\s+[^.]{4,120}\.\s*/i, "").trim();
+  s = s.replace(/^(then|thus|hence)\s+/i, "").trim();
+  if (s.length >= 14 && s.length < 140) {
+    const head = s.charAt(0).toUpperCase() + s.slice(1);
+    return head.length > 120 ? `${head.slice(0, 117)}…` : head;
+  }
+  return undefined;
+}
+
 function titleForBlock(kind: PackItemKind, parenTitle: string | undefined, body: string): string {
   if (parenTitle?.trim()) return parenTitle.trim().replace(/\s+/g, " ");
+  const inferred = inferTitleFromStatement(kind, body);
+  if (inferred) return inferred;
   const firstLine = body.replace(/^\s+/, "").split(/\n/)[0] ?? body;
   const cleaned = firstLine.replace(/\s+/g, " ").trim();
   if (cleaned.length >= 8 && cleaned.length < 160) return cleaned.length > 140 ? `${cleaned.slice(0, 137)}…` : cleaned;
@@ -224,6 +260,8 @@ function inferDisplayTitle(kind: PackItemKind, parenTitle: string | undefined, b
   if (kind === "proposition") {
     if (lower.includes("chain rule for sampling")) return "Chain Rule for Sampling";
     if (lower.includes("conditional bayes") || lower.includes("conditional bayes rule")) return "Conditional Bayes rule";
+    const inferred = inferTitleFromStatement(kind, body);
+    if (inferred) return inferred;
   }
   if (kind === "algorithm") {
     const head = (algorithmHeadLine ?? body.split("\n")[0] ?? "").replace(/^\s+/, "");
@@ -609,6 +647,85 @@ const FORMULA_PATTERNS: Array<{ name: string; matcher: RegExp; latex: string; wh
     latex: "x_i = \\mu + L v",
     whenToUse: "Drawing Gaussian samples using Cholesky factor L.",
   },
+  // Monte Carlo integration / importance sampling (Chapter 3 style)
+  {
+    name: "Expectation under target p*",
+    matcher: /bar\s*\{\s*phi\s*\}.*=\s*.*E|=\s*int[^\n]{0,80}phi|E_\{\s*p\?|E_\{\s*p\^\*/,
+    latex: "\\bar\\phi = \\mathbb{E}_{p^\\star}[\\phi(X)] = \\int \\phi(x)\\, p^\\star(x)\\, dx",
+    whenToUse: "Expressing an expectation under the target distribution.",
+  },
+  {
+    name: "Empirical measure",
+    matcher: /p\s*_?N\^\{?\*?\}?\s*\(dx\)\s*=\s*1\/N|1\/N\s*\\?sum.*\\?delta|empirical\s+distribution/i,
+    latex: "p_N^\\star(dx) = \\frac{1}{N} \\sum_{i=1}^N \\delta_{X_i}(dx)",
+    whenToUse: "Random measure putting mass 1/N on each sample.",
+  },
+  {
+    name: "Monte Carlo estimator",
+    matcher: /\\?hat\s*\\?phi\^?N\s*_\{?MC\}?\s*=|1\/N\s*\\?sum.*\\?phi\s*\(\s*X_i|MC\s+estimator/i,
+    latex: "\\hat\\phi^N_{\\mathrm{MC}} = \\frac{1}{N} \\sum_{i=1}^N \\phi(X_i)",
+    whenToUse: "Standard Monte Carlo average of a test function under i.i.d. samples.",
+  },
+  {
+    name: "MC estimator variance",
+    matcher: /Var\s*\(\s*\\?hat\s*\\?phi\^?N\s*_\{?MC\}?\s*\)\s*=\s*Var/i,
+    latex: "\\operatorname{Var}(\\hat\\phi^N_{\\mathrm{MC}}) = \\frac{\\operatorname{Var}(\\phi(X))}{N}",
+    whenToUse: "1/N scaling of the variance for an i.i.d. Monte Carlo average.",
+  },
+  {
+    name: "Estimator bias",
+    matcher: /bias\s*\(\s*\\?hat\s*\\?phi\^?N\s*\)\s*=\s*E\s*\[/i,
+    latex: "\\operatorname{bias}(\\hat\\phi^N) = \\mathbb{E}[\\hat\\phi^N] - \\bar\\phi",
+    whenToUse: "Bias of an estimator relative to the target mean \\bar\\phi.",
+  },
+  {
+    name: "MSE decomposition",
+    matcher: /MSE\s*=\s*bias|MSE\s*=\s*Bias/i,
+    latex: "\\mathrm{MSE} = \\mathrm{bias}^2 + \\mathrm{variance}",
+    whenToUse: "Bias–variance decomposition of mean squared error.",
+  },
+  {
+    name: "Importance weights ratio",
+    matcher: /w\s*\(\s*x\s*\)\s*=\s*p\?\s*\(\s*x\s*\)\s*\/\s*q\s*\(\s*x\s*\)|w\s*\(\s*x\s*\)\s*=\s*p\^\*\s*\(\s*x\s*\)\s*\/\s*q/i,
+    latex: "w(x) = \\dfrac{p^\\star(x)}{q(x)}",
+    whenToUse: "Importance sampling weight (target over proposal).",
+  },
+  {
+    name: "Importance sampling estimator",
+    matcher: /\\?hat\s*\\?phi\^?N\s*_\{?IS\}?\s*=|1\/N\s*\\?sum.*w_i\s*\\?phi/i,
+    latex: "\\hat\\phi^N_{\\mathrm{IS}} = \\frac{1}{N} \\sum_{i=1}^N w_i \\, \\phi(X_i)",
+    whenToUse: "Self-weighted average under proposal draws with importance weights.",
+  },
+  {
+    name: "IS estimator variance",
+    matcher: /Var\s*_?\{?q\}?\s*\(\s*\\?hat\s*\\?phi\^?N\s*_\{?IS\}?\s*\)|Var\s*\(\s*\\?hat\s*\\?phi\^?N\s*_\{?IS\}/i,
+    latex: "\\operatorname{Var}_q(\\hat\\phi^N_{\\mathrm{IS}}) = \\frac{1}{N}\\Big(\\mathbb{E}_q[w^2(X)\\phi^2(X)] - \\bar\\phi^2\\Big)",
+    whenToUse: "Variance of the importance sampling estimator under proposal q.",
+  },
+  {
+    name: "Unnormalised weight W(x)",
+    matcher: /W\s*\(\s*x\s*\)\s*=\s*\\?bar\s*p\?\s*\(\s*x\s*\)\s*\/\s*q\s*\(\s*x\s*\)/i,
+    latex: "W(x) = \\dfrac{\\bar p^\\star(x)}{q(x)}",
+    whenToUse: "Weights when only an unnormalised target \\bar p^\\star is known.",
+  },
+  {
+    name: "SNIS estimator",
+    matcher: /\\?hat\s*\\?phi\^?N\s*_\{?SNIS\}?\s*=|self[-\s]?normali[sz]ed\s+importance\s+sampling/i,
+    latex: "\\hat\\phi^N_{\\mathrm{SNIS}} = \\sum_{i=1}^N \\bar w_i \\, \\phi(X_i)",
+    whenToUse: "Self-normalised importance sampling estimator using normalised weights \\bar w_i.",
+  },
+  {
+    name: "Normalised importance weights",
+    matcher: /\\?bar\s*w\s*_?i\s*=\s*W\s*\(\s*X_i\s*\)\s*\/\s*\\?sum.*W\s*\(\s*X_j\s*\)|\\?bar\s*w\s*_?i\s*=/i,
+    latex: "\\bar w_i = \\dfrac{W(X_i)}{\\sum_j W(X_j)}",
+    whenToUse: "Normalising unnormalised weights to sum to 1.",
+  },
+  {
+    name: "Effective sample size ESS",
+    matcher: /ESS\s*_?N\s*=\s*1\s*\/\s*\\?sum\s*\\?bar\s*w\s*_?i\s*\^?2|effective\s+sample\s+size.*1\s*\/\s*sum/i,
+    latex: "\\mathrm{ESS}_N = \\frac{1}{\\sum_i \\bar w_i^2}",
+    whenToUse: "ESS from normalised importance weights (effective number of i.i.d. samples).",
+  },
 ];
 
 function extractCanonicalFormulas(text: string, sourceFile: string, sections: ExtractedSection[]): GeneratedFormulaItem[] {
@@ -637,7 +754,7 @@ function extractCanonicalFormulas(text: string, sourceFile: string, sections: Ex
   return out;
 }
 
-function extractFormulaLines(text: string, sourceFile: string, sections: ExtractedSection[]): GeneratedFormulaItem[] {
+function extractFormulaLines(text: string, sourceFile: string, sections: ExtractedSection[], defaultWhenToUse: string): GeneratedFormulaItem[] {
   const lines = text.split("\n");
   let offset = 0;
   const out: GeneratedFormulaItem[] = [];
@@ -664,7 +781,7 @@ function extractFormulaLines(text: string, sourceFile: string, sections: Extract
       name: name.replace(/\s+/g, " "),
       latex: wrapAsMath(normalized),
       formulaPlain: trimmed.slice(0, 320),
-      whenToUse: "Use when revising transition kernels, balance conditions, or acceptance ratios.",
+      whenToUse: defaultWhenToUse,
       source: sourceFile,
       sourceFile,
       sourceSection: sectionForOffset(sections, offset),
@@ -688,6 +805,41 @@ function dedupeFormulas(items: GeneratedFormulaItem[]): GeneratedFormulaItem[] {
   return out.slice(0, 56);
 }
 
+function defaultFormulaWhenToUse(lectureText: string): string {
+  const lower = lectureText.toLowerCase();
+  if (/\bmonte\s*carlo\b|\bimportance\s*sampling\b|\bself[-\s]?normali[sz]ed\b|\bess\b|\beffective\s+sample\b/i.test(lower))
+    return "Use for Monte Carlo integration, importance sampling, self-normalised estimators, variance bounds, or ESS.";
+  if (/\bmarkov\b|\bmcmc\b|\bmetropolis\b|\bgibbs\b|\btransition\s+matrix\b|\bdetailed\s+balance\b/i.test(lower))
+    return "Use when revising Markov chains, transition kernels, detailed balance, or acceptance ratios.";
+  return "Key equation from your lecture notes.";
+}
+
+/** Drop generic posterior identities when notes are clearly about Monte Carlo / IS rather than Bayesian inference. */
+function filterFormulasForChapterContext(items: GeneratedFormulaItem[], lectureText: string): GeneratedFormulaItem[] {
+  const lower = lectureText.toLowerCase();
+  const mc =
+    /\bmonte\s*carlo\b|\bimportance\s*sampling\b|\bself[-\s]?normali[sz]ed\b|\bess\b|\beffective\s+sample\b|\bmc\s+estimator\b/i.test(lower);
+  if (!mc) return items;
+  const bayesianContext = /\bbayes\b.*\b(inference|posterior|prior)\b|\bposterior\b.*\blikelihood\b|\bbayesian\s+inference/i.test(lower);
+  if (bayesianContext) return items;
+  return items.filter((f) => {
+    if (f.name === "Bayes posterior" || f.name.toLowerCase().includes("bayes posterior")) return false;
+    return true;
+  });
+}
+
+function buildLikelyExamStructureSnippet(combinedLectureText: string, hasPastEvidence: boolean): string {
+  if (hasPastEvidence) return "Past/problem-sheet evidence present — cross-check emphasis against these notes.";
+  const lower = combinedLectureText.toLowerCase();
+  if (/\bmonte\s*carlo\s+integration\b|\bimportance\s+sampling\b|\bess\b|\bsnis\b|\berror\s+metrics\b/i.test(lower)) {
+    return "Lecture-only snapshot: Monte Carlo integration, error metrics, importance sampling, self-normalised importance sampling, and effective sample size — add past papers to estimate exam weighting.";
+  }
+  if (/\bmarkov\b|\bmcmc\b|\bmetropolis\b|\bgibbs\b|\bdetailed\s+balance\b/i.test(lower)) {
+    return "Lecture-only snapshot: Markov chains, detailed balance, and MCMC algorithms — add past papers to estimate exam weighting.";
+  }
+  return "Lecture-only snapshot: core definitions and methods from your notes — add past papers to estimate exam weighting.";
+}
+
 // ---------------------------------------------------------------------------
 // Definitions, proofs, methods
 // ---------------------------------------------------------------------------
@@ -697,7 +849,8 @@ function blocksToDefinitions(blocks: LabelledBlock[]): GeneratedDefinitionItem[]
   return blocks
     .filter((b) => b.kind === "definition")
     .map((b) => {
-      const defText = normalizeMathText(b.body.slice(0, 3500));
+      const clipped = truncateBodyBeforeInteriorSectionHeading(b.body).slice(0, 3500);
+      const defText = normalizeMathText(clipped);
       const snippet = defText.slice(0, 700);
       const v = validateLatexSnippet(snippet);
       return {
@@ -767,9 +920,9 @@ function proofSkeletonFromBody(title: string, body: string): { skeleton: string;
   };
 }
 
-/** Build proof items from theorem/proposition/lemma/corollary blocks plus paired Proof bodies only (no orphan Proof paragraphs). */
+/** Build proof items from theorem/proposition/lemma blocks plus paired Proof bodies only (no orphan Proof paragraphs). */
 function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[]): GeneratedProofItem[] {
-  const STMT_KINDS: PackItemKind[] = ["theorem", "proposition", "lemma", "corollary"];
+  const STMT_KINDS: PackItemKind[] = ["theorem", "proposition", "lemma"];
   const stmtBlocks = blocks.filter((b) => STMT_KINDS.includes(b.kind));
 
   const items: GeneratedProofItem[] = [];
@@ -781,7 +934,8 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[]): 
 
     const heading = `${b.formalLabel}: ${b.displayTitle}`;
     const { skeleton, mistake } = proofSkeletonFromBody(b.displayTitle, `${b.body}\n${proof?.body ?? ""}`);
-    const statementOnly = b.body.split(/(?:^|\n)\s*Proof\s*[.:]/i)[0]!.trim();
+    const statementOnly = truncateBodyBeforeInteriorSectionHeading(b.body.split(/(?:^|\n)\s*Proof\s*[.:]/i)[0]!.trim());
+    if (/^(example|sketch|remark)\b/i.test(statementOnly) || /^consider\s+the\s+following\s+example\b/i.test(statementOnly)) continue;
     items.push({
       id: createId("prf"),
       name: heading,
@@ -806,7 +960,7 @@ function cleanAlgorithmTitle(rawHeading: string): string {
   let t = rawHeading.replace(/^\s+/, "");
   t = t.split(/\n\s*\d+\s*[:.]/)[0]!;
   t = t.split(/\n/)[0]!;
-  t = t.replace(/^pseudocode\s+for\s+/i, "");
+  t = t.replace(/\bpseudocode\s+for\s+/gi, "");
   t = t.replace(/^algorithm\s+\d+(?:\.\d+)?\s*[:.]?\s*/i, "");
   t = t.replace(/\s+\d+\s*:\s*input\b[\s\S]*$/i, "").trim();
   t = t.replace(/^\d+\s*:\s*input\s*:?\s*/i, "").trim();
@@ -819,7 +973,8 @@ function cleanAlgorithmTitle(rawHeading: string): string {
 /** Stop algorithm body before the next labelled environment (e.g. Remark merged after pseudocode). */
 function truncateAlgorithmBody(body: string): string {
   const text = body.replace(/\r\n/g, "\n");
-  const stop = /\n\s*(Remark|Example|Exercise|Algorithm|Theorem|Proposition|Lemma|Definition|Corollary)\s+\d/i;
+  const stop =
+    /\n\s*(Remark|Example|Exercise|Algorithm|Theorem|Proposition|Lemma|Definition|Corollary)\s+\d|\n\s*\d{1,2}(?:\.\d+){1,3}\s+[A-Za-z\u00C0-\u024F][^\n]{8,120}/i;
   const m = stop.exec(text);
   if (m && m.index > 12) return text.slice(0, m.index).trim();
   return text;
@@ -907,6 +1062,15 @@ function algorithmBlocksToMethods(blocks: LabelledBlock[]): GeneratedMethodTempl
       triggers: ["detailed balance"],
     },
     {
+      title: "Sampling importance resampling",
+      steps: [
+        "Draw samples from a proposal and compute importance weights w ∝ p*/q.",
+        "Normalise weights; resample indices with replacement using those weights.",
+        "Use the resampled points as an (approximate) target sample (often after optional rejuvenation).",
+      ],
+      triggers: ["sampling importance resampling"],
+    },
+    {
       title: "Derive a Gibbs sampler from full conditionals",
       steps: ["Write full conditional distributions.", "Cycle updates (systematic or random scan).", "Each update leaves π invariant — verify using conditional detail."],
       triggers: ["gibbs", "full conditional"],
@@ -931,8 +1095,7 @@ function algorithmBlocksToMethods(blocks: LabelledBlock[]): GeneratedMethodTempl
 // Course map
 // ---------------------------------------------------------------------------
 
-function courseTopicsFromSections(files: LecturePackFile[], lectureText: string): GeneratedCourseTopic[] {
-  const sections = extractSectionHeadings(lectureText);
+function courseTopicsFromSections(files: LecturePackFile[], sections: ExtractedSection[]): GeneratedCourseTopic[] {
   if (!sections.length) return [];
   const names = files.filter((f) => f.role === "lecture_notes" || !f.role).map((f) => f.name);
   return sections.map((s) => ({
@@ -960,6 +1123,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const { files, settings, combinedLectureText, hasPastEvidence } = ctx;
   const lectureFiles = files.filter((f) => f.role === "lecture_notes" || f.role === "formula_sheet" || f.role === "other");
   const primaryName = lectureFiles[0]?.name ?? files[0]?.name ?? "your materials";
+  const sectionsMerged = mergeSectionHeadingsForPack(lectureFiles, combinedLectureText);
   const sections = extractSectionHeadings(combinedLectureText);
 
   const allBlocks: LabelledBlock[] = [];
@@ -978,13 +1142,15 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   definitions = dedupeDefinitions(definitions);
 
   const cleanText = combinedLectureText.replace(/\r\n/g, "\n");
-  const lineFormulas = extractFormulaLines(cleanText, primaryName, sections);
+  const whenHint = defaultFormulaWhenToUse(cleanText);
+  const lineFormulas = extractFormulaLines(cleanText, primaryName, sections, whenHint);
   const canonicalFormulas = extractCanonicalFormulas(cleanText, primaryName, sections);
   const blockFormulas = extractFormulasFromBlocks(blocks, primaryName);
-  const formulas = dedupeFormulas([...canonicalFormulas, ...blockFormulas, ...lineFormulas]).map((f) => {
+  let formulas = dedupeFormulas([...canonicalFormulas, ...blockFormulas, ...lineFormulas]).map((f) => {
     const v = validateLatexSnippet(f.latex);
     return { ...f, mathStatus: mathStatusFromValidation(v) };
   });
+  formulas = filterFormulasForChapterContext(formulas, cleanText);
 
   let proofs = blocksToProofs(blocks, proofBlocks);
   proofs = dedupeProofs(proofs);
@@ -996,7 +1162,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     primaryName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
   const chapterTitle = inferCourseTitleFromNotes(combinedLectureText, primaryStem);
 
-  let courseMap = courseTopicsFromSections(files, combinedLectureText);
+  let courseMap = courseTopicsFromSections(files, sectionsMerged);
   if (!courseMap.length) {
     courseMap = guessTopicsFallback(files);
   }
@@ -1018,9 +1184,13 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
 
   const patterns = buildPastPaperPatterns(hasPastEvidence, settings);
 
+  const cramFormulaSource = formulas.filter(
+    (f) => !/^algorithm\s+\d/i.test(f.sourceLabel ?? "") && !/^algorithm\s+\d/i.test(f.name) && !/\bpseudocode\b/i.test(f.name),
+  );
+
   const cram: GeneratedCramSheet = {
     definitionBullets: definitions.slice(0, 10).map((d) => `${d.formalLabel ?? d.term}: ${d.definition.slice(0, 100)}${d.definition.length > 100 ? "…" : ""}`),
-    formulaBullets: formulas.slice(0, 10).map((f) => `${f.name}: ${f.latex}`),
+    formulaBullets: cramFormulaSource.slice(0, 10).map((f) => `${f.name}: ${f.latex}`),
     proofSkeletonBullets: proofs.slice(0, 8).map((p) => `${p.name}: ${p.proofSkeleton.split("\n")[0]!.slice(0, 200)}`),
     trapBullets: mistakes.map((m) => `${m.mistake} — ${m.howToAvoid}`),
   };
@@ -1028,9 +1198,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const overview = {
     courseName: chapterTitle,
     summary: `Structured locally from ${files.length} file(s): ${definitions.filter((d) => !CORE_IDEA_PLACEHOLDER.test(d.term)).length} definitions · ${formulas.length} formulas · ${proofs.length} proofs · ${methods.length} methods.`,
-    likelyExamStructure: hasPastEvidence
-      ? "Past/problem-sheet evidence present — cross-check emphasis against these notes."
-      : "Lecture-only snapshot: definitions, algorithms, and balance conditions — add past papers to estimate exam weighting.",
+    likelyExamStructure: buildLikelyExamStructureSnippet(combinedLectureText, hasPastEvidence),
     highPriorityTopics: courseMap.filter((t) => t.importance === "high").map((t) => t.title).slice(0, 10),
   };
 
@@ -1054,7 +1222,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
  */
 function extractFormulasFromBlocks(blocks: LabelledBlock[], primarySource: string): GeneratedFormulaItem[] {
   const out: GeneratedFormulaItem[] = [];
-  const include: PackItemKind[] = ["definition", "theorem", "proposition", "lemma", "algorithm"];
+  const include: PackItemKind[] = ["definition", "theorem", "proposition", "lemma"];
   for (const b of blocks) {
     if (!include.includes(b.kind)) continue;
     const lines = b.body.split("\n").map((l) => l.trim()).filter(Boolean);

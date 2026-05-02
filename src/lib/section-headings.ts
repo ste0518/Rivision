@@ -97,6 +97,32 @@ export function extractSectionHeadingsFromText(fullText: string): ExtractedSecti
     push(num, rawTitle, m.index ?? 0);
   }
 
+  // Digit line then Title-case / mixed heading (not ALL CAPS only).
+  const reStandaloneMixed = /(?:^|\n)\s*(\d{1,2}(?:\.\d+){0,3})\s*\n\s*([A-Za-z\u00C0-\u024F][^\n]{5,160})\s*(?=\n|$)/g;
+  while ((m = reStandaloneMixed.exec(text)) !== null) {
+    const num = m[1] ?? "";
+    const rawTitle = (m[2] ?? "").trim();
+    if (isNoiseNumber(num)) continue;
+    push(num, rawTitle, m.index ?? 0);
+  }
+
+  // Optional period after top-level chapter index only: "3. Monte Carlo Integration"
+  const reChapterDot = /(?:^|\n)\s*(\d{1,2})\.\s+([A-Za-z\u00C0-\u024F][^\n]{3,120})/g;
+  while ((m = reChapterDot.exec(text)) !== null) {
+    const num = m[1] ?? "";
+    const rawTitle = (m[2] ?? "").trim();
+    push(num, rawTitle, m.index ?? 0);
+  }
+
+  // "Chapter 3 …" banner lines (merged PDF intros).
+  const reChapterWord = /(?:^|\n)\s*Chapter\s+(\d{1,2}(?:\.\d+){0,3})\s*[.:]?\s+([A-Za-z\u00C0-\u024F][^\n]{3,120})/gi;
+  while ((m = reChapterWord.exec(text)) !== null) {
+    const num = m[1] ?? "";
+    const rawTitle = (m[2] ?? "").trim();
+    if (isNoiseNumber(num)) continue;
+    push(num, rawTitle, m.index ?? 0);
+  }
+
   out.sort((a, b) => a.startOffset - b.startOffset);
   return dedupeAdjacent(out);
 }
@@ -111,4 +137,76 @@ function dedupeAdjacent(sections: ExtractedSectionHeading[]): ExtractedSectionHe
     filtered.push(s);
   }
   return filtered.slice(0, 200);
+}
+
+function sectionNumberParts(num: string): number[] {
+  return num.split(".").map((p) => {
+    const n = Number.parseInt(p, 10);
+    return Number.isFinite(n) ? n : 0;
+  });
+}
+
+/** Lexicographic compare: 3.10 sorts after 3.9 */
+export function compareSectionNumbers(a: string, b: string): number {
+  const aa = sectionNumberParts(a);
+  const bb = sectionNumberParts(b);
+  const len = Math.max(aa.length, bb.length);
+  for (let i = 0; i < len; i += 1) {
+    const da = (aa[i] ?? 0) - (bb[i] ?? 0);
+    if (da !== 0) return da;
+  }
+  return 0;
+}
+
+/**
+ * Merge headings from combined notes + per-file text (some PDFs only expose nested headings
+ * clearly within a single file). Dedupe by section number; keep the richer title.
+ */
+export function mergeExtractedSectionHeadings(...lists: ExtractedSectionHeading[][]): ExtractedSectionHeading[] {
+  const byNum = new Map<string, ExtractedSectionHeading>();
+  for (const list of lists) {
+    for (const s of list) {
+      const prev = byNum.get(s.sectionNumber);
+      if (!prev) {
+        byNum.set(s.sectionNumber, s);
+        continue;
+      }
+      const keep =
+        s.title.length > prev.title.length && s.title.length <= 200
+          ? s
+          : prev.title.length > s.title.length && prev.title.length <= 200
+            ? prev
+            : s.startOffset < prev.startOffset
+              ? s
+              : prev;
+      byNum.set(s.sectionNumber, keep);
+    }
+  }
+  return [...byNum.values()].sort((a, b) => {
+    const c = compareSectionNumbers(a.sectionNumber, b.sectionNumber);
+    if (c !== 0) return c;
+    return a.startOffset - b.startOffset;
+  });
+}
+
+/**
+ * Truncate a definition/theorem body when PDF glue merges later sections into the same block.
+ * Stops before the first interior line that looks like a numbered section heading.
+ */
+export function truncateBodyBeforeInteriorSectionHeading(body: string, minOffset = 48): string {
+  const text = body.replace(/\r\n/g, "\n");
+  const re = /(?:^|\n)\s*(\d{1,2}(?:\.\d+){1,3})\s+([A-Za-z\u00C0-\u024F][^\n]{6,160})/g;
+  let m: RegExpExecArray | null;
+  let best = text.length;
+  while ((m = re.exec(text)) !== null) {
+    const idx = m.index ?? 0;
+    if (idx < minOffset) continue;
+    const num = m[1] ?? "";
+    if (isNoiseNumber(num)) continue;
+    const rawTitle = (m[2] ?? "").trim();
+    if (/^(definition|theorem|lemma|proposition|corollary|remark|example|proof|algorithm|exercise)\b/i.test(rawTitle)) continue;
+    if (idx < best) best = idx;
+  }
+  if (best < text.length) return text.slice(0, best).trim();
+  return body;
 }
