@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useMemo, useState } from "react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,6 +10,13 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs } from "@/components/ui/tabs";
 import { MathMarkdown } from "@/components/MathMarkdown";
 import { PageHeader } from "@/components/page-header";
+import {
+  buildRevisionPackDebugJson,
+  buildRevisionPackSummaryMarkdown,
+  downloadTextFile,
+  revisionPackDebugFilenameBase,
+  totalQualityWarningCount,
+} from "@/lib/revision-pack-debug-export";
 import { isDeveloperUiEnabled } from "@/lib/storage";
 import { cardFromDefinition, cardFromFormula, cardFromProof, mockExplainNote } from "@/lib/pack-to-card";
 import { createId } from "@/lib/utils";
@@ -22,6 +29,16 @@ export default function PackPage() {
   const [toast, setToast] = useState("");
   const [editingFormula, setEditingFormula] = useState<GeneratedFormulaItem | null>(null);
   const [editLatex, setEditLatex] = useState("");
+
+  const debugExport = useMemo(() => {
+    if (!pack) return null;
+    return buildRevisionPackDebugJson({
+      notesFiles: store.notesFiles,
+      revisionItems: store.revisionItems,
+      studentRevisionPack: pack,
+      practiceQuestions: store.practiceQuestions,
+    });
+  }, [pack, store.notesFiles, store.revisionItems, store.practiceQuestions]);
 
   const activeCards = store.revisionItems.filter((item) => !item.isDeleted).length;
   const generatedFrom =
@@ -228,6 +245,99 @@ export default function PackPage() {
       </Card>
 
       <Tabs tabs={tabs} defaultValue="overview" />
+
+      {debugExport ? (
+        <>
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Export</CardTitle>
+              <CardDescription>
+                Download or copy the full generated pack for an external reviewer (JSON includes extraction, study pack, and quality checks). Everything stays local — no upload.
+              </CardDescription>
+            </CardHeader>
+            <CardContent className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={async () => {
+                  try {
+                    await navigator.clipboard.writeText(JSON.stringify(debugExport, null, 2));
+                    showToast("Debug JSON copied.");
+                  } catch {
+                    showToast("Could not copy to clipboard.");
+                  }
+                }}
+              >
+                Copy Debug JSON
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  const base = revisionPackDebugFilenameBase(debugExport.metadata.sourceFilename);
+                  downloadTextFile(JSON.stringify(debugExport, null, 2), "application/json", `revision-pack-debug-${base}.json`);
+                }}
+              >
+                Download Debug JSON
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  const base = revisionPackDebugFilenameBase(debugExport.metadata.sourceFilename);
+                  const md = buildRevisionPackSummaryMarkdown(debugExport);
+                  downloadTextFile(md, "text/markdown;charset=utf-8", `revision-pack-summary-${base}.md`);
+                }}
+              >
+                Download Markdown Summary
+              </Button>
+            </CardContent>
+          </Card>
+
+          <Card>
+            <CardHeader>
+              <CardTitle className="text-base">Debug counts</CardTitle>
+              <CardDescription>Snapshot of this pack (updates when you regenerate).</CardDescription>
+            </CardHeader>
+            <CardContent>
+              <dl className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
+                <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
+                  <dt className="text-xs text-slate-500">Definitions</dt>
+                  <dd className="font-medium text-slate-900">{debugExport.studyPack.definitions.length}</dd>
+                </div>
+                <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
+                  <dt className="text-xs text-slate-500">Formulas</dt>
+                  <dd className="font-medium text-slate-900">{debugExport.studyPack.formulas.length}</dd>
+                </div>
+                <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
+                  <dt className="text-xs text-slate-500">Proofs</dt>
+                  <dd className="font-medium text-slate-900">{debugExport.studyPack.proofs.length}</dd>
+                </div>
+                <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
+                  <dt className="text-xs text-slate-500">Examples</dt>
+                  <dd className="font-medium text-slate-900">{debugExport.studyPack.examples.length}</dd>
+                </div>
+                <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
+                  <dt className="text-xs text-slate-500">Exercises</dt>
+                  <dd className="font-medium text-slate-900">{debugExport.studyPack.exercises.length}</dd>
+                </div>
+                <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
+                  <dt className="text-xs text-slate-500">Flashcards</dt>
+                  <dd className="font-medium text-slate-900">{debugExport.studyPack.flashcards.length}</dd>
+                </div>
+                <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
+                  <dt className="text-xs text-slate-500">Quiz questions</dt>
+                  <dd className="font-medium text-slate-900">{debugExport.studyPack.quizQuestions.length}</dd>
+                </div>
+                <div className="rounded-md border border-amber-100 bg-amber-50 px-3 py-2">
+                  <dt className="text-xs text-amber-800">Quality warnings</dt>
+                  <dd className="font-medium text-amber-950">{totalQualityWarningCount(debugExport.qualityChecks)}</dd>
+                </div>
+              </dl>
+            </CardContent>
+          </Card>
+        </>
+      ) : null}
 
       {editingFormula ? (
         <Dialog open onOpenChange={(o) => { if (!o) setEditingFormula(null); }}>

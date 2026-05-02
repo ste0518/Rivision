@@ -9,6 +9,23 @@ import { useStudyStore } from "@/hooks/use-study-store";
 
 export default function ProgressPage() {
   const store = useStudyStore();
+
+  if (!store.studentRevisionPack) {
+    return (
+      <div className="space-y-8">
+        <PageHeader title="Progress" description="High-level view of how your revision is going — all computed locally." />
+        <Card className="border-dashed">
+          <CardContent className="py-12 text-center text-slate-600">
+            <p>No study pack yet. Upload a file and generate one first.</p>
+            <Link className="mt-4 inline-flex h-10 items-center justify-center rounded-md bg-blue-700 px-4 text-sm font-medium text-white" href="/upload">
+              Upload &amp; generate
+            </Link>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   const active = useMemo(() => store.revisionItems.filter((i) => !i.isDeleted), [store.revisionItems]);
   const kept = useMemo(() => active.filter((i) => (i.curationDecision ?? "keep") === "keep"), [active]);
 
@@ -29,7 +46,8 @@ export default function ProgressPage() {
   const practiceAttempted = store.practiceAttempts?.length ?? 0;
   const practiceBank = store.practiceQuestions?.length ?? 0;
 
-  const weakTopics = store.studentRevisionPack?.courseMap.filter((t) => t.importance !== "high").slice(0, 8) ?? [];
+  const pack = store.studentRevisionPack!;
+  const weakTopics = pack.courseMap.filter((t) => t.importance !== "high").slice(0, 8);
   const filesCount = store.notesFiles.length + store.guidanceFiles.length;
   const pastCoverage = store.guidanceFiles.some((f) => f.role === "past_paper");
 
@@ -44,7 +62,7 @@ export default function ProgressPage() {
             <CardDescription>Structured exam overview and sections.</CardDescription>
           </CardHeader>
           <CardContent className="text-sm">
-            <Row label="Study pack generated" value={store.studentRevisionPack ? "Yes" : "No"} />
+            <Row label="Study pack generated" value="Yes" />
             <Row label="Files uploaded" value={String(filesCount)} />
           </CardContent>
         </Card>
@@ -55,9 +73,9 @@ export default function ProgressPage() {
             <CardDescription>Based on cards you have opened in Review mode.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
-            <Row label="Definitions reviewed" value={`${reviewedSets.definitions.done}/${Math.max(reviewedSets.definitions.total, 1)}`} />
-            <Row label="Formulas reviewed" value={`${reviewedSets.formulas.done}/${Math.max(reviewedSets.formulas.total, 1)}`} />
-            <Row label="Proofs reviewed" value={`${reviewedSets.proofs.done}/${Math.max(reviewedSets.proofs.total, 1)}`} />
+            <Row label="Definitions reviewed" value={`${reviewedSets.definitions.done}/${reviewedSets.definitions.total}`} />
+            <Row label="Formulas reviewed" value={`${reviewedSets.formulas.done}/${reviewedSets.formulas.total}`} />
+            <Row label="Proofs reviewed" value={`${reviewedSets.proofs.done}/${reviewedSets.proofs.total}`} />
           </CardContent>
         </Card>
 

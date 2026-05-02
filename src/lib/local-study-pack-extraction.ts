@@ -1332,3 +1332,48 @@ function buildPastPaperPatterns(hasEvidence: boolean, settings: PackGeneratorSet
     },
   ];
 }
+
+/** Labelled Example / Exercise blocks for debug export (not shown as separate Study Pack tabs today). */
+export type DebugExampleExerciseItem = {
+  id: string;
+  kind: "example" | "exercise";
+  title: string;
+  formalLabel: string;
+  body: string;
+  sourceFile: string;
+  sourcePage?: number;
+  sourceSection?: string;
+  rawBlock: string;
+};
+
+/** Collect Example N / Exercise N blocks from lecture text for JSON export and QA. */
+export function extractExampleAndExerciseItemsForDebug(files: LecturePackFile[]): { examples: DebugExampleExerciseItem[]; exercises: DebugExampleExerciseItem[] } {
+  const lectureFiles = files.filter((f) => f.role === "lecture_notes" || f.role === "formula_sheet" || f.role === "other");
+  const exampleBlocks: LabelledBlock[] = [];
+  const exerciseBlocks: LabelledBlock[] = [];
+  for (const f of lectureFiles) {
+    const t = f.parsedText ?? "";
+    if (!t.trim()) continue;
+    const fileSections = extractSectionHeadings(t);
+    const blocks = extractLabelledBlocks(t, f.name, fileSections);
+    for (const b of blocks) {
+      if (b.kind === "example") exampleBlocks.push(b);
+      if (b.kind === "exercise") exerciseBlocks.push(b);
+    }
+  }
+  const map = (b: LabelledBlock, kind: "example" | "exercise"): DebugExampleExerciseItem => ({
+    id: createId(kind === "example" ? "ex" : "exe"),
+    kind,
+    title: b.displayTitle,
+    formalLabel: b.formalLabel,
+    body: b.body,
+    sourceFile: b.sourceFile,
+    sourcePage: b.sourcePage,
+    sourceSection: b.sourceSection,
+    rawBlock: b.rawBlock,
+  });
+  return {
+    examples: dedupeLabelledBlocks(exampleBlocks).map((b) => map(b, "example")),
+    exercises: dedupeLabelledBlocks(exerciseBlocks).map((b) => map(b, "exercise")),
+  };
+}
