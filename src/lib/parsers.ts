@@ -1,5 +1,6 @@
 import type { ParsedDocument, ParsedPage, ParsedSection } from "@/lib/types";
 import { extractSectionHeadingsFromText } from "@/lib/section-headings";
+import { cleanUploadedStudySourceText } from "@/lib/source-text-cleanup";
 import { normalizeExtractedMathText } from "@/lib/revision-item-utils";
 
 const MIN_PDF_CHARS_PER_PAGE = 80;
@@ -252,7 +253,11 @@ function finalizeParsedDocument(input: {
 }): ParsedDocument {
   const warnings = input.warnings ?? [];
   const errors = input.errors ?? [];
-  const fullText = repairObviousTextExtractionIssues(input.fullText ?? "");
+  const fullText = cleanUploadedStudySourceText(repairObviousTextExtractionIssues(input.fullText ?? ""));
+  const pages = input.pages?.map((page) => ({
+    ...page,
+    text: cleanUploadedStudySourceText(page.text.replace(/\r\n/g, "\n")),
+  }));
   const sections = detectSections(fullText);
   const charCount = fullText.length;
   const success = errors.length === 0 && charCount > 0;
@@ -262,7 +267,7 @@ function finalizeParsedDocument(input: {
     sourceFile: input.sourceFile,
     fileType: input.fileType,
     fullText,
-    pages: input.pages,
+    pages,
     sections,
     diagnostics: {
       success,

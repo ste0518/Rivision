@@ -11,6 +11,7 @@
  */
 
 import { mathStatusFromValidation, validateLatexSnippet } from "@/lib/latex-validate";
+import { cleanUploadedStudySourceText } from "@/lib/source-text-cleanup";
 import { convertCommonMathToLatex } from "@/lib/revision-item-utils";
 import {
   extractSectionHeadingsFromText,
@@ -165,6 +166,25 @@ function advancePastLabelSeparator(text: string, pos: number): number {
 
 type LabelHit = { index: number; bodyStart: number; kind: string; number: string; paren?: string };
 
+/** Preferred display titles for Proposition 3.1–3.6 in Monte Carlo integration / IS chapters (matches common lecture numbering). */
+const MC_CHAPTER_PROPOSITION_TITLE: Record<string, string> = {
+  "3.1": "Monte Carlo estimator is unbiased",
+  "3.2": "Variance of the Monte Carlo estimator",
+  "3.3": "Importance sampling estimator is unbiased",
+  "3.4": "Variance of the importance sampling estimator",
+  "3.5": "SNIS mean squared error bound",
+  "3.6": "Unbiased marginal likelihood estimator",
+};
+
+function isMonteCarloIntegrationHeavyContext(noteText: string): boolean {
+  const lower = noteText.toLowerCase();
+  return (
+    /\bmonte\s*carlo\s+integration\b|\bmc\s+estimator\b|\bimportance\s+sampling\b|\bself[-\s]?normali[sz]ed\b|\bsnis\b|\beffective\s+sample\b|\bproposal\s+distribution\b/.test(
+      lower,
+    )
+  );
+}
+
 function collectLabelHits(text: string): LabelHit[] {
   const hits: LabelHit[] = [];
   LABEL_START_RE.lastIndex = 0;
@@ -180,6 +200,51 @@ function collectLabelHits(text: string): LabelHit[] {
     });
   }
   return hits;
+}
+
+function isCitationReferenceLabel(text: string, index: number) {
+  const before = text.slice(Math.max(0, index - 52), index);
+  return /\b(see|cf\.|following|follow|compare|from)\s+$/i.test(before.trimEnd());
+}
+
+function isGarbageTheoremLabel(text: string, hit: LabelHit) {
+  if (!/^theorem$/i.test(hit.kind)) return false;
+  const snip = text.slice(hit.bodyStart, hit.bodyStart + 120).trim();
+  return /^\)\s*for\s+the\s+proof/i.test(snip) || (/^\)\s*[.;:]/.test(snip) && snip.length < 40);
+}
+
+/** Drop “see Example …” references and citation-broken theorem heads. */
+function filterStudyPackLabelHits(text: string): LabelHit[] {
+  return collectLabelHits(text).filter((h) => !isCitationReferenceLabel(text, h.index) && !isGarbageTheoremLabel(text, h));
+}
+
+function clipInteriorEndAbsolute(text: string, bodyStart: number, hardEnd: number, kind: PackItemKind): number {
+  const segment = text.slice(bodyStart, hardEnd);
+  let rel = segment.length;
+  if (kind === "example" || kind === "exercise" || kind === "remark") {
+    const fig = /\n\s*Figure\s+\d+/i.exec(segment);
+    if (fig && fig.index >= 12) rel = Math.min(rel, fig.index);
+  }
+  const bib = /\n\s*(?:BIBLIOGRAPHY|References|REFERENCES)\b/i.exec(segment);
+  if (bib && bib.index >= 24) rel = Math.min(rel, bib.index);
+  const chap = /\n\s*Chapter\s+\d+(?:\.\d+)*\s+[A-Za-z\u00C0-\u024F]/i.exec(segment);
+  if (chap && chap.index >= 32) rel = Math.min(rel, chap.index);
+  return bodyStart + rel;
+}
+
+function inferChapterMajorPrefixFromFilename(name: string): string | undefined {
+  const m = name.match(/chapter[-_\s]*(\d+)/i);
+  return m?.[1] ? `${m[1]}.` : undefined;
+}
+
+function filterExampleExerciseByChapterPrefix(blocks: LabelledBlock[], prefix: string | undefined): LabelledBlock[] {
+  if (!prefix) return blocks;
+  const major = prefix.replace(/\.$/, "");
+  return blocks.filter((b) => {
+    if (b.kind !== "example" && b.kind !== "exercise") return true;
+    const n = b.number || "";
+    return n === major || n.startsWith(prefix) || n.startsWith(`${major}.`);
+  });
 }
 
 function sectionForOffset(sections: ExtractedSection[], offset: number): string | undefined {
@@ -212,16 +277,22 @@ function importanceForKind(kind: PackItemKind): DefinitionImportance {
   return "high";
 }
 
-function inferTitleFromStatement(kind: PackItemKind, body: string): string | undefined {
+function inferTitleFromStatement(kind: PackItemKind, body: string, formalNumber: string, courseContext: string): string | undefined {
   if (kind !== "proposition" && kind !== "theorem" && kind !== "lemma") return undefined;
   const raw = body.replace(/^\s+/, "").replace(/\s+/g, " ");
   const lower = raw.toLowerCase();
+  if (kind === "proposition" && isMonteCarloIntegrationHeavyContext(courseContext) && MC_CHAPTER_PROPOSITION_TITLE[formalNumber]) {
+    return MC_CHAPTER_PROPOSITION_TITLE[formalNumber];
+  }
   if (kind === "proposition") {
     if (/unbiased.*monte\s*carlo|monte\s*carlo.*unbiased|\bmc\s+estimator\b.*unbiased/i.test(lower)) return "Monte Carlo estimator is unbiased";
-    if (/variance.*monte\s*carlo|monte\s*carlo.*variance|var\s*\(\s*\\?hat\s*\\?phi/i.test(lower)) return "Monte Carlo estimator variance";
+    if (/variance.*monte\s*carlo|monte\s*carlo.*variance|var\s*\(\s*\\?hat\s*\\?phi|variance\s+of\s+the\s+mc/i.test(lower)) return "Monte Carlo estimator variance";
     if (/importance\s*sampling.*unbiased|unbiased.*importance\s*sampling/i.test(lower)) return "Importance sampling estimator is unbiased";
     if (/importance\s*sampling.*variance|variance.*importance\s*sampling/i.test(lower)) return "Importance sampling estimator variance";
-    if (/snis|self[-\s]?normalised.*mse|self[-\s]?normalized.*mse|mse.*snis/i.test(lower)) return "SNIS MSE bound";
+    if (/marginal\s+likelihood|evidence|p\s*\(\s*y\s*\)/i.test(lower) && /unbiased/i.test(lower)) return "Unbiased marginal likelihood estimator";
+    if (/snis|self[-\s]?normalised.*mse|self[-\s]?normalized.*mse|mse.*snis/i.test(lower) && !/marginal|likelihood|evidence/i.test(lower)) {
+      return "SNIS mean squared error bound";
+    }
   }
   const sentence = raw.split(/(?<=[.!?])\s+/)[0] ?? raw;
   let s = sentence.replace(/^Let\s+[^.]{4,120}\.\s*/i, "").trim();
@@ -233,9 +304,9 @@ function inferTitleFromStatement(kind: PackItemKind, body: string): string | und
   return undefined;
 }
 
-function titleForBlock(kind: PackItemKind, parenTitle: string | undefined, body: string): string {
+function titleForBlock(kind: PackItemKind, parenTitle: string | undefined, body: string, formalNumber: string, courseContext: string): string {
   if (parenTitle?.trim()) return parenTitle.trim().replace(/\s+/g, " ");
-  const inferred = inferTitleFromStatement(kind, body);
+  const inferred = inferTitleFromStatement(kind, body, formalNumber, courseContext);
   if (inferred) return inferred;
   const firstLine = body.replace(/^\s+/, "").split(/\n/)[0] ?? body;
   const cleaned = firstLine.replace(/\s+/g, " ").trim();
@@ -243,7 +314,14 @@ function titleForBlock(kind: PackItemKind, parenTitle: string | undefined, body:
   return `${kind} statement`;
 }
 
-function inferDisplayTitle(kind: PackItemKind, parenTitle: string | undefined, body: string, algorithmHeadLine?: string): string {
+function inferDisplayTitle(
+  kind: PackItemKind,
+  parenTitle: string | undefined,
+  body: string,
+  algorithmHeadLine: string | undefined,
+  formalNumber: string,
+  courseContext: string,
+): string {
   if (parenTitle?.trim()) return parenTitle.trim().replace(/\s+/g, " ");
   const blob = `${algorithmHeadLine ?? ""}\n${body}`;
   const lower = blob.toLowerCase();
@@ -260,7 +338,10 @@ function inferDisplayTitle(kind: PackItemKind, parenTitle: string | undefined, b
   if (kind === "proposition") {
     if (lower.includes("chain rule for sampling")) return "Chain Rule for Sampling";
     if (lower.includes("conditional bayes") || lower.includes("conditional bayes rule")) return "Conditional Bayes rule";
-    const inferred = inferTitleFromStatement(kind, body);
+    if (isMonteCarloIntegrationHeavyContext(courseContext) && MC_CHAPTER_PROPOSITION_TITLE[formalNumber]) {
+      return MC_CHAPTER_PROPOSITION_TITLE[formalNumber]!;
+    }
+    const inferred = inferTitleFromStatement(kind, body, formalNumber, courseContext);
     if (inferred) return inferred;
   }
   if (kind === "algorithm") {
@@ -270,26 +351,28 @@ function inferDisplayTitle(kind: PackItemKind, parenTitle: string | undefined, b
     if (cleaned.length >= 5 && cleaned.length < 140) return cleaned;
   }
 
-  return titleForBlock(kind, undefined, body);
+  return titleForBlock(kind, undefined, body, formalNumber, courseContext);
 }
 
-function extractLabelledBlocks(fullText: string, sourceFile: string, sections: ExtractedSection[]): LabelledBlock[] {
+function extractLabelledBlocks(fullText: string, sourceFile: string, sections: ExtractedSection[], courseContext: string): LabelledBlock[] {
   const text = fullText.replace(/\r\n/g, "\n");
-  const hits = collectLabelHits(text);
+  const hits = filterStudyPackLabelHits(text);
 
   const blocks: LabelledBlock[] = [];
   for (let i = 0; i < hits.length; i += 1) {
     const cur = hits[i]!;
     const next = hits[i + 1];
-    const end = next ? next.index : text.length;
+    const hardEnd = next ? next.index : text.length;
+    const kind = kindFromWord(cur.kind);
+    const clipped = Math.min(hardEnd, clipInteriorEndAbsolute(text, cur.bodyStart, hardEnd, kind));
+    const end = Math.max(cur.index, clipped);
     const rawBlock = text.slice(cur.index, end).trim();
     const body = text.slice(cur.bodyStart, end).trim();
     if (body.length < 6 && rawBlock.length < 14) continue;
 
-    const kind = kindFromWord(cur.kind);
     const formalLabel = `${capitalize(cur.kind)} ${cur.number}`;
     const algorithmHeadLine = kind === "algorithm" ? body.split("\n")[0] : undefined;
-    const displayTitle = inferDisplayTitle(kind, cur.paren, body, algorithmHeadLine);
+    const displayTitle = inferDisplayTitle(kind, cur.paren, body, algorithmHeadLine, cur.number, courseContext);
     const offset = cur.index;
     blocks.push({
       kind,
@@ -325,7 +408,7 @@ function extractProofBlocks(fullText: string, sourceFile: string, sections: Extr
     proofMatches.push({ start: pm.index, contentStart });
   }
   // Stop a proof body when the next labelled head is encountered, not just the next Proof.
-  const labelledStarts = collectLabelHits(text).map((h) => h.index);
+  const labelledStarts = filterStudyPackLabelHits(text).map((h) => h.index);
 
   for (let i = 0; i < proofMatches.length; i += 1) {
     const cur = proofMatches[i]!;
@@ -441,12 +524,17 @@ export function normalizeMathText(text: string): string {
   t = t.replace(/\bn\s*[≥≥]\s*0\b/g, "\\( n \\ge 0 \\)");
   t = t.replace(/∑\s*_?\s*j\s*=\s*1\s*\^?\s*d/gi, "\\( \\sum_{j=1}^d \\)");
   t = t.replace(/Pd\s+j\s*=\s*1/gi, "\\( \\sum_{j=1}^d \\)");
-  t = t.replace(/\bp\?\b/g, "\\( p^\\star \\)");
   t = t.replace(/\bp\*\(/g, "\\( p^\\star(");
-  const ctx = `${t} markov metropolis gibbs chain transition detailed balance mcmc`;
+  const profileHint = t.toLowerCase();
   const profile =
-    /\b(markov|mcmc|metropolis|gibbs|transition matrix|detailed balance|invariant|kernel)\b/i.test(ctx) ? "monte_carlo_sampling" : "generic";
-  return convertCommonMathToLatex(t, profile, ctx);
+    /\b(monte\s*carlo|importance\s*sampling|self[-\s]?normali|snis|proposal\s+distribution|empirical\s+measure|mc\s+estimator|is\s+estimator|effective\s+sample|ess\b|test\s+function)\b/.test(
+      profileHint,
+    )
+      ? "monte_carlo_sampling"
+      : /\b(markov|mcmc|metropolis|gibbs|transition\s+matrix|detailed\s+balance|irreducible|aperiodic)\b/.test(profileHint)
+        ? "monte_carlo_sampling"
+        : "generic";
+  return convertCommonMathToLatex(t, profile, t);
 }
 
 // ---------------------------------------------------------------------------
@@ -726,6 +814,30 @@ const FORMULA_PATTERNS: Array<{ name: string; matcher: RegExp; latex: string; wh
     latex: "\\mathrm{ESS}_N = \\frac{1}{\\sum_i \\bar w_i^2}",
     whenToUse: "ESS from normalised importance weights (effective number of i.i.d. samples).",
   },
+  {
+    name: "Root mean squared error (RMSE)",
+    matcher: /\bRMSE\b\s*[:=]|\broot\s+mean\s+squared\s+error\b/i,
+    latex: "\\mathrm{RMSE} = \\sqrt{\\mathrm{MSE}}",
+    whenToUse: "Scalar error metric for estimators; related to MSE as RMSE=√MSE.",
+  },
+  {
+    name: "Relative absolute error (RAE)",
+    matcher: /\bRAE\b\s*[:=]|\brelative\s+absolute\s+error\b/i,
+    latex: "\\mathrm{RAE} = \\dfrac{|\\hat\\phi - \\phi|}{|\\phi|}",
+    whenToUse: "Scale-free comparison of estimator error.",
+  },
+  {
+    name: "Mixture importance sampling proposal",
+    matcher: /mixture\s+proposal|mixture\s+importance|q\s*\(\s*x\s*\)\s*=\s*\\?sum\s*_?\s*j/i,
+    latex: "q(x) = \\sum_{j=1}^J \\beta_j q_j(x)",
+    whenToUse: "Mixture proposals for covering multimodal targets in importance sampling.",
+  },
+  {
+    name: "Log-weight stabilisation",
+    matcher: /log\s*-?\s*weight|log\s*w\s*_?i|subtract\s+max\s+log\s*weight/i,
+    latex: "\\log \\tilde w_i = \\log W_i - \\max_j \\log W_j",
+    whenToUse: "Numerically stable computation of weights via log-domain shifts.",
+  },
 ];
 
 function extractCanonicalFormulas(text: string, sourceFile: string, sections: ExtractedSection[]): GeneratedFormulaItem[] {
@@ -845,7 +957,6 @@ function buildLikelyExamStructureSnippet(combinedLectureText: string, hasPastEvi
 // ---------------------------------------------------------------------------
 
 function blocksToDefinitions(blocks: LabelledBlock[]): GeneratedDefinitionItem[] {
-  // Strict: only true definitions belong in the Definitions tab.
   return blocks
     .filter((b) => b.kind === "definition")
     .map((b) => {
@@ -864,6 +975,7 @@ function blocksToDefinitions(blocks: LabelledBlock[]): GeneratedDefinitionItem[]
         sourceLabel: b.formalLabel,
         sourceExcerpt: b.rawBlock.slice(0, 900),
         formalLabel: b.formalLabel,
+        definitionKind: "formal" as const,
         itemKind: b.kind as StudyPackEntryKind,
         importance: b.importance,
         mathStatus: mathStatusFromValidation(v),
@@ -871,8 +983,103 @@ function blocksToDefinitions(blocks: LabelledBlock[]): GeneratedDefinitionItem[]
     });
 }
 
+const CONCEPTUAL_REVISION_SEEDS: Array<{ term: string; pattern: RegExp }> = [
+  { term: "Monte Carlo integration", pattern: /\bmonte\s*carlo\s+integration\b/i },
+  { term: "Test function", pattern: /\btest\s+function\b/i },
+  { term: "Empirical measure", pattern: /\bempirical\s+(measure|distribution)\b/i },
+  { term: "Dirac delta measure", pattern: /\bdirac\s+delta\b/i },
+  { term: "Monte Carlo estimator", pattern: /\bmonte\s*carlo\s+estimator\b|\bMC\s+estimator\b/i },
+  { term: "Unbiased estimator", pattern: /\bunbiased\s+estimator\b/i },
+  { term: "Estimator variance", pattern: /\bestimator\s+variance\b|\bvariance\s+of\s+the\s+estimator\b/i },
+  { term: "Empirical variance estimator", pattern: /\bempirical\s+variance\b/i },
+  { term: "Bias", pattern: /\bbias\s*\(\s*\\?hat|\bbias\s+of\s+the\s+estimator\b/i },
+  { term: "Mean squared error (MSE)", pattern: /\bMSE\b|\bmean\s+squared\s+error\b/i },
+  { term: "Root mean squared error (RMSE)", pattern: /\bRMSE\b|\broot\s+mean\s+squared\b/i },
+  { term: "Relative absolute error (RAE)", pattern: /\bRAE\b|\brelative\s+absolute\b/i },
+  { term: "Proposal distribution", pattern: /\bproposal\s+distribution\b/i },
+  { term: "Importance weight", pattern: /\bimportance\s+weight/i },
+  { term: "Support condition for importance sampling", pattern: /\bsupport\s+condition\b/i },
+  { term: "Finite variance condition for importance sampling", pattern: /\bfinite\s+variance\b/i },
+  { term: "Optimal proposal", pattern: /\boptimal\s+proposal\b/i },
+  { term: "Self-normalised importance sampling", pattern: /\bself[-\s]?normali[sz]ed\s+importance\s+sampling\b|\bSNIS\b/i },
+  { term: "Unnormalised weight", pattern: /\bunnormali[sz]ed\s+weight\b/i },
+  { term: "Normalised weight", pattern: /\bnormali[sz]ed\s+weight\b|\bnormalised\s+weights\b/i },
+  { term: "Effective sample size", pattern: /\beffective\s+sample\s+size\b|\bESS\b/i },
+  { term: "Mixture importance sampling", pattern: /\bmixture\s+importance\b/i },
+  { term: "Log-weight trick", pattern: /\blog[-\s]?weight\b|\blog\s+trick\b/i },
+];
+
+function harvestConceptualDefinitions(
+  lectureText: string,
+  primaryFile: string,
+  sections: ExtractedSection[],
+  formalDefs: GeneratedDefinitionItem[],
+): GeneratedDefinitionItem[] {
+  const used = new Set(formalDefs.map((d) => d.term.toLowerCase()));
+  const out: GeneratedDefinitionItem[] = [];
+  for (const seed of CONCEPTUAL_REVISION_SEEDS) {
+    if (used.has(seed.term.toLowerCase())) continue;
+    const hit = seed.pattern.exec(lectureText);
+    if (!hit || hit.index === undefined) continue;
+    const excerptStart = Math.max(0, hit.index - 40);
+    const excerptEnd = Math.min(lectureText.length, hit.index + 280);
+    const def = normalizeMathText(lectureText.slice(excerptStart, excerptEnd).replace(/\s+/g, " ").trim());
+    if (def.length < 28) continue;
+    const v = validateLatexSnippet(def.slice(0, 600));
+    out.push({
+      id: createId("def"),
+      term: seed.term,
+      definition: def,
+      source: primaryFile,
+      sourceFile: primaryFile,
+      sourcePage: pageAtOffset(lectureText, hit.index),
+      sourceSection: sectionForOffset(sections, hit.index),
+      sourceExcerpt: lectureText.slice(hit.index, hit.index + 120),
+      importance: "high",
+      definitionKind: "conceptual",
+      mathStatus: mathStatusFromValidation(v),
+    });
+    used.add(seed.term.toLowerCase());
+  }
+  return out;
+}
+
 function proofSkeletonFromBody(title: string, body: string): { skeleton: string; mistake: string } {
   const lower = `${title} ${body}`.toLowerCase();
+  const mcChapter =
+    /\bmonte\s*carlo\b|\bimportance\s*sampling\b|\bsnis\b|\bself[-\s]?normali/.test(lower) &&
+    !/\b(simple\s+kriging|ordinary\s+kriging|semivariogram)\b/.test(lower);
+  if (mcChapter && /monte\s*carlo/.test(lower) && /unbiased|expectation/.test(lower) && /hat|mc\s+estimator|ϕˆ/i.test(lower)) {
+    return {
+      skeleton:
+        "Write the MC estimator as an average of ϕ(X_i); use linearity of expectation and i.i.d. sampling from the target to relate E[estimator] to E[ϕ(X)].",
+      mistake: "Forgetting independence between samples when passing expectation through the sum, or confusing target expectation with proposal expectation.",
+    };
+  }
+  if (mcChapter && (/variance.*mc|mc.*variance|var\s*\(\s*hat\s*phi/i.test(lower) || title.toLowerCase().includes("variance of the monte carlo"))) {
+    return {
+      skeleton: "Expand Var( (1/N)Σ ϕ(X_i) ) using independence → (1/N²)Σ Var(ϕ(X)). Identify Var(ϕ(X))/N.",
+      mistake: "Using proposal variance formulas under i.i.d. target sampling, or dropping the 1/N scaling.",
+    };
+  }
+  if (mcChapter && /importance\s*sampling/.test(lower) && /unbiased/.test(lower)) {
+    return {
+      skeleton: "Rewrite expectation under q using weights w=p*/q; apply expectation linearity and ∫ p*(x)dx=1.",
+      mistake: "Mixing up expectation under q vs p* when moving w inside the integral.",
+    };
+  }
+  if (mcChapter && /snis|self[-\s]?normali/.test(lower) && /mse|mean\s+squared/i.test(lower)) {
+    return {
+      skeleton: "Express SNIS estimator as ratio of sums; bound MSE via bias–variance or Cauchy–Schwarz style arguments on normalized weights.",
+      mistake: "Treating self-normalised weights as deterministic, or ignoring dependence introduced by the random denominator.",
+    };
+  }
+  if (mcChapter && (/marginal\s+likelihood|evidence/.test(lower) || title.toLowerCase().includes("marginal likelihood"))) {
+    return {
+      skeleton: "Identify an unbiased estimator of the marginal likelihood as an integral identity under an importance proposal; verify expectation step-by-step.",
+      mistake: "Confusing marginal likelihood with posterior density, or wrong proposal normalization.",
+    };
+  }
   if (
     lower.includes("f_x") ||
     lower.includes("probability integral") ||
@@ -914,9 +1121,12 @@ function proofSkeletonFromBody(title: string, body: string): { skeleton: string;
       mistake: "Conditioning incorrectly (Markov property requires conditioning on the most recent state).",
     };
   }
+  const markovish = /\b(markov|transition\s+matrix|irreducible|aperiodic|detailed\s+balance|stationar)\b/i.test(lower);
   return {
     skeleton: "State assumptions → expand definitions → algebraic manipulation → conclude.",
-    mistake: "Skipping hypotheses (irreducibility, aperiodicity, positivity) when invoking limit theorems.",
+    mistake: markovish
+      ? "Skipping hypotheses (irreducibility, aperiodicity, positivity) when invoking limit theorems."
+      : "Omitting integrability/support conditions when swapping limits, sums, and expectations.",
   };
 }
 
@@ -932,8 +1142,10 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[]): 
       .filter((p) => p.sourceFile === b.sourceFile && p.startOffset > b.startOffset)
       .sort((a, c) => a.startOffset - c.startOffset)[0];
 
+    if (!proof?.body?.trim() || proof.body.trim().length < 22) continue;
+
     const heading = `${b.formalLabel}: ${b.displayTitle}`;
-    const { skeleton, mistake } = proofSkeletonFromBody(b.displayTitle, `${b.body}\n${proof?.body ?? ""}`);
+    const { skeleton, mistake } = proofSkeletonFromBody(b.displayTitle, `${b.body}\n${proof.body}`);
     const statementOnly = truncateBodyBeforeInteriorSectionHeading(b.body.split(/(?:^|\n)\s*Proof\s*[.:]/i)[0]!.trim());
     if (/^(example|sketch|remark)\b/i.test(statementOnly) || /^consider\s+the\s+following\s+example\b/i.test(statementOnly)) continue;
     items.push({
@@ -1036,7 +1248,8 @@ function algorithmBlocksToMethods(blocks: LabelledBlock[]): GeneratedMethodTempl
   });
 
   const textBlob = blocks.map((b) => b.body).join("\n").toLowerCase();
-  const extras: Array<{ title: string; steps: string[]; triggers: string[] }> = [
+  const markovPresent = /\b(markov|transition\s+matrix|mcmc|gibbs|metropolis|detailed\s+balance)\b/i.test(textBlob);
+  const extras: Array<{ title: string; steps: string[]; triggers: string[]; requiresMarkovContext?: boolean }> = [
     {
       title: "Simulate a discrete Markov chain",
       steps: [
@@ -1045,21 +1258,25 @@ function algorithmBlocksToMethods(blocks: LabelledBlock[]): GeneratedMethodTempl
         "Repeat to obtain a path; optionally discard burn-in for Monte Carlo averages.",
       ],
       triggers: ["transition matrix", "discrete", "markov chain"],
+      requiresMarkovContext: true,
     },
     {
       title: "Compute n-step transition probabilities",
       steps: ["Identify one-step kernel M.", "Use M(n)=Mn for discrete time homogeneous chains.", "For probabilities, track pn=p0Mn."],
       triggers: ["m^n", "chapman", "transition"],
+      requiresMarkovContext: true,
     },
     {
       title: "Verify an invariant distribution",
       steps: ["Candidate π — check πM=π row-wise.", "Or integrate π(x')K(x|x')dx'=π(x) for continuous state.", "Confirm positivity/normalisation."],
       triggers: ["invariant", "stationary"],
+      requiresMarkovContext: true,
     },
     {
       title: "Use detailed balance",
       steps: ["Write π(i)Mij=π(j)Mji or continuous analogue.", "Conclude π is invariant.", "Note: DB ⇒ stationarity but not always necessary."],
       triggers: ["detailed balance"],
+      requiresMarkovContext: true,
     },
     {
       title: "Sampling importance resampling",
@@ -1074,10 +1291,12 @@ function algorithmBlocksToMethods(blocks: LabelledBlock[]): GeneratedMethodTempl
       title: "Derive a Gibbs sampler from full conditionals",
       steps: ["Write full conditional distributions.", "Cycle updates (systematic or random scan).", "Each update leaves π invariant — verify using conditional detail."],
       triggers: ["gibbs", "full conditional"],
+      requiresMarkovContext: true,
     },
   ];
 
   for (const ex of extras) {
+    if (ex.requiresMarkovContext && !markovPresent) continue;
     if (!ex.triggers.some((t) => textBlob.includes(t))) continue;
     if (methods.some((m) => m.problemType.toLowerCase().includes(ex.title.slice(0, 12).toLowerCase()))) continue;
     methods.push({
@@ -1123,25 +1342,28 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const { files, settings, combinedLectureText, hasPastEvidence } = ctx;
   const lectureFiles = files.filter((f) => f.role === "lecture_notes" || f.role === "formula_sheet" || f.role === "other");
   const primaryName = lectureFiles[0]?.name ?? files[0]?.name ?? "your materials";
-  const sectionsMerged = mergeSectionHeadingsForPack(lectureFiles, combinedLectureText);
-  const sections = extractSectionHeadings(combinedLectureText);
+  const cleanedCombined = cleanUploadedStudySourceText(combinedLectureText.replace(/\r\n/g, "\n"));
+  const sectionsMerged = mergeSectionHeadingsForPack(lectureFiles, cleanedCombined);
+  const sections = extractSectionHeadings(cleanedCombined);
+  const courseContext = cleanedCombined;
 
   const allBlocks: LabelledBlock[] = [];
   const allProofBlocks: LabelledBlock[] = [];
   for (const f of lectureFiles) {
-    const t = f.parsedText ?? "";
+    const t = cleanUploadedStudySourceText(f.parsedText ?? "");
     if (!t.trim()) continue;
     const fileSections = extractSectionHeadings(t);
-    allBlocks.push(...extractLabelledBlocks(t, f.name, fileSections));
+    allBlocks.push(...extractLabelledBlocks(t, f.name, fileSections, courseContext));
     allProofBlocks.push(...extractProofBlocks(t, f.name, fileSections));
   }
-  const blocks = dedupeLabelledBlocks(allBlocks);
+  let blocks = dedupeLabelledBlocks(allBlocks);
+  blocks = filterExampleExerciseByChapterPrefix(blocks, inferChapterMajorPrefixFromFilename(primaryName));
   const proofBlocks = dedupeLabelledBlocks(allProofBlocks);
 
-  let definitions = blocksToDefinitions(blocks);
-  definitions = dedupeDefinitions(definitions);
+  const formalDefs = blocksToDefinitions(blocks);
+  const definitions = dedupeDefinitions([...formalDefs, ...harvestConceptualDefinitions(cleanedCombined, primaryName, sections, formalDefs)]);
 
-  const cleanText = combinedLectureText.replace(/\r\n/g, "\n");
+  const cleanText = cleanedCombined;
   const whenHint = defaultFormulaWhenToUse(cleanText);
   const lineFormulas = extractFormulaLines(cleanText, primaryName, sections, whenHint);
   const canonicalFormulas = extractCanonicalFormulas(cleanText, primaryName, sections);
@@ -1160,27 +1382,42 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const primaryStem =
     files.find((f) => f.role === "lecture_notes")?.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ") ??
     primaryName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
-  const chapterTitle = inferCourseTitleFromNotes(combinedLectureText, primaryStem);
+  const chapterTitle = inferCourseTitleFromNotes(cleanedCombined, primaryStem);
 
   let courseMap = courseTopicsFromSections(files, sectionsMerged);
   if (!courseMap.length) {
     courseMap = guessTopicsFallback(files);
   }
 
-  const mistakes: GeneratedCommonMistake[] = [
-    {
-      id: createId("mis"),
-      mistake: "Confusing stationarity with detailed balance",
-      whyItHappens: "Detailed balance is sufficient but not necessary for π.",
-      howToAvoid: "When checking invariance, verify πK=π directly if detailed balance is unclear.",
-    },
-    {
-      id: createId("mis"),
-      mistake: "Wrong proposal direction in MH ratio",
-      whyItHappens: "Asymmetric proposals need q(x′|x) and q(x|x′) consistently.",
-      howToAvoid: "Write the ratio before cancelling terms; track conditioning carefully.",
-    },
-  ];
+  const mistakes: GeneratedCommonMistake[] = isMonteCarloIntegrationHeavyContext(cleanedCombined)
+    ? [
+        {
+          id: createId("mis"),
+          mistake: "Using MC variance formulas under proposal draws",
+          whyItHappens: "IS/SNIS moments depend on q unless weights are handled explicitly.",
+          howToAvoid: "State whether expectations are under q or p* before manipulating variance expressions.",
+        },
+        {
+          id: createId("mis"),
+          mistake: "Ignoring support overlap between target and proposal",
+          whyItHappens: "Weights explode where q≈0 but p*>0.",
+          howToAvoid: "Verify q>0 on the support of p* (and finite-variance conditions).",
+        },
+      ]
+    : [
+        {
+          id: createId("mis"),
+          mistake: "Confusing stationarity with detailed balance",
+          whyItHappens: "Detailed balance is sufficient but not necessary for π.",
+          howToAvoid: "When checking invariance, verify πK=π directly if detailed balance is unclear.",
+        },
+        {
+          id: createId("mis"),
+          mistake: "Wrong proposal direction in MH ratio",
+          whyItHappens: "Asymmetric proposals need q(x′|x) and q(x|x′) consistently.",
+          howToAvoid: "Write the ratio before cancelling terms; track conditioning carefully.",
+        },
+      ];
 
   const patterns = buildPastPaperPatterns(hasPastEvidence, settings);
 
@@ -1198,7 +1435,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const overview = {
     courseName: chapterTitle,
     summary: `Structured locally from ${files.length} file(s): ${definitions.filter((d) => !CORE_IDEA_PLACEHOLDER.test(d.term)).length} definitions · ${formulas.length} formulas · ${proofs.length} proofs · ${methods.length} methods.`,
-    likelyExamStructure: buildLikelyExamStructureSnippet(combinedLectureText, hasPastEvidence),
+    likelyExamStructure: buildLikelyExamStructureSnippet(cleanedCombined, hasPastEvidence),
     highPriorityTopics: courseMap.filter((t) => t.importance === "high").map((t) => t.title).slice(0, 10),
   };
 
@@ -1344,34 +1581,46 @@ export type DebugExampleExerciseItem = {
   sourcePage?: number;
   sourceSection?: string;
   rawBlock: string;
+  /** Set when the block matches exam-critical wording (e.g. cited past finals). */
+  highPriority?: boolean;
 };
 
 /** Collect Example N / Exercise N blocks from lecture text for JSON export and QA. */
 export function extractExampleAndExerciseItemsForDebug(files: LecturePackFile[]): { examples: DebugExampleExerciseItem[]; exercises: DebugExampleExerciseItem[] } {
   const lectureFiles = files.filter((f) => f.role === "lecture_notes" || f.role === "formula_sheet" || f.role === "other");
+  const courseContext = lectureFiles.map((f) => cleanUploadedStudySourceText(f.parsedText ?? "")).join("\n\n");
   const exampleBlocks: LabelledBlock[] = [];
   const exerciseBlocks: LabelledBlock[] = [];
   for (const f of lectureFiles) {
-    const t = f.parsedText ?? "";
+    const t = cleanUploadedStudySourceText(f.parsedText ?? "");
     if (!t.trim()) continue;
     const fileSections = extractSectionHeadings(t);
-    const blocks = extractLabelledBlocks(t, f.name, fileSections);
+    const blocks = extractLabelledBlocks(t, f.name, fileSections, courseContext);
     for (const b of blocks) {
       if (b.kind === "example") exampleBlocks.push(b);
       if (b.kind === "exercise") exerciseBlocks.push(b);
     }
   }
-  const map = (b: LabelledBlock, kind: "example" | "exercise"): DebugExampleExerciseItem => ({
-    id: createId(kind === "example" ? "ex" : "exe"),
-    kind,
-    title: b.displayTitle,
-    formalLabel: b.formalLabel,
-    body: b.body,
-    sourceFile: b.sourceFile,
-    sourcePage: b.sourcePage,
-    sourceSection: b.sourceSection,
-    rawBlock: b.rawBlock,
-  });
+  const map = (b: LabelledBlock, kind: "example" | "exercise"): DebugExampleExerciseItem => {
+    const blob = `${b.body}\n${b.rawBlock}`;
+    const highPriority =
+      kind === "exercise" &&
+      b.number === "3.8" &&
+      /\bfinal\s+exam\b/i.test(blob) &&
+      /\b2024\b/.test(blob);
+    return {
+      id: createId(kind === "example" ? "ex" : "exe"),
+      kind,
+      title: b.displayTitle,
+      formalLabel: b.formalLabel,
+      body: b.body,
+      sourceFile: b.sourceFile,
+      sourcePage: b.sourcePage,
+      sourceSection: b.sourceSection,
+      rawBlock: b.rawBlock,
+      ...(highPriority ? { highPriority: true } : {}),
+    };
+  };
   return {
     examples: dedupeLabelledBlocks(exampleBlocks).map((b) => map(b, "example")),
     exercises: dedupeLabelledBlocks(exerciseBlocks).map((b) => map(b, "exercise")),

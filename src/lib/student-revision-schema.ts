@@ -50,6 +50,8 @@ export interface GeneratedDefinitionItem {
   importance: DefinitionImportance;
   /** Formal numbering, e.g. "Definition 4.1". */
   formalLabel?: string;
+  /** Explicit Definition N.M vs heuristic conceptual entries from revision concepts. */
+  definitionKind?: "formal" | "conceptual";
   /** Semantic kind from notes (definition vs theorem, etc.). */
   itemKind?: StudyPackEntryKind;
   sourceFile?: string;
@@ -146,6 +148,8 @@ export interface GeneratedRevisionPack {
   pastPaperPatterns: GeneratedPastPaperPattern[];
   commonMistakes: GeneratedCommonMistake[];
   cramSheet: GeneratedCramSheet;
+  /** Parsed exercise blocks for quiz prioritisation (not shown as a separate tab). */
+  examAnchoredExercises?: Array<{ formalLabel: string; body: string; highPriority?: boolean }>;
 }
 
 export type PracticeSessionQuestion = GeneratedPracticeQuestion & {

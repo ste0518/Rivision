@@ -1,5 +1,9 @@
 import { inferStudyFileRole } from "@/lib/course-files";
-import { buildHeuristicStudentRevisionPack, CORE_IDEA_PLACEHOLDER } from "@/lib/local-study-pack-extraction";
+import {
+  buildHeuristicStudentRevisionPack,
+  CORE_IDEA_PLACEHOLDER,
+  extractExampleAndExerciseItemsForDebug,
+} from "@/lib/local-study-pack-extraction";
 import { cardFromDefinition, cardFromFormula, cardFromMethod, cardFromProof } from "@/lib/pack-to-card";
 import type { GeneratedDefinitionItem, GeneratedPracticeQuestion, GeneratedRevisionPack } from "@/lib/student-revision-schema";
 import type { RevisionItem } from "@/lib/types";
@@ -70,6 +74,10 @@ export function generateStudentRevisionPack(input: {
     hasPastEvidence,
   });
 
+  const { exercises: parsedExercises } = extractExampleAndExerciseItemsForDebug(
+    files.map((f) => ({ id: f.id, name: f.name, role: f.role, parsedText: f.parsedText })),
+  );
+
   const text = combinedText(files);
   const keywordHits = text.match(KEYWORDS);
   const keywordSummary = keywordHits
@@ -78,6 +86,11 @@ export function generateStudentRevisionPack(input: {
 
   return {
     ...pack,
+    examAnchoredExercises: parsedExercises.map((e) => ({
+      formalLabel: e.formalLabel,
+      body: e.body,
+      highPriority: e.highPriority,
+    })),
     examOverview: {
       ...pack.examOverview,
       summary: [pack.examOverview.summary, keywordSummary].filter(Boolean).join(" "),
@@ -106,26 +119,106 @@ const EMPTY_DEF_FALLBACK: GeneratedDefinitionItem = {
   importance: "medium",
 };
 
-export function generateQuickPracticeQuestions(pack: GeneratedRevisionPack, count = 5): GeneratedPracticeQuestion[] {
+function normaliseQuestionKey(q: string) {
+  return q
+    .toLowerCase()
+    .replace(/\s+/g, " ")
+    .replace(/[^a-z0-9? ]/g, "")
+    .trim()
+    .slice(0, 120);
+}
+
+export function generateQuickPracticeQuestions(pack: GeneratedRevisionPack, count = 12): GeneratedPracticeQuestion[] {
   const out: GeneratedPracticeQuestion[] = [];
-  const defs = pack.definitions;
-  const topics = pack.courseMap;
-  const nTop = Math.max(1, topics.length);
-  for (let i = 0; i < count; i += 1) {
-    const d = defs.length ? defs[i % defs.length]! : EMPTY_DEF_FALLBACK;
-    const t = topics[i % nTop];
-    const basis = d.sourceFile ?? d.source;
-    out.push({
-      id: createId("pq"),
-      question: `Recall precisely: what is ${d.term}?`,
-      expectedAnswer: d.definition.slice(0, 600),
-      topic: t?.title ?? "General",
-      difficulty: i % 3 === 0 ? "easy" : "medium",
-      sourceBasis: basis ?? "study pack",
-      hints: ["State definition in one sentence", "Add one exam-style consequence"],
-    });
+  const seen = new Map<string, number>();
+  const topicFallback = pack.courseMap[0]?.title ?? "Course material";
+  const pushQ = (question: string, expectedAnswer: string, topic: string, sourceBasis: string, difficulty: GeneratedPracticeQuestion["difficulty"], hints: string[]) => {
+    const k = normaliseQuestionKey(question);
+    if (k && (seen.get(k) ?? 0) >= 2) return;
+    if (k) seen.set(k, (seen.get(k) ?? 0) + 1);
+    out.push({ id: createId("pq"), question, expectedAnswer, topic, difficulty, sourceBasis, hints });
+  };
+
+  for (const d of pack.definitions) {
+    if (out.length >= count) break;
+    pushQ(
+      d.definitionKind === "conceptual" ? `Explain the revision concept “${d.term}” in your own words.` : `State the definition of “${d.term}”.`,
+      d.definition.slice(0, 800),
+      topicFallback,
+      d.sourceFile ?? d.source ?? "definitions",
+      "easy",
+      ["One precise sentence", "Name where it is used in MC/IS"],
+    );
   }
-  return out;
+
+  for (const f of pack.formulas) {
+    if (out.length >= count) break;
+    pushQ(
+      `Write the formula for ${f.name} and state when it applies.`,
+      `${f.latex}\n\n${f.whenToUse}`.slice(0, 900),
+      topicFallback,
+      f.sourceFile ?? "formulas",
+      "medium",
+      ["Identify each symbol", "State regularity conditions if any"],
+    );
+  }
+
+  for (const p of pack.proofs) {
+    if (out.length >= count) break;
+    pushQ(
+      `Outline the proof idea for ${p.proofName ?? p.name} — what is the key step?`,
+      `${p.proofSkeleton.slice(0, 700)}\n\nCommon pitfall: ${p.commonMistake}`.slice(0, 1000),
+      topicFallback,
+      p.sourceFile ?? "proofs",
+      "hard",
+      ["State assumptions first", "Then the main identity or bound"],
+    );
+  }
+
+  for (const m of pack.methods) {
+    if (out.length >= count) break;
+    pushQ(
+      `List the main steps for: ${m.problemType}.`,
+      m.steps.join("\n").slice(0, 800),
+      topicFallback,
+      "methods",
+      "medium",
+      ["Order matters", "Name inputs and outputs"],
+    );
+  }
+
+  const anchored = pack.examAnchoredExercises;
+  if (anchored?.length) {
+    const ex38 = anchored.find((e) => /exercise\s+3\.8/i.test(e.formalLabel) && e.highPriority);
+    if (ex38) {
+      pushQ(
+        `Priority drill (past exam): work through ${ex38.formalLabel} — what is being tested?`,
+        ex38.body.slice(0, 1200),
+        "Exam-style applications",
+        "Exercise 3.8",
+        "hard",
+        ["Time-box", "Check all parts of the prompt"],
+      );
+    }
+  }
+
+  const nTop = Math.max(1, pack.courseMap.length);
+  let i = 0;
+  while (out.length < count && i < count * 3) {
+    const d = pack.definitions[i % Math.max(1, pack.definitions.length)] ?? EMPTY_DEF_FALLBACK;
+    const t = pack.courseMap[i % nTop];
+    pushQ(
+      `Alternate wording: define “${d.term}”.`,
+      d.definition.slice(0, 600),
+      t?.title ?? topicFallback,
+      d.sourceFile ?? "study pack",
+      i % 2 === 0 ? "easy" : "medium",
+      ["Avoid copying verbatim", "Hit the measurable conditions"],
+    );
+    i += 1;
+  }
+
+  return out.slice(0, count);
 }
 
 export function generateExamStyleQuestions(pack: GeneratedRevisionPack, count = 4): GeneratedPracticeQuestion[] {

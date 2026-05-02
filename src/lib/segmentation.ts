@@ -287,8 +287,9 @@ function normaliseCandidateLabel(label: string): RevisionCandidateLabel {
 }
 
 function isPlausibleLabelMatch(text: string, start: number, matchText: string, label: RevisionCandidateLabel, number?: string) {
-  const before = text.slice(Math.max(0, start - 16), start);
-  if (/\b(from|see|using|by|as|than)\s+$/i.test(before)) return false;
+  const before = text.slice(Math.max(0, start - 36), start);
+  if (/\b(from|see|using|by|as|than|cf\.|following|follow|compare)\s+$/i.test(before)) return false;
+  if (/\b(as\s+in)\s+$/i.test(before)) return false;
   if (/\bof\s+$/i.test(before)) return true;
   const previousChar = text[start - 1];
   const isAtTextStart = start === 0;

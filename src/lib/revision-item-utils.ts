@@ -383,6 +383,8 @@ export function detectLowQualityCardIssues(item: Partial<RevisionItem>): string[
   const issues = new Set<string>();
   for (const issue of detectBrokenMathIssues(text)) issues.add(issue);
   if ((item.answer ?? "").length > 1800) issues.add("Answer is longer than 1800 characters.");
+  const wordy = (s: string) => (s.trim().match(/\S+/g) ?? []).length;
+  if (wordy(item.statement ?? "") > 1200 || wordy(item.answer ?? "") > 1200) issues.add("Block exceeds 1200 words.");
   if ((item.statement ?? "").length > 2500 || (item.answer ?? "").length > 2500) issues.add("Needs splitting: source text is too long for a normal card.");
   if (/^(proof|formula|remark|definition|example)$/i.test((item.cardFront ?? "").trim())) issues.add("Card front is too generic.");
   if (/\boffsets?\s+\d+|startOffset|endOffset|label regex|candidate length|raw candidate|segmentation diagnostics/i.test(text)) issues.add("Contains raw extraction diagnostics.");
@@ -391,10 +393,12 @@ export function detectLowQualityCardIssues(item: Partial<RevisionItem>): string[
 
 function detectBrokenMathIssues(target: string): string[] {
   const issues: string[] = [];
-  if (/[ϕ]/.test(target)) issues.push("Contains raw phi extraction artefacts.");
-  if (/ϕˆ|p\?|p¯\?|δXi|\bN\s+i\s*=\s*1\b/.test(target)) issues.push("Contains raw Monte Carlo math artefacts.");
-  if (/\?\[|∑N\s+1\s+N|varp\?/i.test(target)) issues.push("Contains broken math notation.");
+  if (/[ϕ](?![a-z])/i.test(target) && !/\\\(|\\phi|\\varphi/.test(target)) issues.push("Contains raw phi extraction artefacts.");
+  if (/ϕˆ|p\?(?!\w)|p˜\?|p¯\?|δXi\(|\bδXi\b|\bN\s+i\s*=\s*1\b|\bESS\s*N\b(?!\s*=)/.test(target)) issues.push("Contains raw Monte Carlo math artefacts.");
+  if (/\?\[|∑N\s+1\s+N|varp\?|p˜\?/i.test(target)) issues.push("Contains broken math notation.");
   if (/\\operatorname\{varp\?\}|\\mathrm\{MC\?/.test(target)) issues.push("Contains unresolved estimator notation.");
+  if (/[\u0001\u0002\u0003]/.test(target)) issues.push("Contains C0 control characters (STX/ETX/ETX).");
+  if (/\bBIBLIOGRAPHY\b/i.test(target)) issues.push("Possible bibliography leakage.");
   return issues;
 }
 
@@ -413,21 +417,45 @@ function resolveMathProfile(profile: MathNormalizationProfile, hint: string): Ex
   return "generic";
 }
 
+/** Replace literal `p?` OCR artefacts with \\(p^\\star\\) only when nearby context suggests the target density. */
+function replacePQuestionWithTargetStar(source: string) {
+  return source.replace(/\bp\?/g, (match, offset, full) => {
+    if (isInsideInlineMath(full, offset)) return match;
+    const window = `${full.slice(Math.max(0, offset - 72), offset)} ${full.slice(offset + match.length, Math.min(full.length, offset + match.length + 72))}`.toLowerCase();
+    if (
+      /\b(target|importance|proposal|sampling|density|unnormali|normalis|weight|marginal|likelihood|evidence|posterior|prior|snis|is\s+estimator|mc\s+estimator|finite\s+var|support\s+condition|optimal\s+proposal|mixture|self[-\s]?normali|ess|ratio)\b/.test(
+        window,
+      )
+    )
+      return "\\(p^\\star\\)";
+    return match;
+  });
+}
+
 function normalizeMonteCarloSamplingMath(source: string) {
   let text = source;
   const replacements: Array<[RegExp, string]> = [
-    [/\bϕˆ_N_MC\b/g, "\\(\\hat\\phi^N_{\\mathrm{MC}}\\)"],
-    [/\bϕˆ_N_IS\b/g, "\\(\\hat\\phi^N_{\\mathrm{IS}}\\)"],
-    [/\bϕˆ_N_SNIS\b/g, "\\(\\hat\\phi^N_{\\mathrm{SNIS}}\\)"],
-    [/\b(?:phi|ϕ)\s*hat\s*\^?\s*N\s*_\s*MC\b/gi, "\\(\\hat\\phi^N_{\\mathrm{MC}}\\)"],
-    [/\b(?:phi|ϕ)\s*hat\s*\^?\s*N\s*_\s*IS\b/gi, "\\(\\hat\\phi^N_{\\mathrm{IS}}\\)"],
-    [/\b(?:phi|ϕ)\s*hat\s*\^?\s*N\s*_\s*SNIS\b/gi, "\\(\\hat\\phi^N_{\\mathrm{SNIS}}\\)"],
+    [/ϕˆ\s*_?\s*N\s*_\s*\{?\s*MC\s*\}?/g, "\\(\\hat{\\phi}^{N}_{\\mathrm{MC}}\\)"],
+    [/ϕˆ\s*_?\s*N\s*_\s*\{?\s*IS\s*\}?/g, "\\(\\hat{\\phi}^{N}_{\\mathrm{IS}}\\)"],
+    [/ϕˆ\s*_?\s*N\s*_\s*\{?\s*SNIS\s*\}?/g, "\\(\\hat{\\phi}^{N}_{\\mathrm{SNIS}}\\)"],
+    [/\bϕˆ\s*_?\s*MC\b/g, "\\(\\hat{\\phi}^{N}_{\\mathrm{MC}}\\)"],
+    [/\bϕˆ\s*_?\s*IS\b/g, "\\(\\hat{\\phi}^{N}_{\\mathrm{IS}}\\)"],
+    [/\bϕˆ\s*_?\s*SNIS\b/g, "\\(\\hat{\\phi}^{N}_{\\mathrm{SNIS}}\\)"],
+    [/\bϕˆ_N_MC\b/g, "\\(\\hat{\\phi}^{N}_{\\mathrm{MC}}\\)"],
+    [/\bϕˆ_N_IS\b/g, "\\(\\hat{\\phi}^{N}_{\\mathrm{IS}}\\)"],
+    [/\bϕˆ_N_SNIS\b/g, "\\(\\hat{\\phi}^{N}_{\\mathrm{SNIS}}\\)"],
+    [/\b(?:phi|ϕ)\s*hat\s*\^?\s*N\s*_\s*MC\b/gi, "\\(\\hat{\\phi}^{N}_{\\mathrm{MC}}\\)"],
+    [/\b(?:phi|ϕ)\s*hat\s*\^?\s*N\s*_\s*IS\b/gi, "\\(\\hat{\\phi}^{N}_{\\mathrm{IS}}\\)"],
+    [/\b(?:phi|ϕ)\s*hat\s*\^?\s*N\s*_\s*SNIS\b/gi, "\\(\\hat{\\phi}^{N}_{\\mathrm{SNIS}}\\)"],
+    [/\bESS\s*_?\s*N\b/gi, "\\(\\mathrm{ESS}_N\\)"],
+    [/\bδ\s*X\s*_?\s*i\s*\(\s*dx\s*\)/gi, "\\(\\delta_{X_i}(dx)\\)"],
     [/\bEp\?/g, "\\(\\mathbb{E}_{p^\\star}\\)"],
     [/\bEq\b/g, "\\(\\mathbb{E}_q\\)"],
-    [/\bvarp\?/gi, "\\(\\operatorname{var}_{p^\\star}\\)"],
+    [/\bVar\s*_?\{?\s*p\?\s*\}?/gi, "\\(\\operatorname{Var}_{p^\\star}\\)"],
+    [/\bvarp\?/gi, "\\(\\operatorname{Var}_{p^\\star}\\)"],
     [/\bvarq\b/gi, "\\(\\operatorname{var}_q\\)"],
+    [/\bp˜\?/g, "\\(\\tilde p^\\star\\)"],
     [/\bp¯\?/g, "\\(\\bar p^\\star\\)"],
-    [/\bp\?/g, "\\(p^\\star\\)"],
     [/\bϕ¯\b/g, "\\(\\bar\\phi\\)"],
     [/\bϕˆ\b/g, "\\(\\hat\\phi\\)"],
     [/\bϕ\b/g, "\\(\\phi\\)"],
@@ -444,6 +472,7 @@ function normalizeMonteCarloSamplingMath(source: string) {
     [/\bO\s*\(\s*1\s*\/\s*√\s*N\s*\)/g, "\\(O(1/\\sqrt N)\\)"],
   ];
   for (const [regex, replacement] of replacements) text = replaceOutsideInlineMath(text, regex, () => replacement, false);
+  text = replacePQuestionWithTargetStar(text);
   text = replaceOutsideInlineMath(
     text,
     /(?:\^?N\s*)?_\{\s*mathrm\{(MC|IS|SNIS)\}\s*\}/g,
@@ -621,8 +650,8 @@ export function extractConceptName(candidate: RevisionCandidate | undefined, ite
 
   if (theoremLike(item.type)) {
     if (number === "2.5" || /\bpositive semi-definite\b/i.test(statement) && /\bcovariance function\b/i.test(statement)) return "Covariance function validity";
-    if (number === "3.2" || /\bsimple Kriging\b/i.test(statement)) return "Simple Kriging";
-    if (number === "3.3" || /\bordinary Kriging\b/i.test(statement)) return "Ordinary Kriging";
+    if ((number === "3.2" || /\bsimple Kriging\b/i.test(statement)) && /\bkriging|simple kriging|blup|predictor\b/i.test(statement)) return "Simple Kriging";
+    if ((number === "3.3" || /\bordinary Kriging\b/i.test(statement)) && /\bkriging|ordinary kriging|blup\b/i.test(statement)) return "Ordinary Kriging";
     if (/\bBochner'?s theorem\b/i.test(item.title) || /\bspectral measure\b/i.test(statement)) return "Bochner's theorem";
     if (number === "2.2" || /\bjoint cumulative distribution\b/i.test(statement)) return "Random field finite-dimensional distributions";
     if (explicitTitleConcept && !/^(theorem|lemma|proposition|corollary)(\s+\d|\b)/i.test(explicitTitleConcept)) {

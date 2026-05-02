@@ -1,5 +1,6 @@
 import { APP_VERSION } from "@/lib/app-version";
 import { extractExampleAndExerciseItemsForDebug, type DebugExampleExerciseItem, type LecturePackFile } from "@/lib/local-study-pack-extraction";
+import { cleanUploadedStudySourceText } from "@/lib/source-text-cleanup";
 import type { StudyState } from "@/lib/storage";
 import type { GeneratedPracticeQuestion } from "@/lib/student-revision-schema";
 import type { GeneratedCramSheet, GeneratedRevisionPack } from "@/lib/student-revision-schema";
@@ -40,13 +41,16 @@ export type RevisionPackDebugJson = {
     missingSections: string[];
     possibleClassificationIssues: string[];
     warnings: string[];
+    sourceContamination: string[];
+    duplicateQuizPrompts: string[];
+    overlongBlocks: string[];
   };
 };
 
 const SOFT_HYPHEN = "\u00ad";
 const BOM_OR_PRIVATE = /[\uFEFF\uFFFE\uFFFD]/g;
 
-const LITERAL_BAD_TOKENS: string[] = ["p?", "ϕˆ", "varp?", "δXi", "\uFFFE"];
+const LITERAL_BAD_TOKENS: string[] = ["p?", "p˜?", "ϕˆ", "varp?", "δXi", "\uFFFE", "\u0001", "\u0002", "\u0003"];
 
 function toLecturePackFiles(notesFiles: StudyFile[]): LecturePackFile[] {
   return notesFiles.map((f) => ({
@@ -94,7 +98,8 @@ function buildCleanedExtraction(
       if (!warnings.includes(x)) warnings.push(x);
     }
   }
-  return { text: null, warnings };
+  const cleaned = rawText ? cleanUploadedStudySourceText(rawText) : null;
+  return { text: cleaned, warnings };
 }
 
 function collectExtractionErrors(notesFiles: StudyFile[]): string[] {
@@ -168,6 +173,75 @@ function* iterPackStrings(pack: GeneratedRevisionPack, examples: DebugExampleExe
     yield x.body;
     yield x.rawBlock;
   }
+}
+
+function generatedPackBlob(pack: GeneratedRevisionPack, examples: DebugExampleExerciseItem[], exercises: DebugExampleExerciseItem[]): string {
+  return Array.from(iterPackStrings(pack, examples, exercises)).join("\n");
+}
+
+function collectExtendedQuality(
+  pack: GeneratedRevisionPack,
+  practiceQuestions: GeneratedPracticeQuestion[] | undefined,
+  sourceText: string,
+  examples: DebugExampleExerciseItem[],
+  exercises: DebugExampleExerciseItem[],
+): { sourceContamination: string[]; duplicateQuizPrompts: string[]; overlongBlocks: string[] } {
+  const sourceContamination: string[] = [];
+  const src = sourceText.toLowerCase();
+  const lowerGen = generatedPackBlob(pack, examples, exercises).toLowerCase();
+  const contaminationTerms = [
+    "simple kriging",
+    "ordinary kriging",
+    "markov chain",
+    "irreducibility",
+    "aperiodicity",
+    "detailed balance",
+  ];
+  for (const term of contaminationTerms) {
+    if (lowerGen.includes(term) && !src.includes(term)) {
+      sourceContamination.push(`Generated output mentions “${term}” but combined source text does not — verify hallucination.`);
+    }
+  }
+  if (/\bbibliography\b/i.test(lowerGen) && !/\bbibliography\b/i.test(src)) {
+    sourceContamination.push("Possible bibliography leakage in generated study pack strings.");
+  }
+  for (const p of pack.proofs) {
+    if (/irreducibility|aperiodicity/i.test(p.commonMistake) && !/\bmarkov\b|\bchain\b/i.test(src)) {
+      sourceContamination.push(`Proof “${p.name.slice(0, 80)}” uses generic Markov-chain pitfall text — check chapter fit.`);
+    }
+  }
+
+  const duplicateQuizPrompts: string[] = [];
+  const counts = new Map<string, number>();
+  for (const q of practiceQuestions ?? []) {
+    const k = (q.question ?? "")
+      .toLowerCase()
+      .replace(/\s+/g, " ")
+      .slice(0, 160);
+    if (k.length < 10) continue;
+    counts.set(k, (counts.get(k) ?? 0) + 1);
+  }
+  for (const [k, n] of counts) {
+    if (n > 2) duplicateQuizPrompts.push(`Quiz prompt repeated ${n} times: ${k.slice(0, 140)}`);
+  }
+
+  const wc = (s: string) => (s.trim().match(/\S+/g) ?? []).length;
+  const overlongBlocks: string[] = [];
+  for (const d of pack.definitions) {
+    if (wc(d.definition ?? "") > 1200) overlongBlocks.push(`Definition “${d.term}” exceeds 1200 words.`);
+    if (/\bBIBLIOGRAPHY\b/i.test(d.definition ?? "")) overlongBlocks.push(`Definition “${d.term}” contains bibliography marker.`);
+  }
+  for (const p of pack.proofs) {
+    if (wc(p.statement ?? "") > 1200 || wc(p.proofSkeleton ?? "") > 1200) {
+      overlongBlocks.push(`Proof “${p.name.slice(0, 60)}” exceeds 1200 words in statement or skeleton.`);
+    }
+  }
+  for (const ex of examples) {
+    const blob = `${ex.body}\n${ex.rawBlock}`;
+    if (wc(blob) > 1200) overlongBlocks.push(`Example ${ex.formalLabel} body/raw exceeds 1200 words.`);
+  }
+
+  return { sourceContamination, duplicateQuizPrompts, overlongBlocks };
 }
 
 function findBadMathTokens(
@@ -302,6 +376,8 @@ export function buildRevisionPackDebugJson(store: RevisionPackDebugInput): Revis
   const badMath = findBadMathTokens(pack, exBlocks, exeBlocks);
   const missing = missingSectionWarnings(pack, exBlocks, exeBlocks);
   const classification = classificationIssues(exBlocks, exeBlocks);
+  const sourceUnion = (raw.text ? cleanUploadedStudySourceText(raw.text) : "") || lectureFiles.map((f) => f.parsedText ?? "").join("\n\n");
+  const extended = collectExtendedQuality(pack, store.practiceQuestions, sourceUnion, exBlocks, exeBlocks);
 
   const qcWarnings: string[] = [];
   for (const e of extractionErrors) qcWarnings.push(`Extraction error: ${e}`);
@@ -336,6 +412,9 @@ export function buildRevisionPackDebugJson(store: RevisionPackDebugInput): Revis
       missingSections: missing,
       possibleClassificationIssues: classification,
       warnings: qcWarnings,
+      sourceContamination: extended.sourceContamination,
+      duplicateQuizPrompts: extended.duplicateQuizPrompts,
+      overlongBlocks: extended.overlongBlocks,
     },
   };
 
@@ -359,7 +438,15 @@ export function downloadTextFile(content: string, mimeType: string, filename: st
 }
 
 export function totalQualityWarningCount(q: RevisionPackDebugJson["qualityChecks"]): number {
-  return q.badMathTokens.length + q.missingSections.length + q.possibleClassificationIssues.length + q.warnings.length;
+  return (
+    q.badMathTokens.length +
+    q.missingSections.length +
+    q.possibleClassificationIssues.length +
+    q.warnings.length +
+    q.sourceContamination.length +
+    q.duplicateQuizPrompts.length +
+    q.overlongBlocks.length
+  );
 }
 
 function mdDefinitionBullets(items: unknown[]): string {
