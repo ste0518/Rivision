@@ -53,7 +53,7 @@ export default function DashboardPage() {
 
   return (
     <div className="space-y-10">
-      <PageHeader title="Home" description="Your exam-focused revision workspace." />
+      <PageHeader title="Dashboard" description="Your exam-focused revision workspace." />
 
       {onboarding ? (
         <section className="rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50/80 to-white px-6 py-10 sm:px-10">

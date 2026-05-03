@@ -244,6 +244,26 @@ export function useStudyStore() {
     ensureActivePackId() {
       setState((current) => (current.activePackId ? current : { ...current, activePackId: createId("ws") }));
     },
+    /** Clear derived pack state before a fresh generation run (uploaded files unchanged). */
+    resetDerivedPackState() {
+      setState((current) => ({
+        ...current,
+        revisionItems: [],
+        rejectedItems: [],
+        embeddedItems: [],
+        reviewSessions: [],
+        courseMap: undefined,
+        courseStructureMap: undefined,
+        courseKnowledgeMap: undefined,
+        assessmentMap: undefined,
+        examPriorityMap: undefined,
+        revisionPack: undefined,
+        curationReport: undefined,
+        studentRevisionPack: undefined,
+        practiceQuestions: [],
+        practiceAttempts: [],
+      }));
+    },
     /** Replace lecture files and wipe generated content; keeps assessment uploads when `keepGuidance` is true (default). */
     replaceNotesAndClearGenerated(notesFiles: StudyFile[], keepGuidance = true) {
       setState((current) => ({

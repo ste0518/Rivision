@@ -179,6 +179,7 @@ function renderDocumentSet(kind: "NOTES" | "GUIDANCE", docs: ParsedDocument[]) {
 function detectCandidateLines(fullText: string) {
   const lines = fullText.replace(/\r\n/g, "\n").split("\n").map((line) => line.trim()).filter(Boolean);
   const explicitRegex = /^(definition|theorem|lemma|proposition|corollary|formula|proof|algorithm|example|remark|assumption|result|property)\b/i;
-  const implicitRegex = /(we say that|is called|is defined as|process is stationary if|covariance function is valid if|estimator is given by|the blup is|the semivariogram is|it follows that|the following result|therefore, we have|this gives)/i;
+  const implicitRegex =
+    /(we say that|is called|is defined as|is given by|satisfies|we have|therefore,?|hence,?|it follows that|the following result|this gives|show that|derive|let\s+.+\s+be\s+(?:a|an)\s+)/i;
   return lines.filter((line) => explicitRegex.test(line) || implicitRegex.test(line));
 }

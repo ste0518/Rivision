@@ -10,12 +10,24 @@
  *   6. Build the cram sheet from typed items only — never directly from raw blocks.
  */
 
-import { profileDocument, sanitiseExtractedText, splitDocumentTextLayers, type DocumentProfile } from "@/lib/document-profile";
+import {
+  detectSourceContamination,
+  findProminentTermsAbsentFromSource,
+  profileDocument,
+  sanitiseExtractedText,
+  splitDocumentTextLayers,
+  type DocumentProfile,
+} from "@/lib/document-profile";
 import { mathStatusFromValidation, validateLatexSnippet } from "@/lib/latex-validate";
 import { applyMathNormalisation } from "@/lib/math-normalisation";
 import { cleanUploadedStudySourceText } from "@/lib/source-text-cleanup";
 import { convertCommonMathToLatex } from "@/lib/revision-item-utils";
-import { buildSectionBlocks, buildSectionBlocksFromChapterMap, type SectionBlock } from "@/lib/section-blocks";
+import {
+  buildSectionBlocks,
+  buildSectionBlocksFromChapterMap,
+  ensureMinimumSectionBlocksForLongNotes,
+  type SectionBlock,
+} from "@/lib/section-blocks";
 import {
   extractSectionHeadingsFromText,
   findFirstInteriorSectionHeadingIndex,
@@ -192,26 +204,6 @@ function advancePastLabelSeparator(text: string, pos: number): number {
 
 type LabelHit = { index: number; bodyStart: number; kind: string; number: string; paren?: string };
 
-/** Preferred display titles for Proposition 3.1–3.6 in Monte Carlo integration / IS chapters (matches common lecture numbering). */
-const MC_CHAPTER_PROPOSITION_TITLE: Record<string, string> = {
-  "3.1": "Monte Carlo estimator is unbiased",
-  "3.2": "Variance of the Monte Carlo estimator",
-  "3.3": "Importance sampling estimator is unbiased",
-  "3.4": "Variance of the importance sampling estimator",
-  "3.5": "SNIS mean squared error bound",
-  "3.6": "Unbiased marginal likelihood estimator",
-};
-
-/** Chapter-specific exam traps for Proposition 3.1–3.6 (Monte Carlo integration). */
-const MC_PROP_COMMON_MISTAKE: Record<string, string> = {
-  "3.1": "Forgetting to justify linearity of expectation for the sample average, or confusing target draws with proposal draws.",
-  "3.2": "Forgetting the 1/N factor in the variance of the estimator, or confusing Var(φ(X)) with Var(φ̂).",
-  "3.3": "Using p instead of q inside expectations under the proposal, or forgetting the support condition q(x)>0 whenever p*(x)>0.",
-  "3.4": "Mixing Var_q(φ̂_IS) with MC variance formulas, or mishandling the centred square form.",
-  "3.5": "Assuming SNIS is unbiased, or using raw weights instead of normalised weights in the SNIS average.",
-  "3.6": "Confusing marginal likelihood with a posterior density, or mishandling proposal normalisation in the evidence estimator.",
-};
-
 function isMonteCarloIntegrationHeavyContext(noteText: string): boolean {
   const lower = noteText.toLowerCase();
   return (
@@ -329,20 +321,6 @@ function importanceForKind(kind: PackItemKind): DefinitionImportance {
 function inferTitleFromStatement(kind: PackItemKind, body: string, formalNumber: string, courseContext: string): string | undefined {
   if (kind !== "proposition" && kind !== "theorem" && kind !== "lemma") return undefined;
   const raw = body.replace(/^\s+/, "").replace(/\s+/g, " ");
-  const lower = raw.toLowerCase();
-  if (kind === "proposition" && isMonteCarloIntegrationHeavyContext(courseContext) && MC_CHAPTER_PROPOSITION_TITLE[formalNumber]) {
-    return MC_CHAPTER_PROPOSITION_TITLE[formalNumber];
-  }
-  if (kind === "proposition") {
-    if (/unbiased.*monte\s*carlo|monte\s*carlo.*unbiased|\bmc\s+estimator\b.*unbiased/i.test(lower)) return "Monte Carlo estimator is unbiased";
-    if (/variance.*monte\s*carlo|monte\s*carlo.*variance|var\s*\(\s*\\?hat\s*\\?phi|variance\s+of\s+the\s+mc/i.test(lower)) return "Monte Carlo estimator variance";
-    if (/importance\s*sampling.*unbiased|unbiased.*importance\s*sampling/i.test(lower)) return "Importance sampling estimator is unbiased";
-    if (/importance\s*sampling.*variance|variance.*importance\s*sampling/i.test(lower)) return "Importance sampling estimator variance";
-    if (/marginal\s+likelihood|evidence|p\s*\(\s*y\s*\)/i.test(lower) && /unbiased/i.test(lower)) return "Unbiased marginal likelihood estimator";
-    if (/snis|self[-\s]?normalised.*mse|self[-\s]?normalized.*mse|mse.*snis/i.test(lower) && !/marginal|likelihood|evidence/i.test(lower)) {
-      return "SNIS mean squared error bound";
-    }
-  }
   const sentence = raw.split(/(?<=[.!?])\s+/)[0] ?? raw;
   let s = sentence.replace(/^Let\s+[^.]{4,120}\.\s*/i, "").trim();
   s = s.replace(/^(then|thus|hence)\s+/i, "").trim();
@@ -387,9 +365,6 @@ function inferDisplayTitle(
   if (kind === "proposition") {
     if (lower.includes("chain rule for sampling")) return "Chain Rule for Sampling";
     if (lower.includes("conditional bayes") || lower.includes("conditional bayes rule")) return "Conditional Bayes rule";
-    if (isMonteCarloIntegrationHeavyContext(courseContext) && MC_CHAPTER_PROPOSITION_TITLE[formalNumber]) {
-      return MC_CHAPTER_PROPOSITION_TITLE[formalNumber]!;
-    }
     const inferred = inferTitleFromStatement(kind, body, formalNumber, courseContext);
     if (inferred) return inferred;
   }
@@ -600,7 +575,7 @@ export function normalizeMathText(text: string): string {
 // ---------------------------------------------------------------------------
 
 const FORMULA_LIKE =
-  /[=∑∫∇∂κτφγ′″√⟨〉]|\\sum|\\int|\\propto|∝|\\\(|\$|\\frac|\\mathbb\{P\}|\\mathbb\{E\}|\\partial|\\nabla|\\times|\\langle|M\^\{|M\^|p\^\*|p_n|p\?\(|K\(|\bsum\b|\bmin\b|\balpha\b|q\(|\bmod\b|\bPhi\b|\bN\(|\bGamma\b|\bExp\b|\bUnif\b|\bPois\b|\bint\b|\bE\[|\bVar\b|\bdet\b/i;
+  /[=∑∫∇∂κτφγ′″√⟨〉]|\\sum|\\int|\\propto|∝|\\\(|\$|\\frac|\\mathbb\{P\}|\\mathbb\{E\}|\\partial|\\nabla|\\times|\\langle|M\^\{|M\^|p\^\*|p_n|p\?\(|K\(|\bsum\b|\bmin\b|\balpha\b|q\(|\bmod\b|\bPhi\b|\bN\(|\bGamma\b|\bExp\b|\bUnif\b|\bPois\b|\bint\b|\bE\[|\bVar\b|\bdet\b|\\mathrm\{tr\}|\\operatorname\{tr\}|d\s*\/\s*d\s*t|\/\s*d\s*t/i;
 
 const FORMULA_SECONDARY =
   /[=]|\\sum|\\int|∑|∫|∝|∇|∂|κ|τ|φ|\\\\propto|conditional|\\mathbb\{P\}|\\mathbb\{E\}|M_\{|M\^|p_n|p\^\*|p\?\(|K\(|q\(|\bP\(|\br\(x|\bMij\b|\bx_\{|u_n|F_X|lambda|Sigma|sqrt|∏|prop(?:ortional)?|Bayes|det|tr|⟨|〉|\|\s*\|/i;
@@ -1267,7 +1242,7 @@ function countFormulaLikeLines(text: string): number {
     if (looksLikeFormula(trimmed, relaxed)) n += 1;
     else if (
       relaxed &&
-      /\b(defined\s+as|given\s+by|we\s+define|is\s+expressed\s+as|denoted\s+by|model|condition|where)\b/i.test(trimmed) &&
+      /\b(defined\s+as|given\s+by|we\s+define|is\s+expressed\s+as|denoted\s+by|model|equation|condition|where)\b/i.test(trimmed) &&
       trimmed.length < 220
     ) {
       n += 1;
@@ -1283,7 +1258,7 @@ function extractCueAdjacentFormulaLines(
   defaultWhenToUse: string,
 ): GeneratedFormulaItem[] {
   const cue =
-    /\b(defined\s+as|given\s+by|we\s+define|is\s+expressed\s+as|denoted\s+by|stationarity\s+condition|invertibility\s+condition|satisfies|therefore|hence|we\s+have)\b/i;
+    /\b(defined\s+as|given\s+by|we\s+define|is\s+expressed\s+as|denoted\s+by|stationarity\s+condition|invertibility\s+condition|satisfies|therefore|hence|we\s+have|model|equation)\b/i;
   const lines = text.split("\n");
   let offset = 0;
   const out: GeneratedFormulaItem[] = [];
@@ -1662,9 +1637,7 @@ function harvestConceptualDefinitions(
 
 function proofSkeletonFromBody(title: string, body: string): { skeleton: string; mistake: string } {
   const lower = `${title} ${body}`.toLowerCase();
-  const mcChapter =
-    /\bmonte\s*carlo\b|\bimportance\s*sampling\b|\bsnis\b|\bself[-\s]?normali/.test(lower) &&
-    !/\b(simple\s+kriging|ordinary\s+kriging|semivariogram)\b/.test(lower);
+  const mcChapter = /\bmonte\s*carlo\b|\bimportance\s*sampling\b|\bsnis\b|\bself[-\s]?normali/.test(lower);
   if (mcChapter && /monte\s*carlo/.test(lower) && /unbiased|expectation/.test(lower) && /hat|mc\s+estimator|\bphi\b/i.test(lower)) {
     return {
       skeleton:
@@ -1761,7 +1734,7 @@ function proofStepsFromBody(body: string): string[] {
 }
 
 /** Build proof items from theorem/proposition/lemma blocks plus paired Proof bodies only (no orphan Proof paragraphs). */
-function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[]): GeneratedProofItem[] {
+function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[], hasPastEvidence: boolean): GeneratedProofItem[] {
   const STMT_KINDS: PackItemKind[] = ["theorem", "proposition", "lemma"];
   const stmtBlocks = blocks.filter((b) => STMT_KINDS.includes(b.kind));
 
@@ -1782,8 +1755,6 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[]): 
     if (/^(example|sketch|remark)\b/i.test(statementOnly) || /^consider\s+the\s+following\s+example\b/i.test(statementOnly)) continue;
     if (/\btheorem\s+1\s+for\s+the\s+proof\b/i.test(statementOnly)) continue;
 
-    const mcMistake =
-      b.kind === "proposition" && MC_PROP_COMMON_MISTAKE[b.number] ? MC_PROP_COMMON_MISTAKE[b.number] : mistake;
     const steps = proofStepsFromBody(proof.body);
 
     const proofExcerpt = b.rawBlock.slice(0, 900);
@@ -1794,8 +1765,8 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[]): 
       statement: normalizeMathText(statementOnly.slice(0, 1500)),
       proofSteps: steps,
       proofSkeleton: `Proof outline: ${normalizeMathText(proof.body.slice(0, 800))}\n\nKey idea: ${skeleton}`,
-      commonMistake: mcMistake,
-      importance: "must_know",
+      commonMistake: mistake,
+      importance: hasPastEvidence ? "must_know" : "needs_review",
       source: b.sourceFile,
       sourceFile: b.sourceFile,
       sourcePage: b.sourcePage,
@@ -2080,10 +2051,6 @@ function extractDerivationCards(text: string, primaryFile: string, sections: Ext
       re: /(?:^|\n)\s*((?:Hence|Therefore|Thus|So),?[^\n]{4,220})\n([\s\S]{60,14000}?)(?=\n\s*(?:Chapter\s+\d+|\d+(?:\.\d+)+\s+[A-Za-z]|Hence|Therefore|Worked\s+example|Proof\s*[.:])\b)/gi,
       type: "derivation",
     },
-    {
-      re: /(?:^|\n)\s*((?:Positive\s+semi[- ]definite|Toeplitz|variogram)[^\n]{4,180})\n([\s\S]{60,12000}?)(?=\n\s*(?:Chapter\s+\d+|Worked\s+example|Proof\s*[.:])\b)/gi,
-      type: "derivation",
-    },
   ];
 
   for (const { re, type } of patterns) {
@@ -2224,6 +2191,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   if (!sectionBlocks.length) {
     sectionBlocks = buildSectionBlocks(cleanedPrinted, primaryStem);
   }
+  sectionBlocks = ensureMinimumSectionBlocksForLongNotes(sectionBlocks, cleanedPrinted, primaryStem, pageCountForBlocks);
 
   const sectionsMerged = mergeSectionHeadingsForPack(lectureFiles, cleanedPrinted);
   const sections = extractSectionHeadings(cleanedPrinted);
@@ -2249,13 +2217,15 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     ...(documentProfile.tocParseResult?.headingCandidates ?? []),
     ...documentProfile.chapterMap.map((c) => c.chapterTitle).filter((t) => t.length > 4),
   ];
-  const definitions = dedupeDefinitions([
+  const sourceBlobLower = cleanedPrinted.toLowerCase();
+  const extractionRejected: Array<{ kind: string; reason: string; detail?: string }> = [];
+  let definitions = dedupeDefinitions([
     ...formalDefs,
     ...harvestConceptualDefinitions(cleanedPrinted, primaryName, sections, formalDefs, documentProfile, tocHeadingHints),
   ]);
+  definitions = stripPackItemsFailingGrounding(definitions, sourceBlobLower, "definition", extractionRejected);
 
   const cleanText = cleanedPrinted;
-  const sourceBlobLower = cleanedPrinted.toLowerCase();
   const whenHint = defaultFormulaWhenToUse(cleanText);
   const lineFormulas = extractFormulaLines(cleanText, primaryName, sections, whenHint);
   const canonicalFormulas = extractCanonicalFormulas(cleanText, primaryName, sections);
@@ -2272,7 +2242,6 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     [...canonicalFormulas, ...blockFormulas, ...lineFormulas, ...cueFormulas],
     maxFormulas,
   );
-  const extractionRejected: Array<{ kind: string; reason: string; detail?: string }> = [];
   let formulas = filterFormulasForChapterContext(mergedFormulas, cleanText);
   const afterChapterFilter = formulas;
   formulas = filterStaleFormulas(formulas, sourceBlobLower);
@@ -2285,9 +2254,11 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
       });
     }
   }
+  formulas = stripPackItemsFailingGrounding(formulas, sourceBlobLower, "formula", extractionRejected);
 
-  let proofs = blocksToProofs(blocks, proofBlocks);
+  let proofs = blocksToProofs(blocks, proofBlocks, hasPastEvidence);
   proofs = dedupeProofs(proofs);
+  proofs = stripPackItemsFailingGrounding(proofs, sourceBlobLower, "proof", extractionRejected);
 
   const derivations = extractDerivationCards(cleanedPrinted, primaryName, sections);
   const proofsAndDerivations = mergeProofsAndDerivations(proofs, derivations);
@@ -2415,6 +2386,11 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   };
 
   const topActionableIssues: string[] = [];
+  if (documentProfile.criticalTocParseFailure) {
+    topActionableIssues.push(
+      "Table of contents detected on early pages but chapterMap is empty — extraction cannot segment by chapters (critical).",
+    );
+  }
   if (!documentProfile.title && !documentProfile.courseName) {
     topActionableIssues.push("Document profile failed: title/courseName null — check first pages after PDF extraction.");
   }
@@ -2555,7 +2531,51 @@ function dedupeProofs(items: GeneratedProofItem[]): GeneratedProofItem[] {
     if (out.some((x) => (x.sourceLabel && x.sourceLabel === p.sourceLabel) || jaccardSimilarity(x.statement, p.statement) > 0.85)) continue;
     out.push(p);
   }
-  return out.slice(0, 16);
+  return out.slice(0, 96);
+}
+
+function packItemGroundingBlob(item: {
+  name?: string;
+  term?: string;
+  statement?: string;
+  definition?: string;
+  latex?: string;
+  whenToUse?: string;
+}): string {
+  return [item.name, item.term, item.statement, item.definition, item.latex, item.whenToUse].filter(Boolean).join("\n").toLowerCase();
+}
+
+function stripPackItemsFailingGrounding<T extends { sourceExcerpt?: string; grounding?: SourceGrounding }>(
+  items: T[],
+  sourceLower: string,
+  kind: string,
+  extractionRejected: Array<{ kind: string; reason: string; detail?: string }>,
+): T[] {
+  const out: T[] = [];
+  for (const item of items) {
+    const excerpt = String(item.sourceExcerpt ?? item.grounding?.sourceExcerpt ?? "").trim();
+    if (excerpt.length < 8) {
+      const it = item as unknown as { name?: string; term?: string };
+      extractionRejected.push({
+        kind,
+        reason: "missing_source_excerpt",
+        detail: it.name ?? it.term ?? kind,
+      });
+      continue;
+    }
+    const blob = packItemGroundingBlob(item as unknown as Parameters<typeof packItemGroundingBlob>[0]);
+    if (detectSourceContamination(blob, sourceLower).length) {
+      extractionRejected.push({ kind, reason: "source_contamination", detail: blob.slice(0, 140) });
+      continue;
+    }
+    const absent = findProminentTermsAbsentFromSource(blob, sourceLower);
+    if (absent.length >= 3) {
+      extractionRejected.push({ kind, reason: "terms_absent_from_source", detail: absent.slice(0, 5).join(", ") });
+      continue;
+    }
+    out.push(item);
+  }
+  return out;
 }
 
 function guessTopicsFallback(files: LecturePackFile[]): GeneratedCourseTopic[] {

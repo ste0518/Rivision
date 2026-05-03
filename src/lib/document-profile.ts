@@ -41,6 +41,8 @@ export type DocumentProfile = {
   subjectArea: string | null;
   documentType: DocumentType;
   pageCount: number;
+  /** True when a contents/table-of-contents region was detected but no usable chapter rows could be parsed (critical quality gate). */
+  criticalTocParseFailure?: boolean;
   chapterMap: ChapterMapEntry[];
   detectedTopics: string[];
   detectedNotation: NotationEntry[];
@@ -512,11 +514,26 @@ export function buildSourceKeywordSet(sourceLower: string): Set<string> {
 /**
  * Flag generated phrases that introduce prominent topic terms absent from source.
  */
+/** Multi-word or symbol-heavy phrases that indicate one course template leaking into another upload. */
 export function detectSourceContamination(generatedBlobLower: string, sourceLower: string): string[] {
   const issues: string[] = [];
   const candidates = [
+    "semivariogram",
+    "ordinary kriging",
+    "simple kriging",
+    "kriging predictor",
+    "kriging system",
+    "blup",
+    "best linear unbiased predictor",
+    "sar model",
+    "car model",
+    "conditional autoregressive",
+    "simultaneous autoregressive",
+    "local characteristic",
+    "poisson process intensity",
     "importance sampling",
     "self-normalised importance",
+    "self-normalized importance",
     "snis",
     "effective sample size",
     "monte carlo integration",
@@ -528,8 +545,6 @@ export function detectSourceContamination(generatedBlobLower: string, sourceLowe
     "metropolis hastings ratio",
     "irreducibility",
     "aperiodicity",
-    "simple kriging",
-    "ordinary kriging",
   ];
 
   for (const term of candidates) {
@@ -538,6 +553,40 @@ export function detectSourceContamination(generatedBlobLower: string, sourceLowe
     }
   }
   return issues;
+}
+
+const GENERIC_STOPWORDS = new Set([
+  "definition",
+  "theorem",
+  "proposition",
+  "therefore",
+  "following",
+  "condition",
+  "understanding",
+  "introduction",
+  "techniques",
+  "significant",
+  "probability",
+  "distribution",
+  "expectation",
+  "variance",
+  "function",
+  "random",
+  "variable",
+  "continuous",
+]);
+
+/**
+ * Long alphabetic tokens in generated text that never occur in the source (possible hallucination).
+ */
+export function findProminentTermsAbsentFromSource(generatedTextLower: string, sourceLower: string): string[] {
+  const hits = generatedTextLower.match(/\b[a-z]{10,}\b/g) ?? [];
+  const out: string[] = [];
+  for (const w of hits) {
+    if (GENERIC_STOPWORDS.has(w)) continue;
+    if (!sourceLower.includes(w)) out.push(w);
+  }
+  return [...new Set(out)].slice(0, 12);
 }
 
 export type ProfileDocumentInput = {
@@ -641,12 +690,20 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
     profileWarnings.push("Table of contents detected but fewer than 3 parsed sections — check PDF line breaks.");
   }
 
+  const earlyForToc = combined.slice(0, Math.min(45_000, combined.length));
+  const contentsBanner = /\b(table\s+of\s+)?contents\b/i.test(earlyForToc);
+  const tocLeaderLines =
+    /(?:^|\n)\s*\d{1,2}(?:\.\d+){0,2}\s+.{6,180}?(?:\.{3,}|…|(?:\s\.){3,}|\s{5,})\s*\d{1,4}\s*$/m.test(earlyForToc) ||
+    /(?:^|\n)\s*[A-Za-z][^.\n]{6,140}(?:\.{3,}|…|(?:\s\.){3,}|\s{5,})\s*\d{1,4}\s*$/m.test(earlyForToc);
+  const criticalTocParseFailure = Boolean(contentsBanner && tocLeaderLines && chapterMap.length === 0);
+
   return {
     title,
     courseName,
     subjectArea,
     documentType: classifyDocumentType(cleanedPagesArg, combined),
     pageCount,
+    criticalTocParseFailure,
     chapterMap,
     detectedTopics,
     detectedNotation,

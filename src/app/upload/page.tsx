@@ -115,6 +115,7 @@ export default function UploadPage() {
     setGenerating(true);
     setMessage("");
     try {
+      store.resetDerivedPackState();
       store.ensureActivePackId();
       const uploadedFiles = [...store.notesFiles, ...store.guidanceFiles];
       const allParsedDocuments = uploadedFiles.map(toRoleParsedDocument);
@@ -304,10 +305,12 @@ export default function UploadPage() {
             <Button size="lg" disabled={loading || generating || !canGenerate} onClick={() => void runGeneratePack()}>
               {generating ? "Generating…" : "Generate revision pack"}
             </Button>
-            {!canGenerate && allFiles.length > 0 ? (
-              <p className="text-sm text-amber-800">Upload at least one lecture note or one assessment file to generate a useful pack.</p>
+            {!canGenerate && allFiles.length === 0 ? (
+              <p className="text-sm text-amber-900">Upload at least one file to start — lecture notes and/or assessment materials.</p>
             ) : null}
-            {!canGenerate && allFiles.length === 0 ? <p className="text-sm text-slate-500">Add files above to get started.</p> : null}
+            {!canGenerate && allFiles.length > 0 ? (
+              <p className="text-sm text-amber-800">Set at least one file to lecture notes, formula sheet, or an assessment role so extraction has source material.</p>
+            ) : null}
             {message ? <p className="text-sm text-slate-600">{message}</p> : null}
           </div>
         </CardContent>

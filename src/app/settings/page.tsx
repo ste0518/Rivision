@@ -232,8 +232,9 @@ export default function SettingsPage() {
               <CardTitle>Advanced routes</CardTitle>
             </CardHeader>
             <CardContent className="flex flex-wrap gap-2 text-sm">
-              <Link className="text-blue-700 underline" href="/extract">Extraction debug</Link>
-              <Link className="text-blue-700 underline" href="/cards">Full cards editor</Link>
+              <Link className="text-blue-700 underline" href="/extract">Extract (legacy debug)</Link>
+              <Link className="text-blue-700 underline" href="/cards">Cards editor (legacy)</Link>
+              <Link className="text-blue-700 underline" href="/debug/smoke-test">Run sample smoke test</Link>
               <Link className="text-blue-700 underline" href="/debug/course-builder">Course builder fixture</Link>
             </CardContent>
           </Card>

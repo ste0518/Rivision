@@ -56,7 +56,7 @@ export function parseTableOfContents(
   }
 
   const early = pages
-    .filter((p) => p.pageNumber <= Math.min(5, pages.length))
+    .filter((p) => p.pageNumber <= 15)
     .sort((a, b) => a.pageNumber - b.pageNumber)
     .map((p) => p.text)
     .join("\n\n");
@@ -72,6 +72,7 @@ export function parseTableOfContents(
   const lines = tocWindow.split("\n").map((l) => normaliseTocLine(l)).filter((l) => l.length > 0);
 
   const rawEntries: RawEntry[] = [];
+  let unnumberedCounter = 0;
   let i = 0;
   while (i < lines.length) {
     let line = lines[i] ?? "";
@@ -79,6 +80,28 @@ export function parseTableOfContents(
       i += 1;
       continue;
     }
+    // Unnumbered TOC row: "Introduction .......... 5" or "Appendix A ... 20"
+    const unnumbered = line.match(
+      /^(.{8,160}?)(?:\s*(?:\.{2,}|…|(?:\s\.){3,}|\s{5,}))\s*(\d{1,3})\s*$/,
+    );
+    if (
+      unnumbered &&
+      !/^\d/.test(unnumbered[1] ?? "") &&
+      !/^contents$/i.test((unnumbered[1] ?? "").trim()) &&
+      !/^page$/i.test((unnumbered[1] ?? "").trim())
+    ) {
+      const title = (unnumbered[1] ?? "").replace(/\s+/g, " ").trim();
+      const page = Number(unnumbered[2]);
+      if (title.length >= 8 && Number.isFinite(page) && page >= 1 && page <= pageCount) {
+        rawTocLines.push(line);
+        unnumberedCounter += 1;
+        rawEntries.push({ label: `u${unnumberedCounter}`, title, page, raw: line });
+        headingCandidates.push(title);
+        i += 1;
+        continue;
+      }
+    }
+
     if (!/^\d{1,2}\s+/.test(line) && !/^\d{1,2}\.\d+/.test(line)) {
       i += 1;
       continue;
@@ -158,6 +181,18 @@ export function parseTableOfContents(
     const nb = Number(b.label.split(".")[0]);
     return na - nb;
   });
+
+  const unnumberedOnly = rawEntries.filter((e) => /^u\d+$/.test(e.label));
+  if (unnumberedOnly.length) {
+    seq = [...seq, ...unnumberedOnly].sort((a, b) => a.page - b.page || a.title.localeCompare(b.title));
+    const seenKey = new Set<string>();
+    seq = seq.filter((e) => {
+      const k = `${e.label}|${e.page}|${e.title.slice(0, 60)}`;
+      if (seenKey.has(k)) return false;
+      seenKey.add(k);
+      return true;
+    });
+  }
 
   if (seq.length < 3 && rawEntries.length >= 3) {
     seq = [...rawEntries].sort((a, b) => a.page - b.page || Number(a.label.split(".")[0]) - Number(b.label.split(".")[0]));

@@ -121,7 +121,7 @@ export function cardFromProof(p: GeneratedProofItem): RevisionItem {
     pageNumber: p.sourcePage,
     section: p.sourceSection,
     tags: ["study_pack", "proof"],
-    importance: "must_know",
+    importance: p.importance === "must_know" ? "must_know" : "partial",
     cardPurpose: "proof_recall",
     questionPrompt: `Prove or explain: ${p.proofName ?? p.name}`,
     answer: `${p.proofSkeleton}${stepsBlock}\n\nCommon mistake: ${p.commonMistake}`,

@@ -124,7 +124,7 @@ export interface GeneratedFormulaItem {
   grounding?: SourceGrounding;
 }
 
-export type StudyPackProofImportance = "must_know" | "useful" | "optional";
+export type StudyPackProofImportance = "must_know" | "needs_review" | "useful" | "optional";
 
 export interface GeneratedProofItem {
   id: string;

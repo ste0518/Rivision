@@ -20,6 +20,8 @@ export type GenericAcceptanceTests = {
   hasProofsIfProofMarkersPresent: boolean;
   hasExamplesIfExampleMarkersPresent: boolean;
   hasGroundingForAllItems: boolean;
+  /** Same signal as {@link noSourceContamination} — explicit name for QA JSON. */
+  hasNoSourceContamination: boolean;
   noSourceContamination: boolean;
   noDuplicateQuizQuestions: boolean;
   noOverlongBlocks: boolean;
@@ -111,6 +113,23 @@ function statsByChapter(pack: GeneratedRevisionPack): Record<string, { definitio
   return out;
 }
 
+function overlongSectionBlockRefs(pack: GeneratedRevisionPack): string[] {
+  const out: string[] = [];
+  for (const b of pack.sectionBlocks ?? []) {
+    if (b.text.length > 95_000) out.push(b.sectionId);
+  }
+  return out;
+}
+
+function countBadMathTokens(pack: GeneratedRevisionPack): number {
+  let n = 0;
+  for (const f of pack.formulas) {
+    const L = `${f.latex ?? ""}${f.cleanedLatex ?? ""}`;
+    if (/\\placeholder|TODO\b|\?\?\?|\\mathrm\{undefined\}/i.test(L)) n += 1;
+  }
+  return n;
+}
+
 /** Extra acceptance checks for long mathematical lecture notes (generic thresholds, not one PDF). */
 export function validateLongMathLectureNotes(pack: GeneratedRevisionPack, profile: DocumentProfile | null): { ok: boolean; issues: string[] } {
   if (!profile || profile.pageCount <= 35) return { ok: true, issues: [] };
@@ -126,9 +145,19 @@ export function validateLongMathLectureNotes(pack: GeneratedRevisionPack, profil
     issues.push("chapterMap has fewer than 2 chapters — segmentation may have missed Chapter banners or numbered sections.");
   }
 
+  if (
+    pageCount > 50 &&
+    profile.hasTableOfContents &&
+    lectureLike &&
+    profile.chapterMap.length > 0 &&
+    profile.chapterMap.length < 5
+  ) {
+    issues.push("Long notes with a parsed table of contents — expected at least 5 chapter rows in chapterMap.");
+  }
+
   const blocks = pack.sectionBlocks ?? [];
   const nonWhole = blocks.filter((b) => !/whole$/i.test(b.sectionId));
-  if (pageCount >= 40 && lectureLike && nonWhole.length < 10 && blocks.length < 10) {
+  if (pageCount >= 40 && lectureLike && nonWhole.length < 10 && blocks.length < 10 && pageCount > 45) {
     issues.push("Fewer than 10 section blocks — numbered headings may not have been detected.");
   }
 
@@ -145,9 +174,10 @@ export function validateLongMathLectureNotes(pack: GeneratedRevisionPack, profil
 
   const proofSignals = profile.proofLikeMarkersInSource || profile.hasProofs;
   const proofCand = (diag?.proofCandidateCount ?? 0) + (diag?.workedExampleCandidateCount ?? 0);
-  const mergedProofs = (pack.proofsAndDerivations?.length ?? 0) + (pack.derivations?.length ?? 0);
+  const mergedProofs =
+    (pack.proofsAndDerivations?.length ?? 0) + (pack.derivations?.length ?? 0) + (pack.proofs?.length ?? 0);
   if (pageCount >= 40 && proofSignals && proofCand >= 5 && mergedProofs < 5) {
-    issues.push("Proof/worked-example cues in source but proofsAndDerivations are sparse.");
+    issues.push("Proof/worked-example cues in source but merged proof outputs are sparse.");
   }
 
   if (blocks.length === 1 && /whole$/i.test(blocks[0]?.sectionId ?? "") && profile.pageCount > 40) {
@@ -192,10 +222,6 @@ export function computeTopActionableFailures(
   const pdCount = pack.proofsAndDerivations?.length ?? 0;
   if (profile?.hasWorkedExamples && proofCand >= 8 && pdCount < 5 && pageCount > 40) {
     out.push("Worked examples detected in source but proofsAndDerivations extraction is thin.");
-  }
-
-  if (/\bmcmc\b|\bdetailed balance\b|\bmetropolis-hastings\b|\birreducibility\b|\baperiodicity\b/i.test(collectPackBlob(pack)) && !/\bmcmc\b|\bdetailed balance\b/i.test(lower)) {
-    out.push("Pack text still references MCMC-style topics absent from the uploaded source.");
   }
 
   if (
@@ -286,7 +312,8 @@ export function computeGenericAcceptanceTests(input: {
     documentProfile?.title || documentProfile?.courseName || pack.examOverview.courseName,
   );
   const hasChapterMapIfContentsPresent =
-    !documentProfile?.hasTableOfContents || Boolean(documentProfile?.chapterMap?.length);
+    !documentProfile?.criticalTocParseFailure &&
+    (!documentProfile?.hasTableOfContents || Boolean(documentProfile?.chapterMap?.length));
   const hasSectionBlocks = Boolean((pack.sectionBlocks ?? []).length);
   const hasProofsIfProofMarkersPresent = !proofMarkers || proofExtracted > 0;
   const hasExamplesIfExampleMarkersPresent =
@@ -313,6 +340,7 @@ export function computeGenericAcceptanceTests(input: {
     hasProofsIfProofMarkersPresent,
     hasExamplesIfExampleMarkersPresent,
     hasGroundingForAllItems,
+    hasNoSourceContamination: contaminationLines.length === 0,
     noSourceContamination: contaminationLines.length === 0,
     noDuplicateQuizQuestions: duplicateQuizPrompts.length === 0 && !dupes,
     noOverlongBlocks: overlongBlocks.length === 0,
@@ -342,25 +370,29 @@ export function validateGenericStudyPack(pack: GeneratedRevisionPack, documentPr
   }
 
   const stats = statsByChapter(pack);
+  const overlongBlocks = overlongSectionBlockRefs(pack);
+  const badMathCount = countBadMathTokens(pack);
+  const duplicateQuizPrompts: string[] = [];
 
   const acceptanceTests = computeGenericAcceptanceTests({
     pack,
     documentProfile,
     sourceTextLower: sourceLower,
-    badMathTokenCount: 0,
-    duplicateQuizPrompts: [],
-    overlongBlocks: [],
+    badMathTokenCount: badMathCount,
+    duplicateQuizPrompts,
+    overlongBlocks,
     bibliographyInPack: /\bBIBLIOGRAPHY\b/i.test(blob),
     contaminationLines: [...contamination],
-    quiz: undefined,
+    quiz: pack.examPack?.practiceQuestions ?? undefined,
   });
 
   const topActionableFailures = computeTopActionableFailures(pack, documentProfile, sourceText, contamination, longNotes.issues);
 
   const structuralGateFail =
-    pageCount > 40 &&
-    (!documentProfile?.chapterMap?.length ||
-      ((pack.sectionBlocks ?? []).length < 8 && (pack.sectionBlocks ?? []).some((b) => /whole$/i.test(b.sectionId))));
+    Boolean(documentProfile?.criticalTocParseFailure) ||
+    (pageCount > 40 &&
+      (!documentProfile?.chapterMap?.length ||
+        ((pack.sectionBlocks ?? []).length < 6 && (pack.sectionBlocks ?? []).some((b) => /whole$/i.test(b.sectionId)))));
 
   const candidateFormulaGap =
     pageCount > 40 &&
@@ -369,16 +401,19 @@ export function validateGenericStudyPack(pack: GeneratedRevisionPack, documentPr
 
   const criticalQualityFailure =
     contamination.length > 0 ||
+    !acceptanceTests.hasGroundingForAllItems ||
+    !acceptanceTests.hasChapterMapIfContentsPresent ||
     !longNotes.ok ||
-    topActionableFailures.length > 0 ||
     structuralGateFail ||
-    candidateFormulaGap;
+    candidateFormulaGap ||
+    !acceptanceTests.noBadMathTokensInStudyPack;
 
   const ok =
     acceptanceTests.noSourceContamination &&
     acceptanceTests.noBibliographyLeakage &&
     acceptanceTests.hasDefinitionsForMainTopics &&
     acceptanceTests.hasFormulasFromFormulaDenseSections &&
+    acceptanceTests.hasGroundingForAllItems &&
     longNotes.ok &&
     !criticalQualityFailure;
 

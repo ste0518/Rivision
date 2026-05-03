@@ -218,9 +218,52 @@ export default function PackPage() {
         description="Structured revision built from your uploads. Everything stays on your device."
       />
 
+      {debugExport && packQuality ? (
+        <Card className="border-slate-200 bg-slate-50/80">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Pack quality</CardTitle>
+            <CardDescription>
+              Status:{" "}
+              <span className={packQuality.criticalQualityFailure ? "font-semibold text-red-800" : packQuality.ok ? "font-semibold text-green-800" : "font-semibold text-amber-800"}>
+                {packQuality.criticalQualityFailure ? "Critical issues" : packQuality.ok ? "OK" : "Needs attention"}
+              </span>
+            </CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3 text-sm">
+            {(packQuality.topActionableFailures.length ? packQuality.topActionableFailures : packQuality.recommendations).slice(0, 6).length ? (
+              <div>
+                <p className="text-xs font-medium text-slate-600">Top actionable issues</p>
+                <ul className="mt-1 list-inside list-disc text-slate-700">
+                  {(packQuality.topActionableFailures.length ? packQuality.topActionableFailures : packQuality.recommendations).slice(0, 6).map((line, i) => (
+                    <li key={i}>{line}</li>
+                  ))}
+                </ul>
+              </div>
+            ) : (
+              <p className="text-slate-600">No blocking issues flagged by generic checks.</p>
+            )}
+            <div className="flex flex-wrap gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  const base = revisionPackDebugFilenameBase(debugExport.metadata.sourceFilename);
+                  downloadTextFile(JSON.stringify(debugExport, null, 2), "application/json", `revision-pack-debug-${base}.json`);
+                }}
+              >
+                Download Debug JSON
+              </Button>
+              <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-medium hover:bg-slate-50" href="/upload">
+                Regenerate with safer extraction
+              </Link>
+            </div>
+          </CardContent>
+        </Card>
+      ) : null}
+
       {packQuality?.criticalQualityFailure ? (
         <div className="rounded-lg border-2 border-red-300 bg-red-50 px-4 py-4 text-sm text-red-950 shadow-sm">
-          <p className="text-base font-semibold">Generated with critical quality failures</p>
+          <p className="text-base font-semibold">Generated with critical quality failures. Do not rely on this pack yet.</p>
           <p className="mt-2 text-red-900">
             This pack should not be treated as exam-ready until you confirm extraction issues below. Everything here is derived only from your files — no cloud generation.
           </p>
@@ -234,9 +277,9 @@ export default function PackPage() {
               className="inline-flex h-10 items-center justify-center rounded-md border border-red-400 bg-white px-4 text-sm font-medium text-red-950 hover:bg-red-100"
               href="/upload"
             >
-              Regenerate from Upload
+              Regenerate with safer extraction
             </Link>
-            <p className="self-center text-xs text-red-800">Replace notes and generate again for a clean extraction pass — clearing stale cues from previous uploads.</p>
+            <p className="self-center text-xs text-red-800">Open Upload, replace notes if needed, and generate again for a clean pass without stale topic cues.</p>
           </div>
         </div>
       ) : null}

@@ -327,8 +327,11 @@ function criticalFailureFromAcceptance(at: GenericAcceptanceTests, manualFailure
     !at.noBadMathTokensInStudyPack ||
     !at.noBibliographyLeakage ||
     !at.noSourceContamination ||
+    !at.hasNoSourceContamination ||
     !at.noDuplicateQuizQuestions ||
-    !at.noOverlongBlocks
+    !at.noOverlongBlocks ||
+    !at.hasGroundingForAllItems ||
+    !at.hasChapterMapIfContentsPresent
   ) {
     return true;
   }

@@ -59,7 +59,10 @@ function extractInlineArrays(body: string): {
     const tr = ln.trim();
     if (!tr) continue;
     if (/^Worked\s+example\s*:/i.test(tr)) workedExamples.push(tr.slice(0, 600));
-    else if (/^(Proof|Show\s+that)\b/i.test(tr)) {
+    else if (/^(Proof|Show\s+that|Derive)\b/i.test(tr)) {
+      proofsAndDerivations.push(tr.slice(0, 600));
+      proofCandidates.push(tr.slice(0, 600));
+    } else if (/^(Hence|Therefore|Thus),?\b/i.test(tr) && /[=∑∫∂]/.test(tr)) {
       proofsAndDerivations.push(tr.slice(0, 600));
       proofCandidates.push(tr.slice(0, 600));
     } else if (/^(Theorem|Lemma|Proposition|Corollary)\s+\d/i.test(tr)) theoremCandidates.push(tr.slice(0, 600));
@@ -162,7 +165,7 @@ function headingKey(h: StructuralHeading, idx: number): string {
 }
 
 /** When headings are missing, split on `[Page N]` every maxPages so extraction never sees one 90-page slab. */
-function splitWholeDocumentByPageWindows(fullText: string, primarySourceLabel: string, maxPages: number): SectionBlock[] {
+export function buildSectionBlocksByPageWindows(fullText: string, primarySourceLabel: string, maxPages: number): SectionBlock[] {
   const text = sanitiseExtractedText(fullText.replace(/\r\n/g, "\n"));
   const startPg = pageAtOffset(text, 0);
   const endPg = pageAtOffset(text, Math.max(0, text.length - 1));
@@ -256,7 +259,7 @@ export function buildSectionBlocks(fullText: string, primarySourceLabel = "notes
   const structural = collectStructuralHeadings(text);
 
   if (structural.length === 0) {
-    const fallback = splitWholeDocumentByPageWindows(fullText, primarySourceLabel, MAX_SECTION_PAGES);
+    const fallback = buildSectionBlocksByPageWindows(fullText, primarySourceLabel, MAX_SECTION_PAGES);
     if (fallback.length) return fallback;
     return [
       {
@@ -339,7 +342,7 @@ export function buildSectionBlocks(fullText: string, primarySourceLabel = "notes
   const wholeOnly =
     deduped.length === 1 && /whole$/i.test(deduped[0]?.sectionId ?? "") && deduped[0]!.endPage - deduped[0]!.startPage >= MAX_SECTION_PAGES;
   if (wholeOnly) {
-    const split = splitWholeDocumentByPageWindows(fullText, primarySourceLabel, MAX_SECTION_PAGES);
+    const split = buildSectionBlocksByPageWindows(fullText, primarySourceLabel, MAX_SECTION_PAGES);
     if (split.length > 1) return split;
   }
   return deduped;
@@ -355,6 +358,20 @@ function dedupeBlocks(blocks: SectionBlock[]): SectionBlock[] {
     out.push(b);
   }
   return out.slice(0, 500);
+}
+
+/** Long notes should not be one giant extraction slab when structure is missing (local-first QA). */
+export function ensureMinimumSectionBlocksForLongNotes(
+  blocks: SectionBlock[],
+  fullText: string,
+  primarySourceLabel: string,
+  pageCount: number,
+): SectionBlock[] {
+  if (pageCount <= 30 || blocks.length >= 5) return blocks;
+  const target = Math.max(5, Math.min(30, Math.ceil(pageCount / 7)));
+  const maxPages = Math.max(4, Math.ceil(pageCount / target));
+  const split = buildSectionBlocksByPageWindows(fullText, primarySourceLabel, maxPages);
+  return split.length >= 5 ? split : blocks;
 }
 
 function pagesAsSegments(fullText: string): Array<{ page: number; text: string }> {

@@ -6,7 +6,7 @@ import { BookOpenCheck } from "lucide-react";
 import { cn } from "@/lib/utils";
 
 const nav = [
-  ["Home", "/dashboard"],
+  ["Dashboard", "/dashboard"],
   ["Upload", "/upload"],
   ["Study pack", "/pack"],
   ["Practice", "/quiz"],
