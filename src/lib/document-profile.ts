@@ -5,6 +5,7 @@
 
 import { collectStructuralHeadings, type StructuralHeading } from "@/lib/lecture-segmentation";
 import { extractSectionHeadingsFromText, mergeExtractedSectionHeadings, type ExtractedSectionHeading } from "@/lib/section-headings";
+import { parseTableOfContents, type TocParseResult } from "@/lib/table-of-contents";
 
 export type DocumentType =
   | "lecture_notes"
@@ -52,6 +53,20 @@ export type DocumentProfile = {
   hasProofs: boolean;
   hasAlgorithms: boolean;
   hasHandwrittenAnnotations: boolean;
+  hasTableOfContents: boolean;
+  hasChapterHeadings: boolean;
+  hasDefinitions: boolean;
+  hasLemmas: boolean;
+  hasPropositions: boolean;
+  hasTheorems: boolean;
+  hasProofBlocks: boolean;
+  hasExamples: boolean;
+  hasFormulas: boolean;
+  /** Heuristic 0–1 confidence in profiling signals. */
+  confidence: number;
+  warnings: string[];
+  /** Latest TOC parse (may be empty if no contents page found). */
+  tocParseResult?: TocParseResult;
 };
 
 export type TextLayers = {
@@ -201,7 +216,14 @@ export function classifyDocumentType(
     solutionHeadingScore >= 16 ||
     (solutionHeadingScore >= 9 && /\b(answer\s+key|official\s+solutions)\b/i.test(lower));
 
-  const lectureStrength = lectureStructureScore + lectureCueScore;
+  let lectureStrength = lectureStructureScore + lectureCueScore;
+  const openingSlice = combined.slice(0, 18_000);
+  if (
+    /\b(contents|table\s+of\s+contents)\b/i.test(early) &&
+    /\d{1,2}\s+[A-Za-z].{6,120}(?:\.{2,}|…|\s{4,})\s*\d{1,3}/im.test(openingSlice)
+  ) {
+    lectureStrength += 7;
+  }
 
   if (examPaperStrong && lectureStrength < 7) return "past_paper";
   if (problemSheetStrong && lectureStrength < 8 && !solutionsDominant) return "problem_sheet";
@@ -214,11 +236,24 @@ export function classifyDocumentType(
   return "unknown";
 }
 
-function inferSubjectArea(text: string): string | null {
-  const lower = text.slice(0, 120_000).toLowerCase();
+function inferSubjectArea(title: string | null, chapterTitles: string[], text: string): string | null {
+  const lower = text.slice(0, 180_000).toLowerCase();
+  const seed = `${title ?? ""}\n${chapterTitles.slice(0, 48).join("\n")}`.toLowerCase();
+
   const scores: Array<[string, number]> = [
-    ["Time series analysis", /\b(time\s+series|autocovariance|autocorrelation|arima|sarima|arma|stationar|white\s+noise)\b/i.test(lower) ? 3 : 0],
-    ["Monte Carlo / simulation", /\b(monte\s*carlo|importance\s+sampling|\bmcmc\b|markov\s+chain\s+monte)\b/i.test(lower) ? 3 : 0],
+    [
+      "Differential geometry / geometry of curves and surfaces",
+      (/\b(curvature|frenet|gauss-bonnet|theorema\s+egregium|second\s+fundamental|first\s+fundamental|geodesic|geodesics)\b/i.test(seed) ||
+        /\b(torsion|binormal|principal\s+normal|regular\s+curve|parametrised\s+curve)\b/i.test(seed) ||
+        /\b(differential\s+geometry|surfaces?\b.*\btangent\s+plane)\b/i.test(lower)) ?
+        4
+      : 0,
+    ],
+    [
+      "Time series analysis",
+      /\b(time\s+series|autocovariance|autocorrelation|arima|sarima|\barma\s*\(|spectral\s+density|seasonal\s+difference)\b/i.test(lower) ? 3 : 0,
+    ],
+    ["Monte Carlo / simulation", /\b(monte\s*carlo\s+integration|importance\s+sampling|\bmcmc\b|markov\s+chain\s+monte)\b/i.test(lower) ? 3 : 0],
     ["Spatial statistics", /\b(kriging|semivariogram|variogram|geostat)\b/i.test(lower) ? 3 : 0],
     ["Probability & stochastic processes", /\b(stochastic\s+process|probability\s+space|sigma\s*algebra)\b/i.test(lower) ? 2 : 0],
   ];
@@ -226,8 +261,51 @@ function inferSubjectArea(text: string): string | null {
   return best[1] >= 2 ? best[0] : null;
 }
 
+/** Topic labels derived from headings + anchored phrases in source (no substring-only matches like "arch" ⊂ "March"). */
+function extractDetectedTopicsFromDocument(combined: string, headingTitles: string[]): string[] {
+  const topics = new Set<string>();
+  for (const h of headingTitles) {
+    const t = h.replace(/\s+/g, " ").trim();
+    if (t.length >= 5 && t.length < 160) topics.add(t.slice(0, 120));
+  }
+
+  const slice = combined.slice(0, 260_000).toLowerCase();
+  const anchored: Array<[string, RegExp]> = [
+    ["white noise", /\bwhite\s+noise\b/i],
+    ["autocovariance", /\bautocovariance\b/i],
+    ["autocorrelation", /\bautocorrelation\b/i],
+    ["stationarity", /\bstationarity\b|\bstationary\b/i],
+    ["ARIMA", /\barima\b/i],
+    ["ARCH model", /\bARCH\s*\(/i],
+    ["Monte Carlo integration", /\bmonte\s*carlo\b/i],
+    ["Markov chain Monte Carlo", /\bmcmc\b|\bmarkov\s+chain\s+monte\b/i],
+    ["Gaussian curvature", /\bgaussian\s+curvature\b/i],
+    ["mean curvature", /\bmean\s+curvature\b/i],
+    ["Christoffel symbols", /\bchristoffel\b/i],
+    ["Gauss–Bonnet", /\bgauss[-\s]*bonnet\b/i],
+    ["Theorema Egregium", /\btheorema\s+egregium\b|\begregium\b/i],
+    ["Frenet frame", /\bfrenet\b/i],
+    ["geodesic", /\bgeodesics?\b/i],
+    ["torsion", /\btorsion\b/i],
+    ["regular curve", /\bregular\s+curve\b/i],
+    ["arc-length", /\barc[-\s]?length\b/i],
+    ["winding number", /\bwinding\s+number\b/i],
+    ["tangent plane", /\btangent\s+plane\b/i],
+    ["Gauss map", /\bgauss\s+map\b/i],
+    ["second fundamental form", /\bsecond\s+fundamental\s+form\b/i],
+    ["first fundamental form", /\bfirst\s+fundamental\s+form\b/i],
+  ];
+
+  for (const [label, re] of anchored) {
+    if (re.test(slice)) topics.add(label);
+  }
+
+  return [...topics].slice(0, 90);
+}
+
 function inferTitleFromFirstPages(text: string): string | null {
-  const before = text.split(/\[Page\s+5\]/i)[0] ?? text;
+  const beforeContents = text.split(/\n\s*Contents\s*\n/i)[0] ?? text;
+  const before = beforeContents.split(/\[Page\s+5\]/i)[0] ?? beforeContents;
   const lines = before
     .split("\n")
     .map((l) => sanitiseExtractedText(l).trim())
@@ -235,8 +313,11 @@ function inferTitleFromFirstPages(text: string): string | null {
 
   const skip = (l: string) =>
     /^\[Page\b/i.test(l) ||
+    /^\[Source\b/i.test(l) ||
     /^(department|faculty|school)\s+of\b/i.test(l) ||
-    (/^(imperial|university|college)\b/i.test(l) && l.length < 100);
+    (/^(imperial|university|college)\b/i.test(l) && l.length < 100) ||
+    /^contents$/i.test(l) ||
+    /^table\s+of\s+contents$/i.test(l);
 
   for (const line of lines) {
     if (skip(line)) continue;
@@ -267,8 +348,17 @@ function buildChapterMapFromSections(
 ): ChapterMapEntry[] {
   if (!sections.length) return [];
 
-  const major = sections.filter((s) => /^\d+$/.test(s.sectionNumber) || /^Chapter\s+/i.test(s.title));
-  const use = major.length ? major : sections.filter((s) => !s.sectionNumber.includes(".") || s.sectionNumber.split(".").length <= 2);
+  const dottedSections = sections.filter((s) => /\d+\.\d+/.test(s.sectionNumber));
+  const majorBannerOnly = sections.filter((s) => /^\d+$/.test(s.sectionNumber) || /^Chapter\s+/i.test(s.title));
+  /** Prefer x.y / x.y.z headings when present — top-level "3 TITLE" banners alone collapse nuance (e.g. §3.1, §3.2 under Ch.3). */
+  let use: ExtractedSectionHeading[];
+  if (dottedSections.length >= 3) {
+    use = dottedSections;
+  } else if (majorBannerOnly.length) {
+    use = majorBannerOnly;
+  } else {
+    use = sections.filter((s) => !s.sectionNumber.includes(".") || s.sectionNumber.split(".").length <= 2);
+  }
 
   const sorted = [...(use.length ? use : sections)].sort((a, b) => a.startOffset - b.startOffset);
   const out: ChapterMapEntry[] = [];
@@ -469,7 +559,6 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
   const structuralHeadings = collectStructuralHeadings(combined);
   const chapterMapStructural = buildChapterMapFromStructuralHeadings(structuralHeadings, pageCount, combined);
   const chapterMapFallback = buildChapterMapFromSections(sections, pageCount, combined);
-  const chapterMap = chapterMapStructural.length >= 2 ? chapterMapStructural : chapterMapFallback;
 
   const hasWorkedExamples =
     /\bworked\s+example\b/i.test(combined) ||
@@ -489,44 +578,68 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
   const hasHandwrittenAnnotations = handwritingNoisePages.length > 0 || hwRatio > 0.02 || layers.handwrittenText.length > 400;
 
   const headingTopics = sections.map((s) => `${s.title}`.trim()).filter((t) => t.length >= 4);
-  const topicSet = new Set<string>();
-  for (const t of headingTopics) topicSet.add(t.slice(0, 120));
-  const bodySnippet = combined.slice(0, 200_000).toLowerCase();
-  for (const phrase of [
-    "stationarity",
-    "autocovariance",
-    "autocorrelation",
-    "white noise",
-    "moving average",
-    "autoregressive",
-    "arma",
-    "arch",
-    "arima",
-    "seasonal adjustment",
-    "spectral analysis",
-    "periodogram",
-    "general linear process",
-    "variance",
-    "covariance",
-    "vector autoregression",
-    "cross-spectral",
-  ]) {
-    if (bodySnippet.includes(phrase)) topicSet.add(phrase);
-  }
-  const detectedTopics = [...topicSet].slice(0, 80);
+  const detectedTopics = extractDetectedTopicsFromDocument(combined, headingTopics);
 
   const notationSource =
     layers.printedText.replace(/\s+/g, " ").trim().length > 400 ? layers.printedText : combined;
   const detectedNotation = dedupeNotationCounts(notationSource);
 
   const title = inferTitleFromFirstPages(combined);
-  const subjectArea = inferSubjectArea(combined);
-  const courseName = title ?? subjectArea;
 
   const cleanedPagesArg =
     input.cleanedPages.length ?
       input.cleanedPages.map((p) => ({ pageNumber: p.pageNumber, text: sanitiseExtractedText(p.text.replace(/\r\n/g, "\n")) }))
     : [{ pageNumber: 1, text: combined.slice(0, 120_000) }];
+
+  const tocParseResult = parseTableOfContents(cleanedPagesArg, pageCount);
+  const structuralOrFallback = chapterMapStructural.length >= 2 ? chapterMapStructural : chapterMapFallback;
+  let chapterMap = structuralOrFallback;
+
+  const dottedSubsections = (rows: ChapterMapEntry[]) =>
+    rows.filter((c) => /\d+\.\d+/.test(c.chapterLabel) || /\d+\.\d+/.test(c.chapterTitle)).length;
+  const dottedFromHeadings = dottedSubsections(structuralOrFallback);
+  const dottedFromToc = dottedSubsections(tocParseResult.chapterMap);
+
+  /** Prefer TOC when it is long enough; but do not drop fine-grained x.y headings for a coarse TOC with fewer dotted sections. */
+  const tocCoarserThanHeadings = dottedFromHeadings > 2 && dottedFromToc < dottedFromHeadings - 1;
+  const useToc =
+    tocParseResult.found &&
+    tocParseResult.chapterMap.length >= 3 &&
+    tocParseResult.chapterMap.length >= structuralOrFallback.length &&
+    !tocCoarserThanHeadings;
+
+  if (useToc) {
+    chapterMap = tocParseResult.chapterMap.map((ch) => ({
+      ...ch,
+      sectionHeadings: ch.sectionHeadings ?? [],
+    }));
+  }
+
+  const chapterHeadingTitles = chapterMap.map((c) => c.chapterTitle).filter(Boolean);
+  const subjectArea = inferSubjectArea(title, chapterHeadingTitles.length ? chapterHeadingTitles : headingTopics, combined);
+  const courseName = title ?? subjectArea;
+
+  const hasLemmaLabels = /\blemma\s+\d/i.test(combined);
+  const hasPropLabels = /\bproposition\s+\d/i.test(combined);
+  const hasThmLabels = /\btheorem\s+\d/i.test(combined);
+  const hasDefLabels = /\bdefinition\s+\d/i.test(combined);
+  const hasProofLabels = /(?:^|\n)\s*proof\s*[.:]/im.test(combined);
+  const hasExampleLabels = /\bexample\s+\d/i.test(combined) || /\bfor\s+instance\b/i.test(combined);
+  const hasFormulaSignals =
+    (combined.match(/[=∑∫∇∂′″√〈〉]/g) ?? []).length > pageCount ||
+    /\bintegral\b|\bdeterminant\b|\\frac/i.test(combined);
+
+  let confidence = 0.45;
+  if (title) confidence += 0.18;
+  if (chapterMap.length >= 5) confidence += 0.15;
+  if (tocParseResult.found) confidence += 0.12;
+  if (detectedTopics.length >= 8) confidence += 0.08;
+  confidence = Math.min(0.95, confidence);
+
+  const profileWarnings: string[] = [...tocParseResult.warnings];
+  if (tocParseResult.found && tocParseResult.chapterMap.length < 3) {
+    profileWarnings.push("Table of contents detected but fewer than 3 parsed sections — check PDF line breaks.");
+  }
 
   return {
     title,
@@ -544,6 +657,18 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
     hasProofs: proofLikeMarkersInSource,
     hasAlgorithms,
     hasHandwrittenAnnotations,
+    hasTableOfContents: tocParseResult.found,
+    hasChapterHeadings: chapterMap.length > 0 || structuralHeadings.length > 0,
+    hasDefinitions: hasDefLabels || /\bis\s+(?:called|defined\s+as)\b/i.test(combined),
+    hasLemmas: hasLemmaLabels,
+    hasPropositions: hasPropLabels,
+    hasTheorems: hasThmLabels,
+    hasProofBlocks: hasProofLabels,
+    hasExamples: hasWorkedExamples || hasExampleLabels,
+    hasFormulas: hasFormulaSignals,
+    confidence,
+    warnings: profileWarnings,
+    tocParseResult,
   };
 }
 

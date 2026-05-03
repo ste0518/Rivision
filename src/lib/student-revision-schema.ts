@@ -178,8 +178,11 @@ export type ExtractionPipelineDiagnostics = {
   chapterCandidateCount: number;
   workedExampleCandidateCount: number;
   proofCandidateCount: number;
+  exampleCandidateCount?: number;
   rejectedItems: Array<{ kind: string; reason: string; detail?: string }>;
   extractionPipelineTrace: string[];
+  /** Mirrors generic QA priority list for Debug JSON / UI. */
+  topActionableIssues?: string[];
 };
 
 export interface GeneratedMethodTemplate {
@@ -222,6 +225,23 @@ export interface GeneratedCramSheet {
   trapBullets: string[];
 }
 
+/** Aggregated exam-oriented artefacts (derived only from the active upload). */
+export interface ExamPackBundle {
+  courseMap: GeneratedCourseTopic[];
+  chapterSummaries: string[];
+  mustKnowDefinitions: string[];
+  mustKnowFormulas: string[];
+  proofChecklist: string[];
+  methodTemplates: GeneratedMethodTemplate[];
+  workedExamples: DebugExtractedExampleExercise[];
+  commonExamQuestionTypes: string[];
+  practiceQuestions: GeneratedPracticeQuestion[];
+  formulaSheet: string[];
+  theoremSheet: string[];
+  lastMinuteCramSheet: GeneratedCramSheet;
+  weakSpotWarnings: string[];
+}
+
 export interface GeneratedRevisionPack {
   generatedAt: string;
   examOverview: ExamOverviewSection;
@@ -250,6 +270,8 @@ export interface GeneratedRevisionPack {
   workedExamples?: DebugExtractedExampleExercise[];
   /** Normalised exercise/problem blocks. */
   extractedExercises?: DebugExtractedExampleExercise[];
+  /** Structured exam-pack view (same-source derived). */
+  examPack?: ExamPackBundle;
 }
 
 export type PracticeSessionQuestion = GeneratedPracticeQuestion & {

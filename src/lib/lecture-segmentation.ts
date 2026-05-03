@@ -67,6 +67,30 @@ export function collectFallbackStructuralHeadings(fullText: string): StructuralH
       startPage: pageAtOffset(text, lineStart),
     });
   }
+
+  const reMajor = /(?:^|\n)\s*(\d{1,2})\s+([A-Z0-9\u00C0-\u024F()][^\n]{4,240})/g;
+  while ((m = reMajor.exec(text)) !== null) {
+    const num = m[1] ?? "";
+    if (/\./.test(num)) continue;
+    const rawTitle = (m[2] ?? "").trim();
+    if (/^\d+\.\d+/.test(rawTitle)) continue;
+    const title = truncateTitle(rawTitle.replace(/\s+/g, " "));
+    if (title.length < 4 || isStructuralNoiseTitle(title) || isLikelyYearOrNoise(num, title)) continue;
+    const n = Number(num);
+    if (!Number.isFinite(n) || n < 1 || n > 80) continue;
+    const idx = m.index ?? 0;
+    const lineStart = text[idx] === "\n" ? idx + 1 : idx;
+    out.push({
+      kind: "section",
+      label: num,
+      title,
+      line: `${num} ${title}`.slice(0, 240),
+      startOffset: lineStart,
+      level: 2,
+      startPage: pageAtOffset(text, lineStart),
+    });
+  }
+
   return dedupeHeadings(out);
 }
 
@@ -151,6 +175,29 @@ export function collectStructuralHeadings(fullText: string): StructuralHeading[]
         level: 1,
       });
       continue;
+    }
+
+    /** Single-index sections common in lecture notes: "1 Regular curves in Euclidean spaces" */
+    const secMajor = t.match(/^(\d{1,2})\s+([A-Za-z0-9\u00C0-\u024F()][^\n]{3,180})$/);
+    if (secMajor && !/^\d{1,2}\.\d/.test(t)) {
+      const num = secMajor[1] ?? "";
+      let rawTitle = (secMajor[2] ?? "").replace(/\s+/g, " ").trim();
+      rawTitle = rawTitle.replace(/^[\s.:)-]+/, "");
+      const title = truncateTitle(rawTitle);
+      if (title.length >= 4 && !isStructuralNoiseTitle(title) && !isLikelyYearOrNoise(num, title)) {
+        const n = Number(num);
+        if (n >= 1 && n <= 60) {
+          push({
+            kind: "section",
+            label: num,
+            title,
+            line: t.slice(0, 240),
+            startOffset: contentStart,
+            level: 2,
+          });
+          continue;
+        }
+      }
     }
 
     const sec = t.match(/^(\d{1,2}\.\d{1,2}(?:\.\d{1,2})?)\s+(.+)/);

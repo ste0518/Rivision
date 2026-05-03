@@ -35,8 +35,14 @@ const pack = buildHeuristicStudentRevisionPack({
 });
 
 const mapTitles = pack.courseMap.map((t) => t.title.toLowerCase());
-assert.ok(mapTitles.some((t) => t.includes("1 introduction")), `course map: ${mapTitles.join(" | ")}`);
-assert.ok(mapTitles.some((t) => t.includes("2") && t.includes("exact generation")), `course map missing ch2: ${mapTitles.join(" | ")}`);
+assert.ok(
+  mapTitles.some((t) => t.includes("1 introduction") || /1\.\d+\s*:.*introduction/i.test(t)),
+  `course map: ${mapTitles.join(" | ")}`,
+);
+assert.ok(
+  mapTitles.some((t) => /\b2\.1\b/.test(t) && /generating|uniform|random\s+variates/i.test(t)),
+  `course map missing ch2: ${mapTitles.join(" | ")}`,
+);
 
 assert.ok(pack.definitions.length >= 2, `definitions: ${pack.definitions.length}`);
 const defTerms = pack.definitions.map((d) => d.term.toLowerCase()).join(" | ");

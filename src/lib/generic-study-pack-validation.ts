@@ -8,12 +8,18 @@ import type { GeneratedPracticeQuestion, GeneratedRevisionPack } from "@/lib/stu
 
 export type GenericAcceptanceTests = {
   hasDocumentProfile: boolean;
+  hasTitleOrCourseName: boolean;
   hasChapterMap: boolean;
+  hasChapterMapIfContentsPresent: boolean;
+  hasSectionBlocks: boolean;
   hasDefinitionsForMainTopics: boolean;
   hasFormulasFromFormulaDenseSections: boolean;
   hasWorkedExamplesIfPresent: boolean;
   hasExercisesIfPresent: boolean;
   hasProofsIfPresent: boolean;
+  hasProofsIfProofMarkersPresent: boolean;
+  hasExamplesIfExampleMarkersPresent: boolean;
+  hasGroundingForAllItems: boolean;
   noSourceContamination: boolean;
   noDuplicateQuizQuestions: boolean;
   noOverlongBlocks: boolean;
@@ -159,7 +165,7 @@ export function computeTopActionableFailures(
   contamination: string[],
   longNoteIssues: string[],
 ): string[] {
-  const out = [...longNoteIssues];
+  const out = [...longNoteIssues, ...(pack.extractionPipelineDiagnostics?.topActionableIssues ?? [])];
   const lower = sourceText.toLowerCase();
   const pageCount = profile?.pageCount ?? 1;
   const diag = pack.extractionPipelineDiagnostics;
@@ -273,14 +279,40 @@ export function computeGenericAcceptanceTests(input: {
       })()
     : false;
 
+  const proofMarkers = documentProfile?.proofLikeMarkersInSource ?? documentProfile?.hasProofs ?? false;
+  const exampleMarkers = documentProfile?.hasExamples ?? documentProfile?.hasWorkedExamples ?? false;
+
+  const hasTitleOrCourseName = Boolean(
+    documentProfile?.title || documentProfile?.courseName || pack.examOverview.courseName,
+  );
+  const hasChapterMapIfContentsPresent =
+    !documentProfile?.hasTableOfContents || Boolean(documentProfile?.chapterMap?.length);
+  const hasSectionBlocks = Boolean((pack.sectionBlocks ?? []).length);
+  const hasProofsIfProofMarkersPresent = !proofMarkers || proofExtracted > 0;
+  const hasExamplesIfExampleMarkersPresent =
+    !exampleMarkers || (pack.workedExamples?.length ?? 0) > 0 || /\bexample\b/i.test(sourceTextLower);
+
+  const hasGroundingForAllItems =
+    pack.definitions.every((d) => Boolean(String(d.sourceExcerpt ?? d.grounding?.sourceExcerpt ?? "").trim().length > 6)) &&
+    pack.formulas.every((f) => Boolean(String(f.sourceExcerpt ?? f.grounding?.sourceExcerpt ?? "").trim().length > 6)) &&
+    pack.proofs.every((p) =>
+      Boolean(String(p.sourceExcerpt ?? p.grounding?.sourceExcerpt ?? p.statement ?? "").trim().length > 6),
+    );
+
   return {
     hasDocumentProfile: Boolean(documentProfile),
+    hasTitleOrCourseName,
     hasChapterMap: Boolean(documentProfile?.chapterMap?.length || pack.courseMapChapters?.length),
+    hasChapterMapIfContentsPresent,
+    hasSectionBlocks,
     hasDefinitionsForMainTopics: defsOk,
     hasFormulasFromFormulaDenseSections: formsOk,
     hasWorkedExamplesIfPresent: workedOk,
     hasExercisesIfPresent: exOk,
     hasProofsIfPresent: proofOk,
+    hasProofsIfProofMarkersPresent,
+    hasExamplesIfExampleMarkersPresent,
+    hasGroundingForAllItems,
     noSourceContamination: contaminationLines.length === 0,
     noDuplicateQuizQuestions: duplicateQuizPrompts.length === 0 && !dupes,
     noOverlongBlocks: overlongBlocks.length === 0,

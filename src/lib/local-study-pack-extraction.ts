@@ -15,7 +15,7 @@ import { mathStatusFromValidation, validateLatexSnippet } from "@/lib/latex-vali
 import { applyMathNormalisation } from "@/lib/math-normalisation";
 import { cleanUploadedStudySourceText } from "@/lib/source-text-cleanup";
 import { convertCommonMathToLatex } from "@/lib/revision-item-utils";
-import { buildSectionBlocks } from "@/lib/section-blocks";
+import { buildSectionBlocks, buildSectionBlocksFromChapterMap, type SectionBlock } from "@/lib/section-blocks";
 import {
   extractSectionHeadingsFromText,
   findFirstInteriorSectionHeadingIndex,
@@ -27,6 +27,7 @@ import type {
   CourseMapChapterEntry,
   DebugExtractedExampleExercise,
   DefinitionImportance,
+  ExamPackBundle,
   ExtractionPipelineDiagnostics,
   GeneratedCommonMistake,
   GeneratedCourseTopic,
@@ -36,6 +37,7 @@ import type {
   GeneratedFormulaItem,
   GeneratedMethodTemplate,
   GeneratedPastPaperPattern,
+  GeneratedPracticeQuestion,
   GeneratedProofItem,
   GeneratedRevisionPack,
   MathStatus,
@@ -152,7 +154,7 @@ function inferCourseTitleFromNotes(combinedLectureText: string, primaryFileStem:
 
   for (const line of lines) {
     if (line.length < 14 || line.length > 200) continue;
-    if (/^\[Page\b/i.test(line)) continue;
+    if (/^\[Page\b/i.test(line) || /^\[Source\b/i.test(line)) continue;
     if (/\b(Department|Imperial College|University of)\b/i.test(line) && !/stochastic simulation/i.test(line)) continue;
     if (/stochastic simulation/i.test(line)) {
       const t = cutAffiliation(line);
@@ -598,15 +600,21 @@ export function normalizeMathText(text: string): string {
 // ---------------------------------------------------------------------------
 
 const FORMULA_LIKE =
-  /[=∑∫]|\\sum|\\int|\\propto|∝|\\\(|\$|\\frac|\\mathbb\{P\}|\\mathbb\{E\}|M\^\{|M\^|p\^\*|p_n|p\?\(|K\(|\bsum\b|\bmin\b|\balpha\b|q\(|\bmod\b|\bPhi\b|\bN\(|\bGamma\b|\bExp\b|\bUnif\b|\bPois\b|\bint\b|\bE\[|\bVar\b|\bdet\b/i;
+  /[=∑∫∇∂κτφγ′″√⟨〉]|\\sum|\\int|\\propto|∝|\\\(|\$|\\frac|\\mathbb\{P\}|\\mathbb\{E\}|\\partial|\\nabla|\\times|\\langle|M\^\{|M\^|p\^\*|p_n|p\?\(|K\(|\bsum\b|\bmin\b|\balpha\b|q\(|\bmod\b|\bPhi\b|\bN\(|\bGamma\b|\bExp\b|\bUnif\b|\bPois\b|\bint\b|\bE\[|\bVar\b|\bdet\b/i;
 
 const FORMULA_SECONDARY =
-  /[=]|\\sum|\\int|∑|∫|∝|\\\\propto|conditional|\\mathbb\{P\}|\\mathbb\{E\}|M_\{|M\^|p_n|p\^\*|p\?\(|K\(|q\(|\bP\(|\br\(x|\bMij\b|\bx_\{|u_n|F_X|lambda|Sigma|sqrt|∏|prop(?:ortional)?|Bayes/i;
+  /[=]|\\sum|\\int|∑|∫|∝|∇|∂|κ|τ|φ|\\\\propto|conditional|\\mathbb\{P\}|\\mathbb\{E\}|M_\{|M\^|p_n|p\^\*|p\?\(|K\(|q\(|\bP\(|\br\(x|\bMij\b|\bx_\{|u_n|F_X|lambda|Sigma|sqrt|∏|prop(?:ortional)?|Bayes|det|tr|⟨|〉|\|\s*\|/i;
 
 function looksLikeFormula(line: string, relaxed = false): boolean {
   if (relaxed) {
     const t = line.trim();
     if (t.length < 5 || t.length > 520) return false;
+    if (
+      /[=∑∫∇∂κτφγ′″√⟨〉×]|\\partial|\\nabla|\\frac|\\int|\\sum|\\times|\\langle/i.test(t) &&
+      /[=∑∫+\-]|\\sum|\\int|\\frac|\\mathbb\{E\}|E\s*\{|\\partial|\\nabla/i.test(t)
+    ) {
+      return true;
+    }
     if (
       /\b(cov|corr|var)\s*\(|\\operatorname\{cov\}|\\mathrm\{cov\}|ρ_|\\rho_|φ_|\\phi_|MA\s*\(|AR\s*\(|ARMA|ARCH|ARIMA|VAR\s*\(|GLP|acf\b|PACF\b|\\Phi\(B\)|\\Theta\(B\)|backshift|seasonal\s+difference|spectral\s+density|S\s*\(\s*f\s*\)/i.test(t) &&
       /[=∑∫+\-]|\\sum|\\int|\\frac|\\mathbb\{E\}|E\s*\{/i.test(t)
@@ -633,7 +641,7 @@ function looksLikeFormula(line: string, relaxed = false): boolean {
   // Reject step lines like "2: for n = 1,..." (these belong to algorithms, not the formula tab).
   if (/^\d+\s*:\s+/.test(line.trim())) return false;
   const wordCount = line.split(/\s+/).length;
-  const symbolDensity = (line.match(/[=∑∫∝<>≥≤_^|]/g) ?? []).length / Math.max(1, wordCount);
+  const symbolDensity = (line.match(/[=∑∫∝<>≥≤_^|∇∂κτφ′″]/g) ?? []).length / Math.max(1, wordCount);
   if (wordCount > 18 && symbolDensity < 0.12) return false;
   if (wordCount > 14 && symbolDensity < 0.18 && !/\b(p\?\(|p\^\*|∫|∝|F_X|Sigma|det\s*J|mod\b)/i.test(line)) return false;
   // Reject lines that contain a long run of natural-English words before any math symbol.
@@ -1000,6 +1008,15 @@ function isTimeSeriesHeavyContext(blob: string): boolean {
   return /\b(time\s+series|autocovariance|autocorrelation|acf\b|pacf\b|arma|arima|sarima|stationar|white\s+noise|spectral|periodogram|backshift|variogram|glp\b|general\s+linear\s+process)\b/.test(lower);
 }
 
+/** Curves/surfaces / general mathematical PDFs — relaxes formula-line gates when TS/MC patterns do not apply. */
+export function isMathHeavyGeometryContext(blob: string): boolean {
+  const lower = blob.toLowerCase();
+  return (
+    /\b(curvature|frenet|geodesic|gauss-bonnet|fundamental\s+form|christoffel|gaussian\s+curvature|mean\s+curvature|torsion|binormal|normal\s+vector|tangent\s+plane|parametrised\s+curve|arc[-\s]?length|reparametr|second\s+fundamental)\b/i.test(lower) ||
+    (blob.match(/[=∑∫∇∂κτφγ⟨〉]/g) ?? []).length > 100
+  );
+}
+
 /** Canonical formulas for mathematical statistics / time-series lecture notes (only when notes match context). */
 const TIME_SERIES_FORMULA_PATTERNS: Array<{ name: string; matcher: RegExp; latex: string; whenToUse: string }> = [
   {
@@ -1106,6 +1123,73 @@ const TIME_SERIES_FORMULA_PATTERNS: Array<{ name: string; matcher: RegExp; latex
   },
 ];
 
+const GEOMETRY_FORMULA_PATTERNS: Array<{ name: string; matcher: RegExp; latex: string; whenToUse: string }> = [
+  {
+    name: "Arc-length of a curve",
+    matcher: /length\s+of.*∫|∫[^\n]{0,40}\|\s*φ|∫[^\n]{0,40}\|phi|arc[-\s]?length[^\n]{0,80}∫/i,
+    latex: "L(\\gamma)=\\int_a^b|\\gamma'(t)|\\,dt",
+    whenToUse: "Length of a smooth parametrised curve.",
+  },
+  {
+    name: "Arc-length parameter",
+    matcher: /\|\s*φ\s*'\s*\(\s*t\s*\)\s*\|\s*=\s*1|\|\s*gamma\s*'\s*\(\s*s\s*\)\s*\|\s*=\s*1|unit\s+speed/i,
+    latex: "|\\gamma'(s)|=1",
+    whenToUse: "Arc-length (unit-speed) parametrisation.",
+  },
+  {
+    name: "Curvature (norm of acceleration)",
+    matcher: /κ\s*\(\s*t\s*\)\s*=\s*\|\s*φ\s*''|curvature[^\n]{0,40}\|\s*γ\s*''/i,
+    latex: "\\kappa(t)=|\\gamma''(t)|",
+    whenToUse: "Plane-curve curvature magnitude (common definition).",
+  },
+  {
+    name: "Frenet frame (T, N, B)",
+    matcher: /T\s*=\s*γ\s*'|binormal|principal\s+normal|Frenet/i,
+    latex: "T=\\gamma',\\quad N=\\frac{T'}{|T'|},\\quad B=T\\times N",
+    whenToUse: "Moving orthonormal frame along a space curve.",
+  },
+  {
+    name: "Gaussian curvature",
+    matcher: /Gaussian\s+curvature|K\s*=\s*κ\s*_?1\s*κ\s*_?2/i,
+    latex: "K=\\kappa_1\\kappa_2",
+    whenToUse: "Intrinsic curvature of a surface (product of principal curvatures in common convention).",
+  },
+  {
+    name: "Mean curvature",
+    matcher: /mean\s+curvature|H\s*=\s*\(?κ\s*_?1\s*\+\s*κ\s*_?2/i,
+    latex: "H=\\tfrac12(\\kappa_1+\\kappa_2)",
+    whenToUse: "Mean curvature from principal curvatures.",
+  },
+  {
+    name: "First fundamental form",
+    matcher: /first\s+fundamental\s+form|I\s*=\s*E\s*du\s*\^2/i,
+    latex: "I=E\\,du^2+2F\\,du\\,dv+G\\,dv^2",
+    whenToUse: "Induced metric on a parametrised surface.",
+  },
+  {
+    name: "Second fundamental form",
+    matcher: /second\s+fundamental\s+form|II\s*=/i,
+    latex: "II=L\\,du^2+2M\\,du\\,dv+N\\,dv^2",
+    whenToUse: "Extrinsic shape operator / second fundamental form coefficients.",
+  },
+  {
+    name: "Christoffel symbols",
+    matcher: /Christoffel|\\Gamma\s*\^|Γ\s*\^/i,
+    latex: "\\Gamma_{ij}^k",
+    whenToUse: "Connection coefficients from the induced metric.",
+  },
+  {
+    name: "Gauss–Bonnet (classic form)",
+    matcher: /Gauss[-\s]*Bonnet|∫∫\s*K|total\s+curvature/i,
+    latex: "\\iint_M K\\,dA+\\int_{\\partial M}\\kappa_g\\,ds=2\\pi\\chi(M)",
+    whenToUse: "Links total Gaussian curvature to topology (Euler characteristic).",
+  },
+];
+
+function filterGeometryFormulaPatterns(sourceRaw: string): typeof GEOMETRY_FORMULA_PATTERNS {
+  return isMathHeavyGeometryContext(sourceRaw) ? GEOMETRY_FORMULA_PATTERNS : [];
+}
+
 function filterTimeSeriesFormulaPatterns(sourceLower: string): typeof TIME_SERIES_FORMULA_PATTERNS {
   return isTimeSeriesHeavyContext(sourceLower) ? TIME_SERIES_FORMULA_PATTERNS : [];
 }
@@ -1142,7 +1226,7 @@ function sourceGroundingPack(
 function extractCanonicalFormulas(text: string, sourceFile: string, sections: ExtractedSection[]): GeneratedFormulaItem[] {
   const lower = text.toLowerCase();
   const out: GeneratedFormulaItem[] = [];
-  for (const pat of [...filterCanonicalFormulaPatterns(lower), ...filterTimeSeriesFormulaPatterns(lower)]) {
+  for (const pat of [...filterCanonicalFormulaPatterns(lower), ...filterTimeSeriesFormulaPatterns(lower), ...filterGeometryFormulaPatterns(text)]) {
     pat.matcher.lastIndex = 0;
     const m = pat.matcher.exec(text);
     if (!m) continue;
@@ -1175,7 +1259,7 @@ function extractCanonicalFormulas(text: string, sourceFile: string, sections: Ex
 
 /** Lines likely to contain equations (before strict LaTeX cleanup). */
 function countFormulaLikeLines(text: string): number {
-  const relaxed = isTimeSeriesHeavyContext(text);
+  const relaxed = isTimeSeriesHeavyContext(text) || isMathHeavyGeometryContext(text);
   let n = 0;
   for (const line of text.split("\n")) {
     const trimmed = line.trim();
@@ -1199,7 +1283,7 @@ function extractCueAdjacentFormulaLines(
   defaultWhenToUse: string,
 ): GeneratedFormulaItem[] {
   const cue =
-    /\b(defined\s+as|given\s+by|we\s+define|is\s+expressed\s+as|denoted\s+by|stationarity\s+condition|invertibility\s+condition)\b/i;
+    /\b(defined\s+as|given\s+by|we\s+define|is\s+expressed\s+as|denoted\s+by|stationarity\s+condition|invertibility\s+condition|satisfies|therefore|hence|we\s+have)\b/i;
   const lines = text.split("\n");
   let offset = 0;
   const out: GeneratedFormulaItem[] = [];
@@ -1259,7 +1343,7 @@ function mapFormulaMathStatus(v: ReturnType<typeof validateLatexSnippet>): MathS
 }
 
 function extractFormulaLines(text: string, sourceFile: string, sections: ExtractedSection[], defaultWhenToUse: string): GeneratedFormulaItem[] {
-  const relaxedLines = isTimeSeriesHeavyContext(text);
+  const relaxedLines = isTimeSeriesHeavyContext(text) || isMathHeavyGeometryContext(text);
   const lines = text.split("\n");
   let offset = 0;
   const out: GeneratedFormulaItem[] = [];
@@ -1319,11 +1403,76 @@ function dedupeFormulas(items: GeneratedFormulaItem[], maxItems = 120): Generate
 
 function defaultFormulaWhenToUse(lectureText: string): string {
   const lower = lectureText.toLowerCase();
+  if (isMathHeavyGeometryContext(lectureText)) {
+    return "Key identity for curves/surfaces: use with the exact regularity conditions from the same page (parametrisation, domain, orientation).";
+  }
   if (/\bmonte\s*carlo\b|\bimportance\s*sampling\b|\bself[-\s]?normali[sz]ed\b|\bess\b|\beffective\s+sample\b/i.test(lower))
     return "Use for Monte Carlo integration, importance sampling, self-normalised estimators, variance bounds, or ESS.";
   if (/\bmarkov\b|\bmcmc\b|\bmetropolis\b|\bgibbs\b|\btransition\s+matrix\b|\bdetailed\s+balance\b/i.test(lower))
     return "Use when revising Markov chains, transition kernels, detailed balance, or acceptance ratios.";
   return "Key equation from your lecture notes.";
+}
+
+function inferExamQuestionTypesFromSource(text: string): string[] {
+  const lower = text.toLowerCase();
+  const add = (label: string, ok: boolean, arr: string[]) => {
+    if (ok && !arr.includes(label)) arr.push(label);
+  };
+  const out: string[] = [];
+  add("Proof / derivation", /\bprove\b|\bshow\s+that\b|\bdeduce\b/i.test(lower), out);
+  add("Computation / evaluation", /\bcalculate\b|\bcompute\b|\bevaluate\b|\bfind\b/i.test(lower), out);
+  add("Verify hypotheses / regularity", /\bverify\b|\bcheck\s+that\b|\bshow\s+that\s+.+\s+is\s+regular/i.test(lower), out);
+  add("Counterexamples / examples", /\bcounterexample\b|\bfor\s+example\b|\bfor\s+instance\b/i.test(lower), out);
+  add("Short definitions / recall", /\bdefine\b|\bstate\s+the\s+definition\b/i.test(lower), out);
+  add("Past-paper style numeric marks", /\bmarks?\b|\bminutes\b|\bcandidates\b/i.test(lower), out);
+  return out.slice(0, 28);
+}
+
+function buildMinimalPracticePreview(
+  definitions: GeneratedDefinitionItem[],
+  formulas: GeneratedFormulaItem[],
+  proofs: GeneratedProofItem[],
+  primaryFile: string,
+): GeneratedPracticeQuestion[] {
+  const out: GeneratedPracticeQuestion[] = [];
+  for (const d of definitions.slice(0, 12)) {
+    if (CORE_IDEA_PLACEHOLDER.test(d.term)) continue;
+    out.push({
+      id: createId("pq"),
+      question: `Define “${d.term.slice(0, 120)}” precisely.`,
+      expectedAnswer: d.definition.slice(0, 800),
+      topic: d.term.slice(0, 80),
+      difficulty: "easy",
+      sourceBasis: d.sourceFile ?? primaryFile,
+      hints: ["Include assumptions"],
+    });
+    if (out.length >= 18) break;
+  }
+  for (const f of formulas.slice(0, 12)) {
+    if (out.length >= 18) break;
+    out.push({
+      id: createId("pq"),
+      question: `Write ${f.name} and state when it applies.`,
+      expectedAnswer: `${f.latex}\n${f.whenToUse}`.slice(0, 900),
+      topic: f.name,
+      difficulty: "medium",
+      sourceBasis: f.sourceFile ?? primaryFile,
+      hints: ["Symbols", "Domain"],
+    });
+  }
+  for (const p of proofs.slice(0, 8)) {
+    if (out.length >= 18) break;
+    out.push({
+      id: createId("pq"),
+      question: `Outline the proof of: ${p.statement.slice(0, 140)}`,
+      expectedAnswer: p.proofSkeleton.slice(0, 900),
+      topic: p.name,
+      difficulty: "hard",
+      sourceBasis: p.sourceFile ?? primaryFile,
+      hints: ["Assumptions first"],
+    });
+  }
+  return out.slice(0, 18);
 }
 
 /** Drop generic posterior identities when notes are clearly about Monte Carlo / IS rather than Bayesian inference. */
@@ -1405,6 +1554,7 @@ function harvestConceptualDefinitions(
   sections: ExtractedSection[],
   formalDefs: GeneratedDefinitionItem[],
   profile: DocumentProfile,
+  extraHeadingTerms: string[] = [],
 ): GeneratedDefinitionItem[] {
   const used = new Set(formalDefs.map((d) => d.term.toLowerCase()));
   const out: GeneratedDefinitionItem[] = [];
@@ -1416,6 +1566,10 @@ function harvestConceptualDefinitions(
   }
   for (const t of profile.detectedTopics) {
     if (t.length >= 5 && t.length < 90) candidateTerms.push(t);
+  }
+  for (const t of extraHeadingTerms) {
+    const x = t.replace(/\s+/g, " ").trim();
+    if (x.length >= 6 && x.length < 160) candidateTerms.push(x);
   }
 
   for (const rawTerm of candidateTerms) {
@@ -1445,6 +1599,32 @@ function harvestConceptualDefinitions(
       definitionKind: "conceptual",
       mathStatus: mathStatusFromValidation(v),
       grounding: sourceGroundingPack(primaryFile, pageAtOffset(lectureText, hit.index), sectionForOffset(sections, hit.index), sourceExcerpt),
+    });
+    used.add(key);
+  }
+
+  for (const m of lectureText.matchAll(/\bwe\s+define\s+([^.:;\n]{8,220}?)\s*(?:as|to\s+be)\s+([^.;!\n]{12,360}[.;!])/gi)) {
+    const termGuess = (m[1] ?? "").trim();
+    const body = (m[2] ?? "").trim();
+    const block = `We define ${termGuess} as ${body}`;
+    const idx = m.index ?? 0;
+    if (termGuess.length < 6 || termGuess.length > 140) continue;
+    const key = termGuess.toLowerCase();
+    if (used.has(key)) continue;
+    const v = validateLatexSnippet(block.slice(0, 600));
+    out.push({
+      id: createId("def"),
+      term: termGuess.slice(0, 120),
+      definition: normalizeMathText(block),
+      source: primaryFile,
+      sourceFile: primaryFile,
+      sourcePage: pageAtOffset(lectureText, idx),
+      sourceSection: sectionForOffset(sections, idx),
+      sourceExcerpt: block.slice(0, 220),
+      importance: "medium",
+      definitionKind: "conceptual",
+      mathStatus: mathStatusFromValidation(v),
+      grounding: sourceGroundingPack(primaryFile, pageAtOffset(lectureText, idx), sectionForOffset(sections, idx), block.slice(0, 320)),
     });
     used.add(key);
   }
@@ -2023,7 +2203,27 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     combinedPrintedText: cleanedPrinted,
   });
 
-  const sectionBlocks = buildSectionBlocks(cleanedPrinted, primaryName.replace(/\.[^.]+$/, ""));
+  const primaryStem =
+    files.find((f) => f.role === "lecture_notes")?.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ") ??
+    primaryName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
+
+  const pageCountForBlocks = documentProfile.pageCount;
+  let sectionBlocks: SectionBlock[] = [];
+  if (documentProfile.chapterMap.length >= 3) {
+    sectionBlocks = buildSectionBlocksFromChapterMap(
+      cleanedPrinted,
+      documentProfile.chapterMap,
+      primaryStem,
+      pageCountForBlocks,
+    );
+  }
+  if (!sectionBlocks.length || sectionBlocks.length < Math.min(documentProfile.chapterMap.length, 5)) {
+    const fromHeadings = buildSectionBlocks(cleanedPrinted, primaryStem);
+    if (fromHeadings.length > sectionBlocks.length) sectionBlocks = fromHeadings;
+  }
+  if (!sectionBlocks.length) {
+    sectionBlocks = buildSectionBlocks(cleanedPrinted, primaryStem);
+  }
 
   const sectionsMerged = mergeSectionHeadingsForPack(lectureFiles, cleanedPrinted);
   const sections = extractSectionHeadings(cleanedPrinted);
@@ -2045,9 +2245,13 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const proofBlocks = dedupeLabelledBlocks(allProofBlocks);
 
   const formalDefs = blocksToDefinitions(blocks);
+  const tocHeadingHints = [
+    ...(documentProfile.tocParseResult?.headingCandidates ?? []),
+    ...documentProfile.chapterMap.map((c) => c.chapterTitle).filter((t) => t.length > 4),
+  ];
   const definitions = dedupeDefinitions([
     ...formalDefs,
-    ...harvestConceptualDefinitions(cleanedPrinted, primaryName, sections, formalDefs, documentProfile),
+    ...harvestConceptualDefinitions(cleanedPrinted, primaryName, sections, formalDefs, documentProfile, tocHeadingHints),
   ]);
 
   const cleanText = cleanedPrinted;
@@ -2055,7 +2259,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const whenHint = defaultFormulaWhenToUse(cleanText);
   const lineFormulas = extractFormulaLines(cleanText, primaryName, sections, whenHint);
   const canonicalFormulas = extractCanonicalFormulas(cleanText, primaryName, sections);
-  const blockFormulas = extractFormulasFromBlocks(blocks, primaryName, cleanText);
+  const blockFormulas = extractFormulasFromBlocks(blocks, primaryName);
   const cueFormulas = extractCueAdjacentFormulaLines(cleanText, primaryName, sections, whenHint);
   const heuristicLineCandidates = countFormulaLikeLines(cleanText);
   const formulaCandidatesPreDedupe = Math.max(
@@ -2092,9 +2296,6 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   let methods = algorithmBlocksToMethods(blocks);
   methods = filterStaleMethods(methods, sourceBlobLower);
 
-  const primaryStem =
-    files.find((f) => f.role === "lecture_notes")?.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ") ??
-    primaryName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
   const inferredTitle = inferCourseTitleFromNotes(cleanedPrinted, primaryStem);
   const chapterTitle = documentProfile.courseName ?? documentProfile.title ?? inferredTitle;
 
@@ -2106,7 +2307,9 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
       title: `${ch.chapterLabel}: ${ch.chapterTitle}`.replace(/^\s*:\s*/, "").trim(),
       sourceFileNames: names.length ? names : files.map((f) => f.name),
       importance: "high" as TopicImportance,
-      evidenceReason: "Chapter banner detected in parsed lecture text.",
+      evidenceReason: documentProfile.tocParseResult?.found ?
+        "Parsed from table of contents (primary structure)."
+      : "Chapter / section headings detected in lecture text.",
     }));
   } else {
     courseMap = courseTopicsFromSections(files, sectionsMerged);
@@ -2189,27 +2392,73 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     trapBullets: mistakes.map((m) => `${m.mistake} — ${m.howToAvoid}`),
   };
 
+  const exampleCandidateCount =
+    sectionBlocks.reduce((n, b) => n + (b.exampleCandidates?.length ?? 0) + (b.exerciseCandidates?.length ?? 0), 0) +
+    workedExamplesHarvest.length;
+
+  const commonExamQuestionTypes = inferExamQuestionTypesFromSource(cleanedPrinted);
+
+  const examPack: ExamPackBundle = {
+    courseMap,
+    chapterSummaries: documentProfile.chapterMap.map((ch) => `${ch.chapterTitle} — pp. ${ch.startPage}–${ch.endPage}`),
+    mustKnowDefinitions: definitions.filter((d) => d.importance === "must_know").map((d) => d.term).slice(0, 96),
+    mustKnowFormulas: formulas.slice(0, 96).map((f) => f.name),
+    proofChecklist: proofs.map((p) => p.proofName ?? p.name),
+    methodTemplates: methods,
+    workedExamples: workedExamplesHarvest,
+    commonExamQuestionTypes,
+    practiceQuestions: buildMinimalPracticePreview(definitions, formulas, proofs, primaryName),
+    formulaSheet: cram.formulaBullets,
+    theoremSheet: proofs.slice(0, 48).map((p) => `${p.name}: ${p.statement.slice(0, 280)}`),
+    lastMinuteCramSheet: cram,
+    weakSpotWarnings: mistakes.map((m) => `${m.mistake} — ${m.howToAvoid}`),
+  };
+
+  const topActionableIssues: string[] = [];
+  if (!documentProfile.title && !documentProfile.courseName) {
+    topActionableIssues.push("Document profile failed: title/courseName null — check first pages after PDF extraction.");
+  }
+  if (documentProfile.hasTableOfContents && documentProfile.chapterMap.length < 3) {
+    topActionableIssues.push("Table of contents signal present but chapterMap is sparse — TOC lines may be merged.");
+  }
+  if (documentProfile.chapterMap.length >= 5 && sectionBlocks.length < documentProfile.chapterMap.length * 0.4) {
+    topActionableIssues.push("Section blocks far fewer than TOC rows — page markers may be missing or TOC parse incomplete.");
+  }
+  if (sectionsMerged.length === 0 && documentProfile.chapterMap.length === 0 && documentProfile.pageCount > 25) {
+    topActionableIssues.push("headingCandidateCount effectively zero — improve PDF text layout or heading regex coverage.");
+  }
+  if (formulaCandidatesPreDedupe === 0 && documentProfile.pageCount > 12) {
+    topActionableIssues.push("formulaCandidateCount is zero despite long notes — formula line heuristics found no math-like rows.");
+  }
+  if (definitions.length < 10 && documentProfile.pageCount > 50) {
+    topActionableIssues.push("Very few definitions for 50+ pages — expand labelled blocks or conceptual harvesting.");
+  }
+
   const extractionPipelineDiagnostics: ExtractionPipelineDiagnostics = {
     formulaCandidateCount: formulaCandidatesPreDedupe,
     formulaExtractedCount: formulas.length,
     formulaRejectedCount: Math.max(0, formulaCandidatesPreDedupe - formulas.length),
     formulaRejectionReasons: [...new Set(extractionRejected.filter((r) => r.kind === "formula").map((r) => r.reason))],
-    conceptCandidateCount: blocks.filter((b) => b.kind === "definition").length + sectionsMerged.length,
+    conceptCandidateCount:
+      blocks.filter((b) => b.kind === "definition").length + sectionsMerged.length + (documentProfile.chapterMap?.length ?? 0),
     headingCandidateCount: sectionsMerged.length,
     sectionBlockCount: sectionBlocks.length,
     chapterCandidateCount: documentProfile.chapterMap.length,
     workedExampleCandidateCount: workedExamplesHarvest.length + derivations.filter((d) => d.type === "worked_example").length,
     proofCandidateCount: proofBlocks.length,
+    exampleCandidateCount,
     rejectedItems: extractionRejected.slice(0, 400),
     extractionPipelineTrace: [
       "sanitise_printed_layer",
-      "profileDocument",
-      "structural_headings→sectionBlocks",
+      "profileDocument+parseTableOfContents",
+      "chapterMap→sectionBlocks|structural_fallback",
       "labelled_blocks+proof_blocks",
-      "formula_pipeline(canonical+blocks+lines+cues)",
+      "formula_pipeline(canonical+ts+geometry+blocks+lines+cues)",
       "stale_topic_filter",
       "derivation_and_worked_example_harvest",
+      "examPack_bundle",
     ],
+    topActionableIssues,
   };
 
   const overview = {
@@ -2237,6 +2486,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     cramSheet: cram,
     workedExamples: workedExamplesHarvest,
     extractionPipelineDiagnostics,
+    examPack,
   };
 }
 
@@ -2244,7 +2494,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
  * Pull central equations out of labelled blocks (Definition/Theorem/Proposition/Algorithm).
  * Anchors formulas to their formal label so traceability is preserved.
  */
-function extractFormulasFromBlocks(blocks: LabelledBlock[], primarySource: string, fullTextForOffset: string): GeneratedFormulaItem[] {
+function extractFormulasFromBlocks(blocks: LabelledBlock[], primarySource: string): GeneratedFormulaItem[] {
   const out: GeneratedFormulaItem[] = [];
   const include: PackItemKind[] = ["definition", "theorem", "proposition", "lemma"];
   for (const b of blocks) {

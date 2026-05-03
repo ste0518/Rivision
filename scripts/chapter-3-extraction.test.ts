@@ -39,7 +39,7 @@ assert.ok(pack.sectionBlocks?.length, "pack should include section blocks");
 const courseTitles = pack.courseMap.map((t) => t.title);
 for (const num of ["3.1", "3.2", "3.3", "3.3.1", "3.3.3"]) {
   assert.ok(
-    courseTitles.some((t) => t.startsWith(`${num} `)),
+    courseTitles.some((t) => t.startsWith(`${num} `) || t.startsWith(`${num}:`)),
     `course map missing ${num}; got: ${courseTitles.join(" | ")}`,
   );
 }

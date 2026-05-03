@@ -513,7 +513,13 @@ export function buildRevisionPackDebugJson(store: RevisionPackDebugInput): Revis
       generatedItemStatsByChapter: validation.generatedItemStatsByChapter,
       handwritingNoisePages: pack.documentProfile?.handwritingNoisePages ?? [],
       pipelineDiagnostics: pack.extractionPipelineDiagnostics ?? null,
-      topActionableIssues: [...validation.topActionableFailures, ...manualFailures].slice(0, 14),
+      topActionableIssues: [
+        ...new Set([
+          ...(pack.extractionPipelineDiagnostics?.topActionableIssues ?? []),
+          ...validation.topActionableFailures,
+          ...manualFailures,
+        ]),
+      ].slice(0, 20),
     },
   };
 

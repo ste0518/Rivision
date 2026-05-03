@@ -37,7 +37,7 @@ const pack = buildHeuristicStudentRevisionPack({
 const courseTitles = pack.courseMap.map((t) => t.title);
 for (const num of ["4.1", "4.2", "4.3", "4.4"]) {
   assert.ok(
-    courseTitles.some((t) => t.startsWith(`${num} `)),
+    courseTitles.some((t) => t.startsWith(`${num} `) || t.startsWith(`${num}:`)),
     `course map missing ${num}; got: ${courseTitles.join(" | ")}`,
   );
 }

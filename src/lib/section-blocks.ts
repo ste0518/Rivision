@@ -2,7 +2,7 @@
  * Structural segmentation of lecture notes by chapter & numbered headings (document-generic).
  */
 
-import { sanitiseExtractedText } from "@/lib/document-profile";
+import { sanitiseExtractedText, type ChapterMapEntry } from "@/lib/document-profile";
 import {
   chapterContextAt,
   collectStructuralHeadings,
@@ -26,6 +26,12 @@ export type SectionBlock = {
   /** @deprecated Prefer proofsAndDerivations */
   proofs?: string[];
   exercises?: string[];
+  formulaCandidates?: string[];
+  definitionCandidates?: string[];
+  theoremCandidates?: string[];
+  proofCandidates?: string[];
+  exampleCandidates?: string[];
+  exerciseCandidates?: string[];
 };
 
 const MAX_SECTION_PAGES = 12;
@@ -35,28 +41,52 @@ function extractInlineArrays(body: string): {
   definitions: string[];
   workedExamples: string[];
   proofsAndDerivations: string[];
+  theoremCandidates: string[];
+  proofCandidates: string[];
+  exampleCandidates: string[];
+  exerciseCandidates: string[];
 } {
   const formulas: string[] = [];
   const definitions: string[] = [];
   const workedExamples: string[] = [];
   const proofsAndDerivations: string[] = [];
+  const theoremCandidates: string[] = [];
+  const proofCandidates: string[] = [];
+  const exampleCandidates: string[] = [];
+  const exerciseCandidates: string[] = [];
 
   for (const ln of body.split("\n")) {
     const tr = ln.trim();
     if (!tr) continue;
     if (/^Worked\s+example\s*:/i.test(tr)) workedExamples.push(tr.slice(0, 600));
-    else if (/^(Proof|Show\s+that)\b/i.test(tr)) proofsAndDerivations.push(tr.slice(0, 600));
+    else if (/^(Proof|Show\s+that)\b/i.test(tr)) {
+      proofsAndDerivations.push(tr.slice(0, 600));
+      proofCandidates.push(tr.slice(0, 600));
+    } else if (/^(Theorem|Lemma|Proposition|Corollary)\s+\d/i.test(tr)) theoremCandidates.push(tr.slice(0, 600));
+    else if (/^Proof\b/i.test(tr)) proofCandidates.push(tr.slice(0, 600));
+    else if (/^(Example|Exercise)\s+\d/i.test(tr)) {
+      exampleCandidates.push(tr.slice(0, 600));
+      if (/^Exercise\b/i.test(tr)) exerciseCandidates.push(tr.slice(0, 600));
+    } else if (/^(Check\s+that|For\s+instance|Let\s+us\s+calculate)/i.test(tr)) exampleCandidates.push(tr.slice(0, 600));
     else if (/\bdefined\s+as\b|^Definition\b/i.test(tr) && tr.length < 800) definitions.push(tr.slice(0, 500));
-    else if (/[=∑∫]|\\sum|\\int|\bcov\s*\(|\\bVar\b|\\mathbb\{E\}|ρ_|φ_|\\Phi\(B\)|MA\(|AR\(|ARMA|ARCH|ARIMA/i.test(tr) && tr.length > 6 && tr.length < 500) {
+    else if (
+      /[=∑∫∇∂×]|\\sum|\\int|\\partial|\\nabla|\bcov\s*\(|\\bVar\b|\\mathbb\{E\}|ρ_|φ_|κ|τ|Gaussian|det\s*\(|tr\s*\(/i.test(tr) &&
+      tr.length > 6 &&
+      tr.length < 500
+    ) {
       formulas.push(tr.slice(0, 400));
     }
   }
 
   return {
-    formulas: dedupeStr(formulas, 40),
-    definitions: dedupeStr(definitions, 20),
-    workedExamples: dedupeStr(workedExamples, 15),
-    proofsAndDerivations: dedupeStr(proofsAndDerivations, 20),
+    formulas: dedupeStr(formulas, 80),
+    definitions: dedupeStr(definitions, 40),
+    workedExamples: dedupeStr(workedExamples, 25),
+    proofsAndDerivations: dedupeStr(proofsAndDerivations, 40),
+    theoremCandidates: dedupeStr(theoremCandidates, 40),
+    proofCandidates: dedupeStr(proofCandidates, 40),
+    exampleCandidates: dedupeStr(exampleCandidates, 40),
+    exerciseCandidates: dedupeStr(exerciseCandidates, 25),
   };
 }
 
@@ -170,12 +200,10 @@ function splitWholeDocumentByPageWindows(fullText: string, primarySourceLabel: s
   let buf = "";
   let rs = segments[0]?.page ?? startPg;
   let re = segments[0]?.page ?? startPg;
-  let part = 0;
 
   const flush = () => {
     const body = buf.trim();
     if (body.length < 24) return;
-    part += 1;
     const inline = extractInlineArrays(body);
     blocks.push({
       sectionId: `${primarySourceLabel}-pages-${rs}-${re}`,
@@ -192,6 +220,12 @@ function splitWholeDocumentByPageWindows(fullText: string, primarySourceLabel: s
       proofsAndDerivations: inline.proofsAndDerivations,
       proofs: inline.proofsAndDerivations.filter((p) => /^Proof\b/i.test(p)),
       exercises: [],
+      formulaCandidates: inline.formulas,
+      definitionCandidates: inline.definitions,
+      theoremCandidates: inline.theoremCandidates,
+      proofCandidates: inline.proofCandidates,
+      exampleCandidates: inline.exampleCandidates,
+      exerciseCandidates: inline.exerciseCandidates,
     });
     buf = "";
   };
@@ -266,16 +300,14 @@ export function buildSectionBlocks(fullText: string, primarySourceLabel = "notes
     const chapterTitle = ctx.chapterTitle || (h.kind === "chapter" ? h.title : "");
 
     const headingTitle = h.kind === "chapter" ? `${h.label}: ${h.title}` : `${h.label} ${h.title}`;
-    const inline = extractInlineArrays(body);
 
     const spans = splitByPageBudget(text, body, MAX_SECTION_PAGES);
-    let part = 0;
-    for (const span of spans) {
-      part += 1;
+    for (let part = 0; part < spans.length; part += 1) {
+      const span = spans[part]!;
       const secInline = extractInlineArrays(span.slice);
       const sectionId =
         spans.length > 1 ?
-          `${primarySourceLabel}-${headingKey(h, i)}-p${part}`
+          `${primarySourceLabel}-${headingKey(h, i)}-p${part + 1}`
         : `${primarySourceLabel}-${headingKey(h, i)}`;
 
       blocks.push({
@@ -293,6 +325,12 @@ export function buildSectionBlocks(fullText: string, primarySourceLabel = "notes
         proofsAndDerivations: secInline.proofsAndDerivations,
         proofs: secInline.proofsAndDerivations.filter((p) => /^Proof\b/i.test(p)),
         exercises: [],
+        formulaCandidates: secInline.formulas,
+        definitionCandidates: secInline.definitions,
+        theoremCandidates: secInline.theoremCandidates,
+        proofCandidates: secInline.proofCandidates,
+        exampleCandidates: secInline.exampleCandidates,
+        exerciseCandidates: secInline.exerciseCandidates,
       });
     }
   }
@@ -317,4 +355,79 @@ function dedupeBlocks(blocks: SectionBlock[]): SectionBlock[] {
     out.push(b);
   }
   return out.slice(0, 500);
+}
+
+function pagesAsSegments(fullText: string): Array<{ page: number; text: string }> {
+  const text = sanitiseExtractedText(fullText.replace(/\r\n/g, "\n"));
+  if (!/\[Page\s+\d+\]/i.test(text)) {
+    return [{ page: 1, text }];
+  }
+  const chunks = text.split(/(?=\n\[Page\s+\d+\])/);
+  const out: Array<{ page: number; text: string }> = [];
+  let carry = 1;
+  for (const chunk of chunks) {
+    const pm = chunk.match(/\[Page\s+(\d+)\]/i);
+    const pg = pm ? Number(pm[1]) || carry : carry;
+    carry = pg;
+    out.push({ page: pg, text: chunk });
+  }
+  return out;
+}
+
+function sliceTextForPageRange(fullText: string, startPage: number, endPage: number, pageCount: number): string {
+  const text = sanitiseExtractedText(fullText.replace(/\r\n/g, "\n"));
+  if (!/\[Page\s+\d+\]/i.test(text) && pageCount > 1) {
+    const len = text.length;
+    const start = Math.max(0, Math.floor(((startPage - 1) / pageCount) * len));
+    const end = Math.min(len, Math.ceil((endPage / pageCount) * len));
+    return text.slice(start, Math.max(start + 40, end)).slice(0, 120_000);
+  }
+  const segs = pagesAsSegments(fullText);
+  return segs
+    .filter((s) => s.page >= startPage && s.page <= endPage)
+    .map((s) => s.text)
+    .join("\n")
+    .trim()
+    .slice(0, 120_000);
+}
+
+/** One block per TOC row — primary segmentation path when {@link ChapterMapEntry} spans exist. */
+export function buildSectionBlocksFromChapterMap(
+  fullText: string,
+  chapters: ChapterMapEntry[],
+  primarySourceLabel: string,
+  pageCount: number,
+): SectionBlock[] {
+  if (!chapters.length) return [];
+  const blocks: SectionBlock[] = [];
+  let idx = 0;
+  for (const ch of chapters) {
+    idx += 1;
+    const body = sliceTextForPageRange(fullText, ch.startPage, ch.endPage, pageCount);
+    if (body.length < 8) continue;
+    const inline = extractInlineArrays(body);
+    blocks.push({
+      sectionId: `${primarySourceLabel}-ch-${ch.chapterLabel}-${idx}`,
+      chapterLabel: ch.chapterLabel,
+      chapterTitle: ch.chapterTitle,
+      heading: `${ch.chapterLabel} ${ch.chapterTitle}`.trim(),
+      level: 2,
+      startPage: ch.startPage,
+      endPage: ch.endPage,
+      text: body,
+      formulas: inline.formulas,
+      definitions: inline.definitions,
+      workedExamples: inline.workedExamples,
+      proofsAndDerivations: inline.proofsAndDerivations,
+      proofs: inline.proofsAndDerivations.filter((p) => /^Proof\b/i.test(p)),
+      exercises: [],
+      formulaCandidates: inline.formulas,
+      definitionCandidates: inline.definitions,
+      theoremCandidates: inline.theoremCandidates,
+      proofCandidates: inline.proofCandidates,
+      exampleCandidates: inline.exampleCandidates,
+      exerciseCandidates: inline.exerciseCandidates,
+    });
+  }
+  return blocks.length ? dedupeBlocks(blocks) : [];
 }

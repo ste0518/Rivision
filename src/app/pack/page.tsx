@@ -220,13 +220,24 @@ export default function PackPage() {
 
       {packQuality?.criticalQualityFailure ? (
         <div className="rounded-lg border-2 border-red-300 bg-red-50 px-4 py-4 text-sm text-red-950 shadow-sm">
-          <p className="text-base font-semibold">Generated with critical quality failures. Review Debug JSON before using this pack.</p>
-          <p className="mt-2 text-red-900">This revision pack should not be treated as exam-ready until the issues below are resolved.</p>
+          <p className="text-base font-semibold">Generated with critical quality failures</p>
+          <p className="mt-2 text-red-900">
+            This pack should not be treated as exam-ready until you confirm extraction issues below. Everything here is derived only from your files — no cloud generation.
+          </p>
           <ul className="mt-3 list-inside list-decimal space-y-1.5 text-red-900">
             {(packQuality.topActionableFailures.length ? packQuality.topActionableFailures : packQuality.recommendations).slice(0, 12).map((line, i) => (
               <li key={i}>{line}</li>
             ))}
           </ul>
+          <div className="mt-4 flex flex-wrap gap-2">
+            <Link
+              className="inline-flex h-10 items-center justify-center rounded-md border border-red-400 bg-white px-4 text-sm font-medium text-red-950 hover:bg-red-100"
+              href="/upload"
+            >
+              Regenerate from Upload
+            </Link>
+            <p className="self-center text-xs text-red-800">Replace notes and generate again for a clean extraction pass — clearing stale cues from previous uploads.</p>
+          </div>
         </div>
       ) : null}
 
