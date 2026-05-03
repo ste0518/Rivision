@@ -38,6 +38,7 @@ import type {
   GeneratedPastPaperPattern,
   GeneratedProofItem,
   GeneratedRevisionPack,
+  MathStatus,
   SourceGrounding,
   StudyPackEntryKind,
   TopicImportance,
@@ -577,17 +578,18 @@ export function normalizeMathText(text: string): string {
   t = t.replace(/Pd\s+j\s*=\s*1/gi, "\\( \\sum_{j=1}^d \\)");
   t = t.replace(/\bp\*\(/g, "\\( p^\\star(");
   const profileHint = t.toLowerCase();
-  const profile = /\b(time\s+series|autocovariance|autocorrelation|arma|arima|sarima|stationar|white\s+noise|backshift|acf\b|pacf\b)\b/.test(
-    profileHint,
-  )
-    ? "time_series"
-    : /\b(monte\s*carlo|importance\s*sampling|self[-\s]?normali|snis|proposal\s+distribution|empirical\s+measure|mc\s+estimator|is\s+estimator|effective\s+sample|ess\b|test\s+function)\b/.test(
-        profileHint,
-      )
-      ? "monte_carlo_sampling"
-      : /\b(markov|mcmc|metropolis|gibbs|transition\s+matrix|detailed\s+balance|irreducible|aperiodic)\b/.test(profileHint)
-        ? "monte_carlo_sampling"
-        : "generic";
+  const tsContext =
+    /\b(time\s+series|autocovariance|autocorrelation|arma|arima|sarima|stationar|white\s+noise|backshift|acf\b|pacf\b|variogram|spectral\s+density|vector\s+autoregression)\b/.test(
+      profileHint,
+    );
+  const mcContext =
+    /\b(monte\s*carlo|importance\s*sampling|self[-\s]?normali|snis|proposal\s+distribution|empirical\s+measure|mc\s+estimator|is\s+estimator|effective\s+sample|ess\b|test\s+function)\b/.test(
+      profileHint,
+    );
+  const mcmcKernelContext =
+    !tsContext &&
+    /\b(\bmcmc\b|markov\s+chain\s+monte|metropolis-hastings|\bmetropolis\b|\bgibbs\b|detailed\s+balance|transition\s+matrix\s+for\s+a\s+chain)\b/i.test(profileHint);
+  const profile = tsContext ? "time_series" : mcContext ? "monte_carlo_sampling" : mcmcKernelContext ? "monte_carlo_sampling" : "generic";
   return convertCommonMathToLatex(t, profile, t);
 }
 
@@ -1145,25 +1147,115 @@ function extractCanonicalFormulas(text: string, sourceFile: string, sections: Ex
     const m = pat.matcher.exec(text);
     if (!m) continue;
     const offset = m.index;
-    const v = validateLatexSnippet(`\\(${pat.latex}\\)`);
+    const wrapped = wrapAsMath(pat.latex);
+    const v = validateLatexSnippet(wrapped);
     const plain = m[0]?.replace(/\s+/g, " ").trim() ?? "";
     const excerpt = text.slice(Math.max(0, offset - 40), offset + 200).slice(0, 420);
+    const pg = pageAtOffset(text, offset) ?? 1;
     out.push({
       id: createId("form"),
       name: pat.name,
-      latex: wrapAsMath(pat.latex),
+      latex: wrapped,
       formulaPlain: plain.slice(0, 240),
+      rawFormula: plain.slice(0, 240),
+      cleanedLatex: pat.latex,
       whenToUse: pat.whenToUse,
       source: sourceFile,
       sourceFile,
       sourceSection: sectionForOffset(sections, offset),
-      sourcePage: pageAtOffset(text, offset),
+      sourcePage: pg,
       sourceExcerpt: excerpt,
-      mathStatus: mathStatusFromValidation(v),
-      grounding: sourceGroundingPack(sourceFile, pageAtOffset(text, offset), sectionForOffset(sections, offset), excerpt),
+      mathStatus: mapFormulaMathStatus(v),
+      groundingConfidence: 0.8,
+      grounding: sourceGroundingPack(sourceFile, pg, sectionForOffset(sections, offset), excerpt),
     });
   }
   return out;
+}
+
+/** Lines likely to contain equations (before strict LaTeX cleanup). */
+function countFormulaLikeLines(text: string): number {
+  const relaxed = isTimeSeriesHeavyContext(text);
+  let n = 0;
+  for (const line of text.split("\n")) {
+    const trimmed = line.trim();
+    if (!trimmed) continue;
+    if (looksLikeFormula(trimmed, relaxed)) n += 1;
+    else if (
+      relaxed &&
+      /\b(defined\s+as|given\s+by|we\s+define|is\s+expressed\s+as|denoted\s+by|model|condition|where)\b/i.test(trimmed) &&
+      trimmed.length < 220
+    ) {
+      n += 1;
+    }
+  }
+  return n;
+}
+
+function extractCueAdjacentFormulaLines(
+  text: string,
+  sourceFile: string,
+  sections: ExtractedSection[],
+  defaultWhenToUse: string,
+): GeneratedFormulaItem[] {
+  const cue =
+    /\b(defined\s+as|given\s+by|we\s+define|is\s+expressed\s+as|denoted\s+by|stationarity\s+condition|invertibility\s+condition)\b/i;
+  const lines = text.split("\n");
+  let offset = 0;
+  const out: GeneratedFormulaItem[] = [];
+  const seen = new Set<string>();
+
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? "";
+    const trimmed = line.trim();
+    const contentStart = offset + (line.length - line.trimStart().length);
+    if (!cue.test(trimmed) || trimmed.length > 260) {
+      offset += line.length + 1;
+      continue;
+    }
+    const next = (lines[i + 1] ?? "").trim();
+    const candidate = next && (looksLikeFormula(next, true) || /^[=∑∫]/.test(next)) ? next : trimmed;
+    if (!looksLikeFormula(candidate, true) && !/[=∑∫ρφθω]/i.test(candidate)) {
+      offset += line.length + 1;
+      continue;
+    }
+    const normalized = normalizeMathText(candidate);
+    const sig = normalized.replace(/\s+/g, " ").slice(0, 160).toLowerCase();
+    if (seen.has(sig)) {
+      offset += line.length + 1;
+      continue;
+    }
+    seen.add(sig);
+    const wrappedCue = wrapAsMath(normalized);
+    const v = validateLatexSnippet(wrappedCue);
+    const excerpt = `${trimmed}\n${candidate}`.slice(0, 520);
+    const pg = pageAtOffset(text, contentStart) ?? 1;
+    out.push({
+      id: createId("form"),
+      name: trimmed.slice(0, 72).replace(/\s+/g, " "),
+      latex: wrappedCue,
+      formulaPlain: candidate.slice(0, 320),
+      rawFormula: candidate.slice(0, 320),
+      cleanedLatex: normalized.slice(0, 480),
+      whenToUse: defaultWhenToUse,
+      source: sourceFile,
+      sourceFile,
+      sourceSection: sectionForOffset(sections, contentStart),
+      sourcePage: pg,
+      sourceExcerpt: excerpt,
+      mathStatus: mapFormulaMathStatus(v),
+      groundingConfidence: 0.72,
+      grounding: sourceGroundingPack(sourceFile, pg, sectionForOffset(sections, contentStart), excerpt),
+    });
+    offset += line.length + 1;
+  }
+  return out;
+}
+
+function mapFormulaMathStatus(v: ReturnType<typeof validateLatexSnippet>): MathStatus {
+  const base = mathStatusFromValidation(v);
+  if (base === "needs_check") return "needs_review";
+  return base;
 }
 
 function extractFormulaLines(text: string, sourceFile: string, sections: ExtractedSection[], defaultWhenToUse: string): GeneratedFormulaItem[] {
@@ -1186,23 +1278,28 @@ function extractFormulaLines(text: string, sourceFile: string, sections: Extract
       continue;
     }
     seen.add(sig);
-    const v = validateLatexSnippet(normalized);
+    const wrapped = wrapAsMath(normalized);
+    const v = validateLatexSnippet(wrapped);
     const nameGuess = trimmed.match(/^([^=:{]+)[:=]/);
     const name = nameGuess ? nameGuess[1]!.trim().slice(0, 72) : `Relation near “${trimmed.slice(0, 40)}…”`;
     const excerpt = trimmed.slice(0, 420);
+    const pg = pageAtOffset(text, offset) ?? 1;
     out.push({
       id: createId("form"),
       name: name.replace(/\s+/g, " "),
-      latex: wrapAsMath(normalized),
+      latex: wrapped,
       formulaPlain: trimmed.slice(0, 320),
+      rawFormula: trimmed.slice(0, 320),
+      cleanedLatex: normalized.slice(0, 480),
       whenToUse: defaultWhenToUse,
       source: sourceFile,
       sourceFile,
       sourceSection: sectionForOffset(sections, offset),
-      sourcePage: pageAtOffset(text, offset),
+      sourcePage: pg,
       sourceExcerpt: excerpt,
-      mathStatus: mathStatusFromValidation(v),
-      grounding: sourceGroundingPack(sourceFile, pageAtOffset(text, offset), sectionForOffset(sections, offset), excerpt),
+      mathStatus: mapFormulaMathStatus(v),
+      groundingConfidence: excerpt.length >= 48 ? 0.85 : 0.62,
+      grounding: sourceGroundingPack(sourceFile, pg, sectionForOffset(sections, offset), excerpt),
     });
     offset += line.length + 1;
   }
@@ -1799,6 +1896,14 @@ function extractDerivationCards(text: string, primaryFile: string, sections: Ext
       re: /(?:^|\n)\s*((?:Show\s+that|Suppose\s+that)[^\n]{8,200})\n([\s\S]{60,12000}?)(?=\n\s*(?:Chapter\s+\d+|\d+(?:\.\d+)+\s+[A-Za-z]|Show\s+that|Worked\s+example)\b)/gi,
       type: "derivation",
     },
+    {
+      re: /(?:^|\n)\s*((?:Hence|Therefore|Thus|So),?[^\n]{4,220})\n([\s\S]{60,14000}?)(?=\n\s*(?:Chapter\s+\d+|\d+(?:\.\d+)+\s+[A-Za-z]|Hence|Therefore|Worked\s+example|Proof\s*[.:])\b)/gi,
+      type: "derivation",
+    },
+    {
+      re: /(?:^|\n)\s*((?:Positive\s+semi[- ]definite|Toeplitz|variogram)[^\n]{4,180})\n([\s\S]{60,12000}?)(?=\n\s*(?:Chapter\s+\d+|Worked\s+example|Proof\s*[.:])\b)/gi,
+      type: "derivation",
+    },
   ];
 
   for (const { re, type } of patterns) {
@@ -1863,10 +1968,13 @@ const STALE_TOPIC_TERMS = [
   "detailed balance",
   "metropolis-hastings",
   "metropolis hastings",
+  "mh ratio",
   "importance sampling",
   "snis",
   "effective sample size",
   "markov chain monte carlo",
+  "irreducibility",
+  "aperiodicity",
 ];
 
 function isStaleVersusSource(blobLower: string, sourceLower: string): boolean {
@@ -1948,15 +2056,31 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const lineFormulas = extractFormulaLines(cleanText, primaryName, sections, whenHint);
   const canonicalFormulas = extractCanonicalFormulas(cleanText, primaryName, sections);
   const blockFormulas = extractFormulasFromBlocks(blocks, primaryName, cleanText);
-  const formulaCandidatesPreDedupe = canonicalFormulas.length + blockFormulas.length + lineFormulas.length;
+  const cueFormulas = extractCueAdjacentFormulaLines(cleanText, primaryName, sections, whenHint);
+  const heuristicLineCandidates = countFormulaLikeLines(cleanText);
+  const formulaCandidatesPreDedupe = Math.max(
+    heuristicLineCandidates,
+    canonicalFormulas.length + blockFormulas.length + lineFormulas.length + cueFormulas.length,
+  );
   const pageCount = documentProfile.pageCount;
   const maxFormulas = pageCount < 15 ? 90 : pageCount <= 50 ? 150 : 220;
-  let formulas = dedupeFormulas([...canonicalFormulas, ...blockFormulas, ...lineFormulas], maxFormulas).map((f) => {
-    const v = validateLatexSnippet(f.latex);
-    return { ...f, mathStatus: mathStatusFromValidation(v) };
-  });
-  formulas = filterFormulasForChapterContext(formulas, cleanText);
+  const mergedFormulas = dedupeFormulas(
+    [...canonicalFormulas, ...blockFormulas, ...lineFormulas, ...cueFormulas],
+    maxFormulas,
+  );
+  const extractionRejected: Array<{ kind: string; reason: string; detail?: string }> = [];
+  let formulas = filterFormulasForChapterContext(mergedFormulas, cleanText);
+  const afterChapterFilter = formulas;
   formulas = filterStaleFormulas(formulas, sourceBlobLower);
+  for (const f of afterChapterFilter) {
+    if (!formulas.some((x) => x.id === f.id)) {
+      extractionRejected.push({
+        kind: "formula",
+        reason: "stale_or_ungrounded_template_or_topic_mismatch",
+        detail: f.name.slice(0, 160),
+      });
+    }
+  }
 
   let proofs = blocksToProofs(blocks, proofBlocks);
   proofs = dedupeProofs(proofs);
@@ -2006,7 +2130,10 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
         howToAvoid: "Verify q>0 on the support of p* (and finite-variance conditions).",
       },
     );
-  } else if (/\b(markov|mcmc|metropolis|detailed\s+balance)\b/i.test(lowerCtx)) {
+  } else if (
+    /\b(\bmcmc\b|markov\s+chain\s+monte|metropolis-hastings|detailed\s+balance)\b/i.test(lowerCtx) &&
+    !/\b(time\s+series|arma|arima|acf\b|autocovariance|stationar)\b/i.test(lowerCtx)
+  ) {
     mistakes.push(
       {
         id: createId("mis"),
@@ -2066,18 +2193,21 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     formulaCandidateCount: formulaCandidatesPreDedupe,
     formulaExtractedCount: formulas.length,
     formulaRejectedCount: Math.max(0, formulaCandidatesPreDedupe - formulas.length),
-    formulaRejectionReasons: [],
+    formulaRejectionReasons: [...new Set(extractionRejected.filter((r) => r.kind === "formula").map((r) => r.reason))],
+    conceptCandidateCount: blocks.filter((b) => b.kind === "definition").length + sectionsMerged.length,
     headingCandidateCount: sectionsMerged.length,
     sectionBlockCount: sectionBlocks.length,
     chapterCandidateCount: documentProfile.chapterMap.length,
     workedExampleCandidateCount: workedExamplesHarvest.length + derivations.filter((d) => d.type === "worked_example").length,
     proofCandidateCount: proofBlocks.length,
+    rejectedItems: extractionRejected.slice(0, 400),
     extractionPipelineTrace: [
       "sanitise_printed_layer",
       "profileDocument",
       "structural_headings→sectionBlocks",
       "labelled_blocks+proof_blocks",
-      "formula_pipeline",
+      "formula_pipeline(canonical+blocks+lines+cues)",
+      "stale_topic_filter",
       "derivation_and_worked_example_harvest",
     ],
   };
@@ -2123,14 +2253,17 @@ function extractFormulasFromBlocks(blocks: LabelledBlock[], primarySource: strin
     for (const line of lines) {
       if (!looksLikeFormula(line)) continue;
       const normalized = normalizeMathText(line).slice(0, 400);
-      const v = validateLatexSnippet(normalized);
+      const wrappedBl = wrapAsMath(normalized);
+      const v = validateLatexSnippet(wrappedBl);
       const excerpt = line.slice(0, 420);
       const sf = b.sourceFile || primarySource;
       out.push({
         id: createId("form"),
         name: `${b.formalLabel}${b.parenTitle ? ` (${b.parenTitle})` : ""}`,
-        latex: wrapAsMath(normalized),
+        latex: wrappedBl,
         formulaPlain: line.slice(0, 320),
+        rawFormula: line.slice(0, 320),
+        cleanedLatex: normalized,
         whenToUse: `Central equation from ${b.formalLabel}.`,
         source: sf,
         sourceFile: sf,
@@ -2138,7 +2271,8 @@ function extractFormulasFromBlocks(blocks: LabelledBlock[], primarySource: strin
         sourcePage: b.sourcePage,
         sourceLabel: b.formalLabel,
         sourceExcerpt: excerpt,
-        mathStatus: mathStatusFromValidation(v),
+        mathStatus: mapFormulaMathStatus(v),
+        groundingConfidence: 0.78,
         grounding: sourceGroundingPack(sf, b.sourcePage, b.sourceSection, excerpt),
       });
       break;

@@ -219,10 +219,11 @@ export default function PackPage() {
       />
 
       {packQuality?.criticalQualityFailure ? (
-        <div className="rounded-lg border border-red-200 bg-red-50 px-4 py-3 text-sm text-red-950">
-          <p className="font-medium">Generated with critical quality failures</p>
-          <ul className="mt-2 list-inside list-decimal space-y-1 text-red-900">
-            {(packQuality.recommendations.length ? packQuality.recommendations : ["chapterMap empty", "segmentation weak", "formula extraction low"]).slice(0, 5).map((line, i) => (
+        <div className="rounded-lg border-2 border-red-300 bg-red-50 px-4 py-4 text-sm text-red-950 shadow-sm">
+          <p className="text-base font-semibold">Generated with critical quality failures. Review Debug JSON before using this pack.</p>
+          <p className="mt-2 text-red-900">This revision pack should not be treated as exam-ready until the issues below are resolved.</p>
+          <ul className="mt-3 list-inside list-decimal space-y-1.5 text-red-900">
+            {(packQuality.topActionableFailures.length ? packQuality.topActionableFailures : packQuality.recommendations).slice(0, 12).map((line, i) => (
               <li key={i}>{line}</li>
             ))}
           </ul>
@@ -259,6 +260,35 @@ export default function PackPage() {
             <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm" href="/quiz">
               Practice
             </Link>
+            {debugExport ? (
+              <>
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="border-amber-300 bg-amber-50 text-amber-950 hover:bg-amber-100"
+                  onClick={async () => {
+                    try {
+                      await navigator.clipboard.writeText(JSON.stringify(debugExport, null, 2));
+                      showToast("Debug JSON copied.");
+                    } catch {
+                      showToast("Could not copy to clipboard.");
+                    }
+                  }}
+                >
+                  Copy Debug JSON
+                </Button>
+                <Button
+                  type="button"
+                  variant="outline"
+                  onClick={() => {
+                    const base = revisionPackDebugFilenameBase(debugExport.metadata.sourceFilename);
+                    downloadTextFile(JSON.stringify(debugExport, null, 2), "application/json", `revision-pack-debug-${base}.json`);
+                  }}
+                >
+                  Download Debug JSON
+                </Button>
+              </>
+            ) : null}
           </div>
         </CardHeader>
       </Card>

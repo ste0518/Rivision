@@ -131,11 +131,99 @@ function headingKey(h: StructuralHeading, idx: number): string {
   return `${h.kind}:${h.label}:${idx}`;
 }
 
+/** When headings are missing, split on `[Page N]` every maxPages so extraction never sees one 90-page slab. */
+function splitWholeDocumentByPageWindows(fullText: string, primarySourceLabel: string, maxPages: number): SectionBlock[] {
+  const text = sanitiseExtractedText(fullText.replace(/\r\n/g, "\n"));
+  const startPg = pageAtOffset(text, 0);
+  const endPg = pageAtOffset(text, Math.max(0, text.length - 1));
+  if (endPg - startPg < maxPages) {
+    return [
+      {
+        sectionId: `${primarySourceLabel}-whole`,
+        chapterLabel: "",
+        chapterTitle: "",
+        heading: "Document",
+        level: 9,
+        startPage: startPg,
+        endPage: endPg,
+        text: text.slice(0, 120_000),
+        formulas: [],
+        definitions: [],
+        workedExamples: [],
+        proofsAndDerivations: [],
+        proofs: [],
+        exercises: [],
+      },
+    ];
+  }
+
+  const chunks = text.split(/(?=\n\[Page\s+\d+\])/);
+  const segments: Array<{ page: number; text: string }> = [];
+  let carry = startPg;
+  for (const chunk of chunks) {
+    const pm = chunk.match(/\[Page\s+(\d+)\]/i);
+    const pg = pm ? Number(pm[1]) || carry : carry;
+    carry = pg;
+    segments.push({ page: pg, text: chunk });
+  }
+  const blocks: SectionBlock[] = [];
+  let buf = "";
+  let rs = segments[0]?.page ?? startPg;
+  let re = segments[0]?.page ?? startPg;
+  let part = 0;
+
+  const flush = () => {
+    const body = buf.trim();
+    if (body.length < 24) return;
+    part += 1;
+    const inline = extractInlineArrays(body);
+    blocks.push({
+      sectionId: `${primarySourceLabel}-pages-${rs}-${re}`,
+      chapterLabel: "",
+      chapterTitle: "",
+      heading: `Pages ${rs}–${re}`,
+      level: 9,
+      startPage: rs,
+      endPage: re,
+      text: body.slice(0, 120_000),
+      formulas: inline.formulas,
+      definitions: inline.definitions,
+      workedExamples: inline.workedExamples,
+      proofsAndDerivations: inline.proofsAndDerivations,
+      proofs: inline.proofsAndDerivations.filter((p) => /^Proof\b/i.test(p)),
+      exercises: [],
+    });
+    buf = "";
+  };
+
+  for (const seg of segments) {
+    if (!buf) {
+      rs = seg.page;
+      re = seg.page;
+      buf = seg.text;
+      continue;
+    }
+    if (seg.page - rs >= maxPages) {
+      flush();
+      buf = seg.text;
+      rs = seg.page;
+      re = seg.page;
+    } else {
+      buf += seg.text;
+      re = seg.page;
+    }
+  }
+  flush();
+  return blocks.length ? blocks : [];
+}
+
 export function buildSectionBlocks(fullText: string, primarySourceLabel = "notes"): SectionBlock[] {
   const text = sanitiseExtractedText(fullText.replace(/\r\n/g, "\n"));
   const structural = collectStructuralHeadings(text);
 
   if (structural.length === 0) {
+    const fallback = splitWholeDocumentByPageWindows(fullText, primarySourceLabel, MAX_SECTION_PAGES);
+    if (fallback.length) return fallback;
     return [
       {
         sectionId: `${primarySourceLabel}-whole`,
@@ -209,7 +297,14 @@ export function buildSectionBlocks(fullText: string, primarySourceLabel = "notes
     }
   }
 
-  return dedupeBlocks(blocks);
+  const deduped = dedupeBlocks(blocks);
+  const wholeOnly =
+    deduped.length === 1 && /whole$/i.test(deduped[0]?.sectionId ?? "") && deduped[0]!.endPage - deduped[0]!.startPage >= MAX_SECTION_PAGES;
+  if (wholeOnly) {
+    const split = splitWholeDocumentByPageWindows(fullText, primarySourceLabel, MAX_SECTION_PAGES);
+    if (split.length > 1) return split;
+  }
+  return deduped;
 }
 
 function dedupeBlocks(blocks: SectionBlock[]): SectionBlock[] {

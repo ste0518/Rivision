@@ -16,7 +16,7 @@ export default function ProgressPage() {
         <PageHeader title="Progress" description="High-level view of how your revision is going — all computed locally." />
         <Card className="border-dashed">
           <CardContent className="py-12 text-center text-slate-600">
-            <p>No study pack yet. Upload a file and generate one first.</p>
+            <p>No study pack yet. Upload files and generate a revision pack first.</p>
             <Link className="mt-4 inline-flex h-10 items-center justify-center rounded-md bg-blue-700 px-4 text-sm font-medium text-white" href="/upload">
               Upload &amp; generate
             </Link>
@@ -73,9 +73,9 @@ export default function ProgressPage() {
             <CardDescription>Based on cards you have opened in Review mode.</CardDescription>
           </CardHeader>
           <CardContent className="space-y-2 text-sm">
-            <Row label="Definitions reviewed" value={`${reviewedSets.definitions.done}/${reviewedSets.definitions.total}`} />
-            <Row label="Formulas reviewed" value={`${reviewedSets.formulas.done}/${reviewedSets.formulas.total}`} />
-            <Row label="Proofs reviewed" value={`${reviewedSets.proofs.done}/${reviewedSets.proofs.total}`} />
+            <ReviewCoverageRow label="Definitions reviewed" done={reviewedSets.definitions.done} total={reviewedSets.definitions.total} />
+            <ReviewCoverageRow label="Formulas reviewed" done={reviewedSets.formulas.done} total={reviewedSets.formulas.total} />
+            <ReviewCoverageRow label="Proofs reviewed" done={reviewedSets.proofs.done} total={reviewedSets.proofs.total} />
           </CardContent>
         </Card>
 
@@ -131,4 +131,9 @@ function Row({ label, value }: { label: string; value: string }) {
       <span className="font-medium text-slate-900">{value}</span>
     </div>
   );
+}
+
+function ReviewCoverageRow({ label, done, total }: { label: string; done: number; total: number }) {
+  const value = total === 0 ? "— (no cards in this category yet)" : `${done}/${total}`;
+  return <Row label={label} value={value} />;
 }

@@ -10,7 +10,7 @@ export type TopicImportance = "high" | "medium" | "low";
 
 export type DefinitionImportance = "must_know" | "high" | "medium" | "low";
 
-export type MathStatus = "ok" | "needs_check" | "broken";
+export type MathStatus = "ok" | "needs_check" | "needs_review" | "broken";
 
 /** Structured study-pack entry kinds for labelled lecture notes. */
 export type StudyPackEntryKind =
@@ -106,6 +106,10 @@ export interface GeneratedFormulaItem {
   latex: string;
   /** Raw equation line from PDF text (before aggressive LaTeX wrapping). */
   formulaPlain?: string;
+  /** Alias for formulaPlain — extraction pipeline raw line. */
+  rawFormula?: string;
+  /** Normalised LaTeX body (may equal {@link latex} without display wrappers). */
+  cleanedLatex?: string;
   whenToUse: string;
   /** @deprecated Prefer {@link sourceFile}. */
   source: string;
@@ -115,6 +119,8 @@ export interface GeneratedFormulaItem {
   sourceSection?: string;
   sourceLabel?: string;
   sourceExcerpt?: string;
+  /** Quick confidence when {@link grounding} omitted (0–1). */
+  groundingConfidence?: number;
   grounding?: SourceGrounding;
 }
 
@@ -166,11 +172,13 @@ export type ExtractionPipelineDiagnostics = {
   formulaExtractedCount: number;
   formulaRejectedCount: number;
   formulaRejectionReasons: string[];
+  conceptCandidateCount: number;
   headingCandidateCount: number;
   sectionBlockCount: number;
   chapterCandidateCount: number;
   workedExampleCandidateCount: number;
   proofCandidateCount: number;
+  rejectedItems: Array<{ kind: string; reason: string; detail?: string }>;
   extractionPipelineTrace: string[];
 };
 

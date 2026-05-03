@@ -142,7 +142,7 @@ export function splitDocumentTextLayers(fullText: string): TextLayers {
 
 /**
  * Classify uploaded PDF text using early-page cues + structure (no filenames).
- * Avoids labelling equation-heavy lecture notes as “solutions” because of occasional “solution/proof” words.
+ * Distinguishes lecture notes from solution sheets: incidental “solution/proof” words in notes must not dominate.
  */
 export function classifyDocumentType(
   cleanedPages: Array<{ pageNumber: number; text: string }>,
@@ -160,40 +160,56 @@ export function classifyDocumentType(
     : combined.slice(0, 45_000).toLowerCase();
 
   const structural = collectStructuralHeadings(combined);
+  const chapterLike = structural.filter((h) => h.kind === "chapter").length;
+  const sectionLike = structural.filter((h) => h.kind === "section").length;
+
   const lectureStructureScore =
-    (structural.filter((h) => h.kind === "chapter").length >= 2 ? 4 : 0) +
-    (structural.filter((h) => h.kind === "section").length >= 12 ? 4 : structural.filter((h) => h.kind === "section").length >= 6 ? 2 : 0);
+    (chapterLike >= 2 ? 5 : chapterLike >= 1 ? 3 : 0) +
+    (sectionLike >= 15 ? 5 : sectionLike >= 10 ? 4 : sectionLike >= 6 ? 2 : sectionLike >= 3 ? 1 : 0);
 
   const lectureCueScore =
-    (/\bchapter\s+\d+/i.test(early) ? 2 : 0) +
+    (/\bchapter\s+\d+/i.test(early) ? 3 : 0) +
     (/\d+\.\d+\s+[a-z]/i.test(early) ? 2 : 0) +
-    (/\b(lecture\s+notes|course\s+notes|module)\b/i.test(lower) ? 2 : 0);
+    (/\b(lecture\s+notes|course\s+notes|module\s+handout)\b/i.test(lower) ? 3 : 0) +
+    (/\b(imperial|department|faculty)\b/i.test(early) && chapterLike >= 1 ? 1 : 0);
+
+  const questionMarksHits = (combined.match(/\b\d+\s*(?:marks?|pts?)\b/gi) ?? []).length;
+  const numberedQuestionLines = (combined.match(/(?:^|\n)\s*(?:question|problem)\s+\d{1,2}\s*[.:)]/gi) ?? []).length;
 
   const examPaperStrong =
     /\b(total\s+marks|minutes\s+allowed|time\s+allowed|candidate\s+number|desk\s+number)\b/i.test(lower) &&
     /\b(final\s+exam|examination|past\s+paper)\b/i.test(lower);
 
   const problemSheetStrong =
-    /\b(problem\s+sheet|homework\s*\d|assignment\s*\d|due\s+date)\b/i.test(lower) && /\b(question|exercise)\s*\d+/i.test(lower);
+    questionMarksHits >= 10 ||
+    (numberedQuestionLines >= 14 && /\b(marks?|points?)\b/i.test(lower)) ||
+    (/\b(problem\s+sheet|homework\s*\d|assignment\s*\d|due\s+date)\b/i.test(lower) && numberedQuestionLines >= 8);
 
-  let dominatorSolutionLines = 0;
-  let markSchemeHits = 0;
+  let solutionHeadingScore = 0;
   for (const raw of combined.split("\n")) {
     const s = raw.trim();
-    if (/^(solution|solutions|model\s+answers?)\s*[.:]?\s*$/i.test(s) || /^(solution|solutions)\s+to\b/i.test(s)) dominatorSolutionLines += 2;
-    else if (/^solution\s+\d+[.:)]/i.test(s)) dominatorSolutionLines += 1;
-    if (/mark\s+scheme|examiner\s+report|official\s+solutions/i.test(s)) markSchemeHits += 1;
+    if (s.length > 180) continue;
+    if (/worked\s+example/i.test(s)) continue;
+    if (/^(solution|solutions)\s+to\b/i.test(s)) solutionHeadingScore += 2;
+    else if (/^(solution|solutions)\s*[.:]?\s*$/i.test(s)) solutionHeadingScore += 3;
+    else if (/^solution\s+\d+[.:)]/i.test(s)) solutionHeadingScore += 2;
+    else if (/^(answer|answers)\s*[.:]?\s*$/i.test(s)) solutionHeadingScore += 2;
+    else if (/mark\s+scheme|examiner\s+report|official\s+solutions/i.test(s)) solutionHeadingScore += 4;
   }
-  const solutionsDominant =
-    markSchemeHits >= 3 ||
-    dominatorSolutionLines >= 10 ||
-    (dominatorSolutionLines >= 5 && /\b(answer\s+key|official\s+solutions)\b/i.test(lower));
 
-  if (examPaperStrong && lectureStructureScore + lectureCueScore < 5) return "past_paper";
-  if (problemSheetStrong && !solutionsDominant) return "problem_sheet";
-  if (solutionsDominant && lectureStructureScore + lectureCueScore < 6) return "solutions";
-  if (solutionsDominant && lectureStructureScore + lectureCueScore >= 6) return "mixed";
-  if (lectureStructureScore + lectureCueScore >= 3 || /\bchapter\s+\d+/i.test(combined)) return "lecture_notes";
+  const solutionsDominant =
+    solutionHeadingScore >= 16 ||
+    (solutionHeadingScore >= 9 && /\b(answer\s+key|official\s+solutions)\b/i.test(lower));
+
+  const lectureStrength = lectureStructureScore + lectureCueScore;
+
+  if (examPaperStrong && lectureStrength < 7) return "past_paper";
+  if (problemSheetStrong && lectureStrength < 8 && !solutionsDominant) return "problem_sheet";
+
+  if (lectureStrength >= 6 || (chapterLike >= 1 && sectionLike >= 8)) return "lecture_notes";
+  if (solutionsDominant && lectureStrength < 7) return "solutions";
+  if (solutionsDominant && lectureStrength >= 7) return "mixed";
+  if (/\bchapter\s+\d+/i.test(combined) || sectionLike >= 5) return "lecture_notes";
   if (problemSheetStrong) return "problem_sheet";
   return "unknown";
 }
@@ -418,6 +434,10 @@ export function detectSourceContamination(generatedBlobLower: string, sourceLowe
     "mcmc",
     "detailed balance",
     "metropolis-hastings",
+    "mh ratio",
+    "metropolis hastings ratio",
+    "irreducibility",
+    "aperiodicity",
     "simple kriging",
     "ordinary kriging",
   ];
@@ -495,7 +515,9 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
   }
   const detectedTopics = [...topicSet].slice(0, 80);
 
-  const detectedNotation = dedupeNotationCounts(combined);
+  const notationSource =
+    layers.printedText.replace(/\s+/g, " ").trim().length > 400 ? layers.printedText : combined;
+  const detectedNotation = dedupeNotationCounts(notationSource);
 
   const title = inferTitleFromFirstPages(combined);
   const subjectArea = inferSubjectArea(combined);

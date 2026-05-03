@@ -444,7 +444,7 @@ export function buildRevisionPackDebugJson(store: RevisionPackDebugInput): Revis
   }
 
   const validation = validateGenericStudyPack(pack, pack.documentProfile ?? null, sourceUnion);
-  const actionablePool = [...manualFailures, ...validation.recommendations];
+  const actionablePool = [...manualFailures, ...validation.topActionableFailures, ...validation.recommendations];
   const acceptanceTests: GenericAcceptanceTests = computeGenericAcceptanceTests({
     pack,
     documentProfile: pack.documentProfile ?? null,
@@ -513,7 +513,7 @@ export function buildRevisionPackDebugJson(store: RevisionPackDebugInput): Revis
       generatedItemStatsByChapter: validation.generatedItemStatsByChapter,
       handwritingNoisePages: pack.documentProfile?.handwritingNoisePages ?? [],
       pipelineDiagnostics: pack.extractionPipelineDiagnostics ?? null,
-      topActionableIssues: actionablePool.slice(0, 5),
+      topActionableIssues: [...validation.topActionableFailures, ...manualFailures].slice(0, 14),
     },
   };
 

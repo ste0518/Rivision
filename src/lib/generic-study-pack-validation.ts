@@ -24,6 +24,8 @@ export type GenericAcceptanceTests = {
 export type GenericStudyPackValidation = {
   ok: boolean;
   criticalQualityFailure: boolean;
+  /** Prioritised human-readable failures for UI + Debug JSON. */
+  topActionableFailures: string[];
   acceptanceTests: GenericAcceptanceTests;
   sourceContamination: string[];
   recommendations: string[];
@@ -105,33 +107,101 @@ function statsByChapter(pack: GeneratedRevisionPack): Record<string, { definitio
 
 /** Extra acceptance checks for long mathematical lecture notes (generic thresholds, not one PDF). */
 export function validateLongMathLectureNotes(pack: GeneratedRevisionPack, profile: DocumentProfile | null): { ok: boolean; issues: string[] } {
-  if (!profile || profile.documentType !== "lecture_notes" || profile.pageCount <= 50) return { ok: true, issues: [] };
+  if (!profile || profile.pageCount <= 35) return { ok: true, issues: [] };
 
   const issues: string[] = [];
-  if (profile.chapterMap.length < 2) issues.push("chapterMap has fewer than 2 chapters — segmentation may have missed Chapter banners.");
+  const pageCount = profile.pageCount;
+  const lectureLike =
+    profile.documentType === "lecture_notes" ||
+    /\bchapter\s+\d+/i.test((pack.examOverview?.likelyExamStructure ?? "") + (pack.examOverview?.summary ?? "")) ||
+    profile.chapterMap.length >= 1;
+
+  if (pageCount >= 40 && lectureLike && profile.chapterMap.length < 2) {
+    issues.push("chapterMap has fewer than 2 chapters — segmentation may have missed Chapter banners or numbered sections.");
+  }
 
   const blocks = pack.sectionBlocks ?? [];
-  const nonWhole = blocks.filter((b) => !/whole/i.test(b.sectionId));
-  if (nonWhole.length < 10 && blocks.length < 10) issues.push("Fewer than 10 section blocks — numbered headings may not have been detected.");
+  const nonWhole = blocks.filter((b) => !/whole$/i.test(b.sectionId));
+  if (pageCount >= 40 && lectureLike && nonWhole.length < 10 && blocks.length < 10) {
+    issues.push("Fewer than 10 section blocks — numbered headings may not have been detected.");
+  }
 
   const diag = pack.extractionPipelineDiagnostics;
   const cand = diag?.formulaCandidateCount ?? 0;
-  if (cand >= 20 && pack.formulas.length < 20) issues.push("Formula count is far below formulaCandidateCount — check OCR cleanup or line filtering.");
+  if (pageCount >= 40 && cand >= 20 && pack.formulas.length < Math.min(20, Math.floor(cand * 0.35))) {
+    issues.push("Formula count is far below formulaCandidateCount — check extraction filters or PDF line breaks.");
+  }
+
+  const conceptCand = diag?.conceptCandidateCount ?? 0;
+  if (pageCount >= 40 && conceptCand >= 20 && pack.definitions.length < Math.min(20, Math.floor(conceptCand * 0.4))) {
+    issues.push("Definition count is low versus conceptCandidateCount — labelled blocks may be sparse.");
+  }
 
   const proofSignals = profile.proofLikeMarkersInSource || profile.hasProofs;
-  const proofCand = diag?.proofCandidateCount ?? 0;
+  const proofCand = (diag?.proofCandidateCount ?? 0) + (diag?.workedExampleCandidateCount ?? 0);
   const mergedProofs = (pack.proofsAndDerivations?.length ?? 0) + (pack.derivations?.length ?? 0);
-  if (proofSignals && proofCand >= 5 && mergedProofs < 5) issues.push("Proof-like markers in source but merged proofs/derivations are sparse.");
+  if (pageCount >= 40 && proofSignals && proofCand >= 5 && mergedProofs < 5) {
+    issues.push("Proof/worked-example cues in source but proofsAndDerivations are sparse.");
+  }
 
-  if (
-    blocks.length === 1 &&
-    /whole/i.test(blocks[0]?.sectionId ?? "") &&
-    profile.pageCount > 40
-  ) {
+  if (blocks.length === 1 && /whole$/i.test(blocks[0]?.sectionId ?? "") && profile.pageCount > 40) {
     issues.push("Single whole-document section block on a long PDF — headings likely not detected.");
   }
 
   return { ok: issues.length === 0, issues };
+}
+
+/** Actionable checklist for Study Pack UI + debug export (generic, not course-specific). */
+export function computeTopActionableFailures(
+  pack: GeneratedRevisionPack,
+  profile: DocumentProfile | null,
+  sourceText: string,
+  contamination: string[],
+  longNoteIssues: string[],
+): string[] {
+  const out = [...longNoteIssues];
+  const lower = sourceText.toLowerCase();
+  const pageCount = profile?.pageCount ?? 1;
+  const diag = pack.extractionPipelineDiagnostics;
+  const blocks = pack.sectionBlocks ?? [];
+
+  if (!profile?.chapterMap?.length && pageCount > 30) {
+    out.push("chapterMap empty — no chapter rows inferred from headings.");
+  }
+
+  if (blocks.length === 1 && /whole$/i.test(blocks[0]?.sectionId ?? "") && pageCount > 35) {
+    out.push("Only one section block covering the full PDF span — segmentation fallback.");
+  }
+
+  const fc = diag?.formulaCandidateCount ?? 0;
+  if (fc >= 20 && pack.formulas.length === 0) {
+    out.push("0 formulas extracted despite many formula-like candidate lines — inspect formula filters and PDF text.");
+  }
+
+  if (contamination.length) {
+    out.push(`Stale template / source contamination: ${contamination.slice(0, 3).join(" · ")}`);
+  }
+
+  const proofCand = (diag?.proofCandidateCount ?? 0) + (diag?.workedExampleCandidateCount ?? 0);
+  const pdCount = pack.proofsAndDerivations?.length ?? 0;
+  if (profile?.hasWorkedExamples && proofCand >= 8 && pdCount < 5 && pageCount > 40) {
+    out.push("Worked examples detected in source but proofsAndDerivations extraction is thin.");
+  }
+
+  if (/\bmcmc\b|\bdetailed balance\b|\bmetropolis-hastings\b|\birreducibility\b|\baperiodicity\b/i.test(collectPackBlob(pack)) && !/\bmcmc\b|\bdetailed balance\b/i.test(lower)) {
+    out.push("Pack text still references MCMC-style topics absent from the uploaded source.");
+  }
+
+  if (
+    pageCount >= 45 &&
+    profile?.documentType &&
+    profile.documentType !== "lecture_notes" &&
+    /\bchapter\s+\d+/i.test(sourceText)
+  ) {
+    out.push(`documentType is "${profile.documentType}" but chapter-style headings appear in the source — expected lecture_notes.`);
+  }
+
+  return [...new Set(out)].slice(0, 16);
 }
 
 export function computeGenericAcceptanceTests(input: {
@@ -253,21 +323,37 @@ export function validateGenericStudyPack(pack: GeneratedRevisionPack, documentPr
     quiz: undefined,
   });
 
+  const topActionableFailures = computeTopActionableFailures(pack, documentProfile, sourceText, contamination, longNotes.issues);
+
+  const structuralGateFail =
+    pageCount > 40 &&
+    (!documentProfile?.chapterMap?.length ||
+      ((pack.sectionBlocks ?? []).length < 8 && (pack.sectionBlocks ?? []).some((b) => /whole$/i.test(b.sectionId))));
+
+  const candidateFormulaGap =
+    pageCount > 40 &&
+    (pack.extractionPipelineDiagnostics?.formulaCandidateCount ?? 0) >= 20 &&
+    pack.formulas.length < 15;
+
+  const criticalQualityFailure =
+    contamination.length > 0 ||
+    !longNotes.ok ||
+    topActionableFailures.length > 0 ||
+    structuralGateFail ||
+    candidateFormulaGap;
+
   const ok =
     acceptanceTests.noSourceContamination &&
     acceptanceTests.noBibliographyLeakage &&
     acceptanceTests.hasDefinitionsForMainTopics &&
     acceptanceTests.hasFormulasFromFormulaDenseSections &&
-    longNotes.ok;
-
-  const criticalQualityFailure =
-    contamination.some((c) => /importance sampling|snis|mcmc|detailed balance/i.test(c)) ||
-    (pageCount > 50 && pack.formulas.length < 3 && /\d+\.\d+/.test(sourceText)) ||
-    !longNotes.ok;
+    longNotes.ok &&
+    !criticalQualityFailure;
 
   return {
-    ok: ok && !criticalQualityFailure,
+    ok,
     criticalQualityFailure,
+    topActionableFailures,
     acceptanceTests,
     sourceContamination: [...contamination],
     recommendations,

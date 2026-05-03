@@ -96,8 +96,8 @@ export default function UploadPage() {
   async function handleFiles(files: FileList | null, kind: "notes" | "guidance") {
     if (!files?.length) return;
     const list = Array.from(files);
-    const wouldOverwritePack = Boolean(store.studentRevisionPack) || store.revisionItems.some((item) => !item.isDeleted);
-    if (replacePack && wouldOverwritePack) {
+    const shouldConfirmReplace = replacePack && Boolean(store.studentRevisionPack);
+    if (shouldConfirmReplace) {
       setPendingUpload({ files: list, kind });
       setConfirmOpen(true);
       return;
@@ -189,6 +189,8 @@ export default function UploadPage() {
   const primaryNotesName =
     store.notesFiles.find((f) => f.role === "lecture_notes")?.name ?? store.notesFiles[0]?.name ?? "";
 
+  const hasRealStudyPack = Boolean(store.studentRevisionPack);
+
   return (
     <div className="space-y-8">
       <PageHeader
@@ -210,7 +212,7 @@ export default function UploadPage() {
                 onChange={(event) => persistReplaceSetting(event.target.checked)}
                 className="rounded border-slate-300"
               />
-              Replace current pack (recommended)
+              {hasRealStudyPack ? "Replace current study pack (recommended)" : "Create new study pack from uploads (recommended)"}
             </label>
           </div>
           {!replacePack ? (
@@ -270,7 +272,13 @@ export default function UploadPage() {
         <UploadBox
           title="Lecture notes & sources"
           description="Notes, chapters, formula sheets"
-          buttonLabel={replacePack ? "Upload file and replace current pack" : "Add lecture files"}
+          buttonLabel={
+            replacePack ?
+              hasRealStudyPack ?
+                "Upload file and replace current study pack"
+              : "Upload file and create study pack"
+            : "Add lecture files"
+          }
           onChange={(files) => void handleFiles(files, "notes")}
           disabled={loading}
         />

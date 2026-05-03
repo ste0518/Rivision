@@ -31,27 +31,72 @@ export function pageAtOffset(fullText: string, offset: number): number {
   return page;
 }
 
+const LABELLED_BLOCK_START =
+  /^(Definition|Theorem|Lemma|Proposition|Corollary|Remark|Example|Exercise|Proof|Algorithm)\s+[\d.]/i;
+
+function isStructuralNoiseTitle(title: string): boolean {
+  return LABELLED_BLOCK_START.test(title.trim());
+}
+
+/**
+ * Regex scan for numbered sections when line-by-line passes miss merged PDF lines.
+ */
+export function collectFallbackStructuralHeadings(fullText: string): StructuralHeading[] {
+  const text = fullText.replace(/\r\n/g, "\n");
+  const out: StructuralHeading[] = [];
+  const re = /(?:^|\n)\s*((?:\d{1,2}\.\d{1,2}(?:\.\d{1,2})?))\s+([^\n]{5,240})/g;
+  let m: RegExpExecArray | null;
+  while ((m = re.exec(text)) !== null) {
+    const num = m[1] ?? "";
+    const rawTitle = (m[2] ?? "").trim();
+    const title = truncateTitle(rawTitle.replace(/\s+/g, " "));
+    if (title.length < 4) continue;
+    if (isStructuralNoiseTitle(title)) continue;
+    if (isLikelyYearOrNoise(num, title)) continue;
+    const idx = m.index ?? 0;
+    const lineStart = text[idx] === "\n" ? idx + 1 : idx;
+    const parts = num.split(".").length;
+    const level = parts <= 2 ? 2 : 3;
+    out.push({
+      kind: "section",
+      label: num,
+      title,
+      line: `${num} ${title}`.slice(0, 240),
+      startOffset: lineStart,
+      level,
+      startPage: pageAtOffset(text, lineStart),
+    });
+  }
+  return dedupeHeadings(out);
+}
+
 /**
  * Collect Chapter lines and numbered section headings (N.N, N.N.N).
  * Skips citation-broken lines and obvious noise years.
+ * Merges a fallback scan so merged PDF lines still yield segment anchors.
  */
 export function collectStructuralHeadings(fullText: string): StructuralHeading[] {
   const text = fullText.replace(/\r\n/g, "\n");
+  const lines = text.split("\n");
+  const lineStarts: number[] = [];
+  let o = 0;
+  for (const ln of lines) {
+    lineStarts.push(o);
+    o += ln.length + 1;
+  }
+
   const out: StructuralHeading[] = [];
 
   const push = (h: Omit<StructuralHeading, "startPage">) => {
     out.push({ ...h, startPage: pageAtOffset(text, h.startOffset) });
   };
 
-  let offset = 0;
-  for (const rawLine of text.split("\n")) {
-    const lineStart = offset;
+  for (let i = 0; i < lines.length; i += 1) {
+    const rawLine = lines[i] ?? "";
     const trimLead = rawLine.length - rawLine.trimStart().length;
     const t = rawLine.trim();
-    offset += rawLine.length + 1;
-
-    if (t.length < 8) continue;
-    const contentStart = lineStart + trimLead;
+    if (t.length < 4) continue;
+    const contentStart = lineStarts[i]! + trimLead;
 
     const ch = t.match(/^Chapter\s+(\d{1,2}(?:\.\d+)?)\s*[.:]?\s+(.+)/i);
     if (ch) {
@@ -69,12 +114,53 @@ export function collectStructuralHeadings(fullText: string): StructuralHeading[]
       continue;
     }
 
-    const sec = t.match(/^(\d{1,2}\.\d{1,2}(?:\.\d{1,2})?)\s+([A-Za-z\u00C0-\u024F].+)/);
+    const chBare = t.match(/^Chapter\s+(\d{1,2}(?:\.\d+)?)\s*$/i);
+    if (chBare && i + 1 < lines.length) {
+      const nextLine = (lines[i + 1] ?? "").trim();
+      if (
+        nextLine.length >= 4 &&
+        nextLine.length < 200 &&
+        !/^\[Page\b/i.test(nextLine) &&
+        !/^\d+\.\d+/.test(nextLine) &&
+        !/^Chapter\s+/i.test(nextLine)
+      ) {
+        const title = truncateTitle(nextLine.replace(/\s+/g, " "));
+        if (title.length >= 4) {
+          push({
+            kind: "chapter",
+            label: `Chapter ${chBare[1]}`,
+            title,
+            line: `${t} ${nextLine}`.slice(0, 240),
+            startOffset: contentStart,
+            level: 1,
+          });
+        }
+      }
+      continue;
+    }
+
+    const chCaps = t.match(/^CHAPTER\s+(\d{1,2}(?:\.\d+)?)\s*[.:]?\s*(.*)$/i);
+    if (chCaps && (chCaps[2]?.trim().length ?? 0) >= 4) {
+      const title = truncateTitle((chCaps[2] ?? "").replace(/\s+/g, " ").trim());
+      push({
+        kind: "chapter",
+        label: `Chapter ${chCaps[1]}`,
+        title,
+        line: t.slice(0, 240),
+        startOffset: contentStart,
+        level: 1,
+      });
+      continue;
+    }
+
+    const sec = t.match(/^(\d{1,2}\.\d{1,2}(?:\.\d{1,2})?)\s+(.+)/);
     if (sec) {
       const num = sec[1] ?? "";
-      const title = truncateTitle((sec[2] ?? "").replace(/\s+/g, " ").trim());
+      let rawTitle = (sec[2] ?? "").replace(/\s+/g, " ").trim();
+      rawTitle = rawTitle.replace(/^[\s.:)-]+/, "");
+      const title = truncateTitle(rawTitle);
       if (title.length < 4) continue;
-      if (/^(Definition|Theorem|Lemma|Proposition|Corollary|Remark|Example|Exercise|Proof|Algorithm)\b/i.test(title)) continue;
+      if (isStructuralNoiseTitle(title)) continue;
       if (isLikelyYearOrNoise(num, title)) continue;
       const parts = num.split(".").length;
       const level = parts <= 2 ? 2 : 3;
@@ -86,11 +172,42 @@ export function collectStructuralHeadings(fullText: string): StructuralHeading[]
         startOffset: contentStart,
         level,
       });
+      continue;
+    }
+
+    const we = t.match(/^Worked\s+example\s*[.:]?\s*(.*)$/i);
+    if (we && t.length < 220) {
+      const rest = (we[1] ?? "").trim();
+      const title = truncateTitle(rest.length >= 4 ? rest : "Worked example");
+      push({
+        kind: "section",
+        label: "Worked example",
+        title,
+        line: t.slice(0, 240),
+        startOffset: contentStart,
+        level: 2,
+      });
+      continue;
+    }
+
+    const modelLabel = t.match(
+      /^(MA|AR|ARMA|ARCH|ARIMA|VAR|GLP|General\s+linear\s+process)\s*\([^)]{1,24}\)\s*$/i,
+    );
+    if (modelLabel && t.length < 120) {
+      push({
+        kind: "section",
+        label: modelLabel[1]!.toUpperCase(),
+        title: t.trim(),
+        line: t.slice(0, 240),
+        startOffset: contentStart,
+        level: 3,
+      });
     }
   }
 
-  out.sort((a, b) => a.startOffset - b.startOffset || a.level - b.level);
-  return dedupeHeadings(out);
+  const merged = [...out, ...collectFallbackStructuralHeadings(text)];
+  merged.sort((a, b) => a.startOffset - b.startOffset || a.level - b.level);
+  return dedupeHeadings(merged);
 }
 
 function truncateTitle(t: string): string {
@@ -109,7 +226,7 @@ function dedupeHeadings(headings: StructuralHeading[]): StructuralHeading[] {
   const seen = new Set<string>();
   const out: StructuralHeading[] = [];
   for (const h of headings) {
-    const k = `${h.startOffset}|${h.line.slice(0, 120)}`;
+    const k = `${h.startOffset}|${h.kind}|${h.label}|${h.title.slice(0, 80)}`;
     if (seen.has(k)) continue;
     seen.add(k);
     out.push(h);
