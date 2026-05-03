@@ -37,6 +37,47 @@ Problem 1. Let $\\gamma(t)=(\\cos t,\\sin t,0)$. Compute $\\kappa(t)$.
 Problem 2. Show that arc length is invariant under reparametrisation; hence conclude speed $|\\gamma'(t)|$ enters the integral.
 `;
 
+const SPATIAL_STATISTICS_NOTES = `[Page 1]
+Spatial statistics — lecture excerpt
+
+Definition 1.1 We analyse spatial correlation using distance-based summaries.
+
+Example 1. Pair distances h between observation sites are grouped; squared differences inform covariance structure.
+
+Proof. Under second-order stationarity, the variogram relates to the covariance function.
+`;
+
+const SOLUTIONS_STYLE = `[Page 1]
+Problem Set — Solutions
+
+Question 1. (5 marks) Show that a valid covariance is positive semidefinite.
+
+Solution. For any coefficients a_i, double sums satisfy ∑∑ a_i a_j C(i,j) ≥ 0.
+
+Mark scheme: 2 setup · 2 argument · 1 conclusion.
+`;
+
+const FORMULA_SHEET_STYLE = `[Page 1]
+Key identities
+
+∫_a^b f'(x) dx = f(b) - f(a)
+
+Var(X) = E(X^2) - (E X)^2
+
+||u×v|| = ||u|| ||v|| sin θ
+`;
+
+const REVISION_GUIDE_STYLE = `[Page 1]
+Last-minute revision — sample module
+
+Must know:
+- define weak stationarity for a stochastic process
+- state when AR models are stationary from roots
+- write one-step forecasts from state equations
+
+Cram checklist: mean · variance · autocovariance · spectral idea
+`;
+
 export type SmokeCase = {
   id: string;
   label: string;
@@ -48,12 +89,17 @@ export const SMOKE_CASES: SmokeCase[] = [
   { id: "geometry_notes", label: "Geometry-style notes", role: "lecture_notes", text: GEOMETRY_NOTES },
   { id: "time_series", label: "Time series notes", role: "lecture_notes", text: timeSeriesFixtureDocument.fullText },
   { id: "monte_carlo", label: "Monte Carlo notes", role: "lecture_notes", text: chapter3MonteCarloExcerpt },
+  { id: "spatial_statistics", label: "Spatial statistics notes", role: "lecture_notes", text: SPATIAL_STATISTICS_NOTES },
   { id: "past_paper", label: "Past paper style", role: "past_paper", text: PAST_PAPER_STYLE },
   { id: "problem_sheet", label: "Problem sheet style", role: "problem_sheet", text: PROBLEM_SHEET_STYLE },
+  { id: "solutions", label: "Solutions / mark scheme", role: "solution_sheet", text: SOLUTIONS_STYLE },
+  { id: "formula_sheet", label: "Formula sheet", role: "formula_sheet", text: FORMULA_SHEET_STYLE },
+  { id: "revision_guide", label: "Revision guide", role: "lecture_notes", text: REVISION_GUIDE_STYLE },
 ];
 
 export type SmokeTestRun = {
   case: SmokeCase;
+  documentType: string | undefined;
   nonEmpty: boolean;
   staleSpatialLeak: boolean;
   counts: { definitions: number; formulas: number; proofs: number; sectionBlocks: number };
@@ -89,6 +135,7 @@ export function runSmokeTest(caseId: string): SmokeTestRun {
   const nonEmpty = counts.definitions + counts.formulas + counts.proofs > 0;
   return {
     case: c,
+    documentType: pack.documentProfile?.documentType,
     nonEmpty,
     staleSpatialLeak,
     counts,

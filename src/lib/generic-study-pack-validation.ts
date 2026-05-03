@@ -4,7 +4,7 @@
 
 import type { DocumentProfile } from "@/lib/document-profile";
 import { detectSourceContamination } from "@/lib/document-profile";
-import type { GeneratedPracticeQuestion, GeneratedRevisionPack } from "@/lib/student-revision-schema";
+import type { GeneratedPracticeQuestion, GeneratedRevisionPack, PipelineHealth, PipelineHealthStage } from "@/lib/student-revision-schema";
 
 export type GenericAcceptanceTests = {
   hasDocumentProfile: boolean;
@@ -347,6 +347,41 @@ export function computeGenericAcceptanceTests(input: {
     noBibliographyLeakage: !bibliographyInPack,
     noBadMathTokensInStudyPack: badMathTokenCount === 0,
   };
+}
+
+export function computePipelineHealth(
+  pack: GeneratedRevisionPack,
+  documentProfile: DocumentProfile | null,
+  validation: GenericStudyPackValidation,
+): PipelineHealth {
+  const p = documentProfile;
+  const diag = pack.extractionPipelineDiagnostics;
+  const stages: PipelineHealthStage[] = [
+    { id: "profile", label: "Document profile", pass: Boolean(p?.title || p?.courseName), detail: p ? "ok" : "missing" },
+    { id: "toc_headings", label: "TOC / heading detection", pass: (diag?.pageHeadingCandidateCount ?? 0) > 0 || (p?.hasTableOfContents && (p.chapterMap?.length ?? 0) > 0) || (diag?.headingCandidateCount ?? 0) > 0, detail: `headings ${diag?.pageHeadingCandidateCount ?? 0}` },
+    { id: "chapter_ranges", label: "Chapter ranges", pass: !diag?.chapterRangeValidation || diag.chapterRangeValidation.ok, detail: diag?.chapterRangeValidation?.errors.join("; ").slice(0, 120) },
+    { id: "section_slice", label: "Section slicing", pass: !diag?.sectionBlocksSummary?.duplicateOpeningSlices && (diag?.sectionBlockCount ?? 0) > 0, detail: `${diag?.sectionBlockCount ?? 0} blocks` },
+    {
+      id: "formulas",
+      label: "Formula extraction",
+      pass:
+        (diag?.formulaCandidateCount ?? 0) === 0 ||
+        (pack.formulas.length > 0 || (diag?.formulaCandidateCount ?? 0) < 15),
+      detail: `${diag?.formulaCandidateCount ?? 0} cand → ${pack.formulas.length} kept`,
+    },
+    {
+      id: "proofs_examples",
+      label: "Proof / example extraction",
+      pass:
+        !p?.proofLikeMarkersInSource ||
+        (pack.proofs.length + (pack.proofsAndDerivations?.length ?? 0) + (pack.derivations?.length ?? 0) > 0),
+      detail: `proofs ${pack.proofs.length}, merged ${pack.proofsAndDerivations?.length ?? 0}`,
+    },
+    { id: "grounding", label: "Source grounding", pass: validation.acceptanceTests.hasGroundingForAllItems, detail: validation.acceptanceTests.hasGroundingForAllItems ? "ok" : "missing excerpts" },
+    { id: "exam_pack", label: "Final exam pack", pass: validation.ok && !validation.criticalQualityFailure, detail: validation.ok ? "ok" : "issues remain" },
+  ];
+  const overallPass = stages.every((s) => s.pass);
+  return { stages, overallPass };
 }
 
 export function validateGenericStudyPack(pack: GeneratedRevisionPack, documentProfile: DocumentProfile | null, sourceText: string): GenericStudyPackValidation {

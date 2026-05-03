@@ -244,7 +244,11 @@ export function useStudyStore() {
     ensureActivePackId() {
       setState((current) => (current.activePackId ? current : { ...current, activePackId: createId("ws") }));
     },
-    /** Clear derived pack state before a fresh generation run (uploaded files unchanged). */
+    /**
+     * Clear derived pack state before a fresh generation run (uploaded files unchanged).
+     * Wipes all document-specific outputs so nothing leaks across uploads: cards, packs, maps,
+     * diagnostics, practice — equivalent to a hard reset of generation artefacts only.
+     */
     resetDerivedPackState() {
       setState((current) => ({
         ...current,

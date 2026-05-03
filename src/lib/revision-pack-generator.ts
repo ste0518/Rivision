@@ -1,10 +1,12 @@
 import { inferStudyFileRole } from "@/lib/course-files";
+import { computePipelineHealth, validateGenericStudyPack } from "@/lib/generic-study-pack-validation";
 import {
   buildHeuristicStudentRevisionPack,
   CORE_IDEA_PLACEHOLDER,
   extractExampleAndExerciseItemsForDebug,
 } from "@/lib/local-study-pack-extraction";
 import { cardFromDefinition, cardFromFormula, cardFromMethod, cardFromProof } from "@/lib/pack-to-card";
+import { cleanUploadedStudySourceText } from "@/lib/source-text-cleanup";
 import type { GeneratedDefinitionItem, GeneratedPracticeQuestion, GeneratedRevisionPack } from "@/lib/student-revision-schema";
 import type { RevisionItem } from "@/lib/types";
 import type { StudyFile, StudyFileRole } from "@/lib/types";
@@ -85,8 +87,44 @@ export function generateStudentRevisionPack(input: {
     ? `${new Set(keywordHits.map((k) => k.toLowerCase())).size} conceptual markers detected across uploads.`
     : "";
 
+  const sourceForValidation = cleanUploadedStudySourceText(text);
+  const validation = validateGenericStudyPack(pack, pack.documentProfile ?? null, sourceForValidation);
+  const pipelineHealth = computePipelineHealth(pack, pack.documentProfile ?? null, validation);
+
+  const safeFallbackPack =
+    validation.criticalQualityFailure ?
+      {
+        documentProfile: pack.documentProfile,
+        rawDetectedHeadings: pack.sectionBlocks?.map((s) => s.heading).slice(0, 60),
+        topConceptCandidates: pack.definitions.map((d) => d.term).slice(0, 28),
+        topFormulaCandidates: pack.formulas.map((f) => (f.rawFormula ?? f.latex ?? "").slice(0, 240)).slice(0, 28),
+        topProofOrExampleCandidates: [
+          ...pack.proofs.map((p) => p.statement.slice(0, 320)),
+          ...(pack.proofsAndDerivations?.map((d) => d.summary.slice(0, 320)) ?? []),
+        ].slice(0, 16),
+        failureExplanation:
+          "Critical quality checks failed (segmentation, grounding, or contamination). This pack is not exam-ready — use Debug JSON and fix PDF text extraction where needed.",
+        topActionableIssues: validation.topActionableFailures,
+        debugJsonAvailable: true,
+      }
+    : undefined;
+
+  const baseDiag = pack.extractionPipelineDiagnostics;
+  const extractionPipelineDiagnostics =
+    baseDiag ?
+      {
+        ...baseDiag,
+        criticalQualityFailure: validation.criticalQualityFailure,
+        topActionableIssues: [...(baseDiag.topActionableIssues ?? []), ...validation.topActionableFailures],
+      }
+    : undefined;
+
   return {
     ...pack,
+    criticalQualityFailure: validation.criticalQualityFailure,
+    pipelineHealth,
+    safeFallbackPack,
+    ...(extractionPipelineDiagnostics ? { extractionPipelineDiagnostics } : {}),
     examAnchoredExercises: parsedExercises.map((e) => ({
       formalLabel: e.formalLabel,
       body: e.body,

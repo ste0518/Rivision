@@ -166,6 +166,36 @@ export interface GeneratedDerivationItem {
   groundingConfidence: number;
 }
 
+export type ChapterRangeValidationSummary = {
+  ok: boolean;
+  errors: string[];
+  warnings: string[];
+};
+
+export type PipelineHealthStage = {
+  id: string;
+  label: string;
+  pass: boolean;
+  detail?: string;
+};
+
+export type PipelineHealth = {
+  stages: PipelineHealthStage[];
+  overallPass: boolean;
+};
+
+/** Minimal safe output when segmentation/extraction critically fails (no misleading exam-ready labelling). */
+export type SafeFallbackStudyPack = {
+  documentProfile?: DocumentProfile;
+  rawDetectedHeadings?: string[];
+  topConceptCandidates?: string[];
+  topFormulaCandidates?: string[];
+  topProofOrExampleCandidates?: string[];
+  failureExplanation: string;
+  topActionableIssues: string[];
+  debugJsonAvailable: boolean;
+};
+
 /** Counts for debugging segmentation / extraction quality (local pipeline). */
 export type ExtractionPipelineDiagnostics = {
   formulaCandidateCount: number;
@@ -174,8 +204,13 @@ export type ExtractionPipelineDiagnostics = {
   formulaRejectionReasons: string[];
   conceptCandidateCount: number;
   headingCandidateCount: number;
+  /** Page-aware heading detection count (preferred over legacy heading scan). */
+  pageHeadingCandidateCount?: number;
   sectionBlockCount: number;
   chapterCandidateCount: number;
+  chapterMapSource?: "toc" | "headings" | "none";
+  chapterRangeValidation?: ChapterRangeValidationSummary;
+  sectionBlocksSummary?: { count: number; duplicateOpeningSlices: boolean };
   workedExampleCandidateCount: number;
   proofCandidateCount: number;
   exampleCandidateCount?: number;
@@ -183,6 +218,7 @@ export type ExtractionPipelineDiagnostics = {
   extractionPipelineTrace: string[];
   /** Mirrors generic QA priority list for Debug JSON / UI. */
   topActionableIssues?: string[];
+  criticalQualityFailure?: boolean;
 };
 
 export interface GeneratedMethodTemplate {
@@ -247,6 +283,11 @@ export interface GeneratedRevisionPack {
   examOverview: ExamOverviewSection;
   /** Snapshot profiling for the active upload (local-first). */
   documentProfile?: DocumentProfile;
+  /** Set when generic validation finds blocking issues (contamination, grounding, segmentation). */
+  criticalQualityFailure?: boolean;
+  pipelineHealth?: PipelineHealth;
+  /** Thin recoverable snapshot — shown instead of implying exam-ready when critical failures occur. */
+  safeFallbackPack?: SafeFallbackStudyPack;
   /** Structural segmentation used for extraction QA. */
   sectionBlocks?: SectionBlock[];
   /** Unified proof / worked-example / derivation rows (may overlap formal {@link proofs}). */

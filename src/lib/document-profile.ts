@@ -12,6 +12,8 @@ export type DocumentType =
   | "problem_sheet"
   | "past_paper"
   | "solutions"
+  | "formula_sheet"
+  | "revision_guide"
   | "mixed"
   | "unknown";
 
@@ -64,6 +66,10 @@ export type DocumentProfile = {
   hasProofBlocks: boolean;
   hasExamples: boolean;
   hasFormulas: boolean;
+  /** Numbered exam-style questions / past-paper stems (distinct from exercises in notes). */
+  hasPastPaperQuestions?: boolean;
+  /** Dominant worked answers / mark schemes. */
+  hasSolutions?: boolean;
   /** Heuristic 0–1 confidence in profiling signals. */
   confidence: number;
   warnings: string[];
@@ -227,6 +233,19 @@ export function classifyDocumentType(
     lectureStrength += 7;
   }
 
+  const equationHeavy =
+    combined.length > 400 &&
+    (combined.match(/[=∫∑∏√∂∇]/g) ?? []).length > Math.max(25, combined.length / 90) &&
+    (combined.match(/\b(the|and|therefore|because|however)\b/gi) ?? []).length < combined.length / 420;
+
+  const revisionCram =
+    /\b(cram|must\s+know|checklist|exam\s+tips|last\s+minute|revision\s+guide|key\s+ideas)\b/i.test(lower) &&
+    chapterLike < 2 &&
+    lectureStrength < 8;
+
+  if (revisionCram && !examPaperStrong && !solutionsDominant) return "revision_guide";
+  if (equationHeavy && !examPaperStrong && lectureStrength < 6 && chapterLike < 2 && !problemSheetStrong) return "formula_sheet";
+
   if (examPaperStrong && lectureStrength < 7) return "past_paper";
   if (problemSheetStrong && lectureStrength < 8 && !solutionsDominant) return "problem_sheet";
 
@@ -238,71 +257,68 @@ export function classifyDocumentType(
   return "unknown";
 }
 
-function inferSubjectArea(title: string | null, chapterTitles: string[], text: string): string | null {
-  const lower = text.slice(0, 180_000).toLowerCase();
-  const seed = `${title ?? ""}\n${chapterTitles.slice(0, 48).join("\n")}`.toLowerCase();
+const ADMIN_TOPIC_STOP = new Set([
+  "introduction",
+  "module",
+  "admin",
+  "structure",
+  "prerequisites",
+  "assessment",
+  "handbook",
+  "syllabus",
+  "contents",
+  "appendix",
+  "references",
+  "bibliography",
+]);
 
-  const scores: Array<[string, number]> = [
-    [
-      "Differential geometry / geometry of curves and surfaces",
-      (/\b(curvature|frenet|gauss-bonnet|theorema\s+egregium|second\s+fundamental|first\s+fundamental|geodesic|geodesics)\b/i.test(seed) ||
-        /\b(torsion|binormal|principal\s+normal|regular\s+curve|parametrised\s+curve)\b/i.test(seed) ||
-        /\b(differential\s+geometry|surfaces?\b.*\btangent\s+plane)\b/i.test(lower)) ?
-        4
-      : 0,
-    ],
-    [
-      "Time series analysis",
-      /\b(time\s+series|autocovariance|autocorrelation|arima|sarima|\barma\s*\(|spectral\s+density|seasonal\s+difference)\b/i.test(lower) ? 3 : 0,
-    ],
-    ["Monte Carlo / simulation", /\b(monte\s*carlo\s+integration|importance\s+sampling|\bmcmc\b|markov\s+chain\s+monte)\b/i.test(lower) ? 3 : 0],
-    ["Spatial statistics", /\b(kriging|semivariogram|variogram|geostat)\b/i.test(lower) ? 3 : 0],
-    ["Probability & stochastic processes", /\b(stochastic\s+process|probability\s+space|sigma\s*algebra)\b/i.test(lower) ? 2 : 0],
-  ];
-  const best = scores.reduce((a, b) => (b[1] > a[1] ? b : a));
-  return best[1] >= 2 ? best[0] : null;
-}
-
-/** Topic labels derived from headings + anchored phrases in source (no substring-only matches like "arch" ⊂ "March"). */
+/** Short canonical topics from headings + repeated meaningful phrases (no fixed syllabus list). */
 function extractDetectedTopicsFromDocument(combined: string, headingTitles: string[]): string[] {
   const topics = new Set<string>();
-  for (const h of headingTitles) {
-    const t = h.replace(/\s+/g, " ").trim();
-    if (t.length >= 5 && t.length < 160) topics.add(t.slice(0, 120));
+
+  for (const raw of headingTitles) {
+    const t = raw.replace(/\s+/g, " ").replace(/^[\d.]+/g, "").trim();
+    if (t.length < 6 || t.length > 90) continue;
+    const words = t
+      .toLowerCase()
+      .split(/\s+/)
+      .filter((w) => w.length > 2 && !ADMIN_TOPIC_STOP.has(w));
+    if (words.length === 0) continue;
+    const phrase = words.slice(0, 5).join(" ");
+    if (phrase.length >= 5 && phrase.length <= 60) topics.add(phrase);
   }
 
-  const slice = combined.slice(0, 260_000).toLowerCase();
-  const anchored: Array<[string, RegExp]> = [
-    ["white noise", /\bwhite\s+noise\b/i],
-    ["autocovariance", /\bautocovariance\b/i],
-    ["autocorrelation", /\bautocorrelation\b/i],
-    ["stationarity", /\bstationarity\b|\bstationary\b/i],
-    ["ARIMA", /\barima\b/i],
-    ["ARCH model", /\bARCH\s*\(/i],
-    ["Monte Carlo integration", /\bmonte\s*carlo\b/i],
-    ["Markov chain Monte Carlo", /\bmcmc\b|\bmarkov\s+chain\s+monte\b/i],
-    ["Gaussian curvature", /\bgaussian\s+curvature\b/i],
-    ["mean curvature", /\bmean\s+curvature\b/i],
-    ["Christoffel symbols", /\bchristoffel\b/i],
-    ["Gauss–Bonnet", /\bgauss[-\s]*bonnet\b/i],
-    ["Theorema Egregium", /\btheorema\s+egregium\b|\begregium\b/i],
-    ["Frenet frame", /\bfrenet\b/i],
-    ["geodesic", /\bgeodesics?\b/i],
-    ["torsion", /\btorsion\b/i],
-    ["regular curve", /\bregular\s+curve\b/i],
-    ["arc-length", /\barc[-\s]?length\b/i],
-    ["winding number", /\bwinding\s+number\b/i],
-    ["tangent plane", /\btangent\s+plane\b/i],
-    ["Gauss map", /\bgauss\s+map\b/i],
-    ["second fundamental form", /\bsecond\s+fundamental\s+form\b/i],
-    ["first fundamental form", /\bfirst\s+fundamental\s+form\b/i],
-  ];
-
-  for (const [label, re] of anchored) {
-    if (re.test(slice)) topics.add(label);
+  const slice = combined.slice(0, 220_000).toLowerCase();
+  const bigramRe = /\b([a-z][a-z-]{2,})\s+([a-z][a-z-]{2,})\b/g;
+  const counts = new Map<string, number>();
+  let m: RegExpExecArray | null;
+  while ((m = bigramRe.exec(slice)) !== null) {
+    const a = m[1]!;
+    const b = m[2]!;
+    if (ADMIN_TOPIC_STOP.has(a) || ADMIN_TOPIC_STOP.has(b)) continue;
+    const key = `${a} ${b}`;
+    counts.set(key, (counts.get(key) ?? 0) + 1);
   }
+  const frequent = [...counts.entries()]
+    .filter(([, c]) => c >= 4)
+    .sort((x, y) => y[1] - x[1])
+    .slice(0, 40)
+    .map(([k]) => k);
+  for (const f of frequent) topics.add(f);
 
   return [...topics].slice(0, 90);
+}
+
+/** Generic subject line from title / early headings only (no fixed course templates). */
+function inferSubjectArea(title: string | null, chapterTitles: string[], text: string): string | null {
+  if (title && title.length >= 10 && title.length < 180) return title.replace(/\s+/g, " ").trim();
+  const firstChapter = chapterTitles.find((c) => c.length >= 8 && c.length < 120);
+  if (firstChapter) return firstChapter.replace(/\s+/g, " ").trim().slice(0, 120);
+  const early = text.slice(0, 12_000).split("\n").find((l) => {
+    const t = l.trim();
+    return t.length >= 16 && t.length < 120 && /[a-z]{4,}/i.test(t) && !/^\[Page/i.test(t);
+  });
+  return early?.trim().slice(0, 120) ?? null;
 }
 
 function inferTitleFromFirstPages(text: string): string | null {
@@ -517,42 +533,17 @@ export function buildSourceKeywordSet(sourceLower: string): Set<string> {
 /** Multi-word or symbol-heavy phrases that indicate one course template leaking into another upload. */
 export function detectSourceContamination(generatedBlobLower: string, sourceLower: string): string[] {
   const issues: string[] = [];
-  const candidates = [
-    "semivariogram",
-    "ordinary kriging",
-    "simple kriging",
-    "kriging predictor",
-    "kriging system",
-    "blup",
-    "best linear unbiased predictor",
-    "sar model",
-    "car model",
-    "conditional autoregressive",
-    "simultaneous autoregressive",
-    "local characteristic",
-    "poisson process intensity",
-    "importance sampling",
-    "self-normalised importance",
-    "self-normalized importance",
-    "snis",
-    "effective sample size",
-    "monte carlo integration",
-    "markov chain monte carlo",
-    "mcmc",
-    "detailed balance",
-    "metropolis-hastings",
-    "mh ratio",
-    "metropolis hastings ratio",
-    "irreducibility",
-    "aperiodicity",
-  ];
-
-  for (const term of candidates) {
-    if (generatedBlobLower.includes(term) && !sourceLower.includes(term)) {
-      issues.push(`Generated content mentions “${term}” but the uploaded source does not — possible hallucination or stale template.`);
+  const absent = findProminentTermsAbsentFromSource(generatedBlobLower, sourceLower);
+  for (const term of absent.slice(0, 16)) {
+    issues.push(`Generated text uses “${term}”, which does not appear in the uploaded source — possible stale template or hallucination.`);
+  }
+  const phrases = generatedBlobLower.match(/\b[a-z]{5,}\s+[a-z]{5,}\s+[a-z]{5,}\b/g) ?? [];
+  for (const p of [...new Set(phrases)].slice(0, 12)) {
+    if (!sourceLower.includes(p) && p.length >= 18) {
+      issues.push(`Generated phrase not grounded in source: “${p.slice(0, 80)}”.`);
     }
   }
-  return issues;
+  return issues.slice(0, 24);
 }
 
 const GENERIC_STOPWORDS = new Set([
@@ -667,6 +658,7 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
   const chapterHeadingTitles = chapterMap.map((c) => c.chapterTitle).filter(Boolean);
   const subjectArea = inferSubjectArea(title, chapterHeadingTitles.length ? chapterHeadingTitles : headingTopics, combined);
   const courseName = title ?? subjectArea;
+  const finalTitle = title ?? (courseName ?? null);
 
   const hasLemmaLabels = /\blemma\s+\d/i.test(combined);
   const hasPropLabels = /\bproposition\s+\d/i.test(combined);
@@ -679,7 +671,7 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
     /\bintegral\b|\bdeterminant\b|\\frac/i.test(combined);
 
   let confidence = 0.45;
-  if (title) confidence += 0.18;
+  if (finalTitle) confidence += 0.18;
   if (chapterMap.length >= 5) confidence += 0.15;
   if (tocParseResult.found) confidence += 0.12;
   if (detectedTopics.length >= 8) confidence += 0.08;
@@ -697,8 +689,16 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
     /(?:^|\n)\s*[A-Za-z][^.\n]{6,140}(?:\.{3,}|…|(?:\s\.){3,}|\s{5,})\s*\d{1,4}\s*$/m.test(earlyForToc);
   const criticalTocParseFailure = Boolean(contentsBanner && tocLeaderLines && chapterMap.length === 0);
 
+  const hasPastPaperQuestions =
+    /\b(total\s+marks|minutes\s+allowed|time\s+allowed|candidate\s+number)\b/i.test(combined) &&
+    (/(?:^|\n)\s*question\s+\d/i.test(combined) || /(?:^|\n)\s*(?:q\.?|part)\s*\d/i.test(combined));
+  const solutionLineHits = (combined.match(/(?:^|\n)\s*(?:solution|answer|mark\s+scheme)\b/gi) ?? []).length;
+  const looksLikeLectureWithIncidentalSolutions =
+    /\bchapter\s+\d+/i.test(combined.slice(0, 35_000)) && solutionLineHits < 14;
+  const hasSolutions = solutionLineHits >= 10 && !looksLikeLectureWithIncidentalSolutions;
+
   return {
-    title,
+    title: finalTitle,
     courseName,
     subjectArea,
     documentType: classifyDocumentType(cleanedPagesArg, combined),
@@ -723,6 +723,8 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
     hasProofBlocks: hasProofLabels,
     hasExamples: hasWorkedExamples || hasExampleLabels,
     hasFormulas: hasFormulaSignals,
+    hasPastPaperQuestions,
+    hasSolutions,
     confidence,
     warnings: profileWarnings,
     tocParseResult,

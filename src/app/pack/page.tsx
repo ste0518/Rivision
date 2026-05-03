@@ -218,6 +218,40 @@ export default function PackPage() {
         description="Structured revision built from your uploads. Everything stays on your device."
       />
 
+      {pack.pipelineHealth ? (
+        <Card className="border-slate-200">
+          <CardHeader className="pb-2">
+            <CardTitle className="text-base">Pipeline health</CardTitle>
+            <CardDescription>
+              Local segmentation and grounding stages. Overall:{" "}
+              <span className={pack.pipelineHealth.overallPass ? "font-semibold text-green-800" : "font-semibold text-amber-800"}>
+                {pack.pipelineHealth.overallPass ? "Pass" : "Needs attention"}
+              </span>
+            </CardDescription>
+          </CardHeader>
+          <CardContent>
+            <ul className="grid gap-2 sm:grid-cols-2">
+              {pack.pipelineHealth.stages.map((s) => (
+                <li key={s.id} className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm">
+                  <span className="text-slate-800">{s.label}</span>
+                  <Badge className={s.pass ? "shrink-0 border-green-700 bg-green-100 text-green-900" : "shrink-0 border-amber-700 bg-amber-100 text-amber-900"}>
+                    {s.pass ? "Pass" : "Fail"}
+                  </Badge>
+                </li>
+              ))}
+            </ul>
+            {pack.pipelineHealth.stages.some((s) => s.detail) ? (
+              <p className="mt-3 text-xs text-slate-500">
+                {pack.pipelineHealth.stages
+                  .filter((s) => s.detail)
+                  .map((s) => `${s.label}: ${s.detail}`)
+                  .join(" · ")}
+              </p>
+            ) : null}
+          </CardContent>
+        </Card>
+      ) : null}
+
       {debugExport && packQuality ? (
         <Card className="border-slate-200 bg-slate-50/80">
           <CardHeader className="pb-2">

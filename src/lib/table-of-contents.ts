@@ -5,8 +5,20 @@
 import { sanitiseExtractedText } from "@/lib/document-profile";
 import type { ChapterMapEntry } from "@/lib/document-profile";
 
+/** One parsed TOC row (primary structure source when page numbers are valid). */
+export type TocEntry = {
+  label: string;
+  title: string;
+  startPage: number | null;
+  level: number;
+  confidence: number;
+  rawLine: string;
+};
+
 export type TocParseResult = {
   found: boolean;
+  /** Structured rows for universal chapter map / debug. */
+  entries: TocEntry[];
   chapterMap: ChapterMapEntry[];
   headingCandidates: string[];
   warnings: string[];
@@ -52,7 +64,7 @@ export function parseTableOfContents(
   const rawTocLines: string[] = [];
 
   if (!pages.length || pageCount < 2) {
-    return { found: false, chapterMap: [], headingCandidates, warnings: ["No multi-page document"], rawTocLines };
+    return { found: false, entries: [], chapterMap: [], headingCandidates, warnings: ["No multi-page document"], rawTocLines };
   }
 
   const early = pages
@@ -206,8 +218,22 @@ export function parseTableOfContents(
 
   if (seq.length < 2) {
     warnings.push("TOC heuristics found fewer than 2 usable entries — falling back to heading scan.");
-    return { found: false, chapterMap: [], headingCandidates, warnings, rawTocLines };
+    return { found: false, entries: [], chapterMap: [], headingCandidates, warnings, rawTocLines };
   }
+
+  const tocLevel = (label: string): number => {
+    const parts = label.split(".").filter(Boolean);
+    return Math.min(4, Math.max(1, parts.length));
+  };
+
+  const entries: TocEntry[] = seq.map((e) => ({
+    label: e.label,
+    title: e.title,
+    startPage: e.page,
+    level: tocLevel(e.label),
+    confidence: 0.82,
+    rawLine: e.raw,
+  }));
 
   const chapterMap: ChapterMapEntry[] = [];
   for (let j = 0; j < seq.length; j += 1) {
@@ -230,6 +256,7 @@ export function parseTableOfContents(
 
   return {
     found: true,
+    entries,
     chapterMap,
     headingCandidates: [...new Set(headingCandidates)].slice(0, 80),
     warnings,

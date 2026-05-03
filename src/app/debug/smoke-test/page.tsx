@@ -33,7 +33,7 @@ export default function SmokeTestPage() {
     <div className="space-y-6">
       <PageHeader
         title="Run sample smoke test"
-        description="Local bundled fixtures validate extraction, segmentation, grounding, and absence of spatial-statistics template leakage."
+        description="Local bundled fixtures validate document typing, page-aware structure, extraction, grounding, and cross-upload isolation (no template leakage)."
       />
 
       <div className="flex flex-wrap gap-2">

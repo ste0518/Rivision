@@ -22,9 +22,17 @@ import { mathStatusFromValidation, validateLatexSnippet } from "@/lib/latex-vali
 import { applyMathNormalisation } from "@/lib/math-normalisation";
 import { cleanUploadedStudySourceText } from "@/lib/source-text-cleanup";
 import { convertCommonMathToLatex } from "@/lib/revision-item-utils";
+import { buildChapterMap } from "@/lib/chapter-map-builder";
+import { detectHeadingsByPage } from "@/lib/heading-detection";
+import {
+  buildPageRecordsFromParsedPages,
+  flattenLectureFilesToFlatPages,
+  pageRecordsToMarkedFullText,
+} from "@/lib/page-records";
 import {
   buildSectionBlocks,
   buildSectionBlocksFromChapterMap,
+  buildSectionBlocksPageAware,
   ensureMinimumSectionBlocksForLongNotes,
   type SectionBlock,
 } from "@/lib/section-blocks";
@@ -135,62 +143,8 @@ function mergeSectionHeadingsForPack(files: LecturePackFile[], combinedLectureTe
   return mergeExtractedSectionHeadings(fromCombined, fromFiles);
 }
 
-function inferCourseTitleFromNotes(combinedLectureText: string, primaryFileStem: string): string {
-  const firstPages = combinedLectureText.split(/\[Page\s*5\]/i)[0] ?? combinedLectureText;
-  const lines = firstPages.split("\n").map((l) => l.trim()).filter(Boolean);
-
-  const cutAffiliation = (line: string): string => {
-    let t = line.replace(/\s+/g, " ").trim();
-    const idx =
-      t.search(/\b(Department|Faculty|School)\s+of\b/i) >= 0
-        ? t.search(/\b(Department|Faculty|School)\s+of\b/i)
-        : t.search(/\b(Imperial College|University of|Professor|Prof\.|Dr\.)\b/i);
-    if (idx > 12) t = t.slice(0, idx).trim();
-    const nameCut = t.search(/\b(O\.|Deniz|Akyildiz)\b/i);
-    if (nameCut > 14) t = t.slice(0, nameCut).trim();
-    return t.replace(/[,\s]+$/u, "").trim();
-  };
-
-  const blob = combinedLectureText.slice(0, 80_000).toLowerCase();
-  if (/\b(time\s+series|autocovariance|autocorrelation|arma|arima|stationar|white\s+noise)\b/.test(blob)) {
-    const tsLine = lines.find(
-      (l) =>
-        l.length >= 14 &&
-        l.length < 200 &&
-        /\b(time\s+series|analysis|econometrics|forecast)\b/i.test(l) &&
-        !/^\[Page\b/i.test(l),
-    );
-    if (tsLine) return cutAffiliation(tsLine).slice(0, 120);
-    return "Time series analysis";
-  }
-
-  for (const line of lines) {
-    if (line.length < 14 || line.length > 200) continue;
-    if (/^\[Page\b/i.test(line) || /^\[Source\b/i.test(line)) continue;
-    if (/\b(Department|Imperial College|University of)\b/i.test(line) && !/stochastic simulation/i.test(line)) continue;
-    if (/stochastic simulation/i.test(line)) {
-      const t = cutAffiliation(line);
-      if (t.includes(":")) {
-        const main = t.split(":")[0]!.trim();
-        if (main.length >= 12 && main.length <= 80 && /stochastic simulation/i.test(main)) return main;
-      }
-      if (t.length <= 100) return t;
-      return t.slice(0, 88).replace(/\s+\S*$/u, "").trim();
-    }
-  }
-
-  const keywordTitle = lines.find((l) => {
-    if (l.length < 14 || l.length > 130) return false;
-    if (/\b(Department|University|College|Professor)\b/i.test(l)) return false;
-    return (
-      (/(stochastic simulation|monte carlo|markov chain mcmc|bayesian inference)/i.test(l) && l.length < 130) ||
-      (/simulation|generative models/i.test(l) && l.length > 20 && l.length < 130)
-    );
-  });
-  if (keywordTitle) return cutAffiliation(keywordTitle);
-  const mc = lines.find((l) => /markov|monte carlo|\bmcmc\b/i.test(l) && l.length >= 12 && l.length < 120);
-  if (mc) return mc;
-  return primaryFileStem;
+function inferCourseTitleFromNotes(primaryFileStem: string, profile: DocumentProfile): string {
+  return profile.title ?? profile.courseName ?? profile.subjectArea ?? primaryFileStem;
 }
 
 function advancePastLabelSeparator(text: string, pos: number): number {
@@ -203,15 +157,6 @@ function advancePastLabelSeparator(text: string, pos: number): number {
 }
 
 type LabelHit = { index: number; bodyStart: number; kind: string; number: string; paren?: string };
-
-function isMonteCarloIntegrationHeavyContext(noteText: string): boolean {
-  const lower = noteText.toLowerCase();
-  return (
-    /\bmonte\s*carlo\s+integration\b|\bmc\s+estimator\b|\bimportance\s+sampling\b|\bself[-\s]?normali[sz]ed\b|\bsnis\b|\beffective\s+sample\b|\bproposal\s+distribution\b/.test(
-      lower,
-    )
-  );
-}
 
 function collectLabelHits(text: string): LabelHit[] {
   const hits: LabelHit[] = [];
@@ -2110,22 +2055,8 @@ function harvestWorkedExampleCards(text: string, primaryFile: string, sections: 
   return out;
 }
 
-const STALE_TOPIC_TERMS = [
-  "mcmc",
-  "detailed balance",
-  "metropolis-hastings",
-  "metropolis hastings",
-  "mh ratio",
-  "importance sampling",
-  "snis",
-  "effective sample size",
-  "markov chain monte carlo",
-  "irreducibility",
-  "aperiodicity",
-];
-
 function isStaleVersusSource(blobLower: string, sourceLower: string): boolean {
-  return STALE_TOPIC_TERMS.some((term) => blobLower.includes(term) && !sourceLower.includes(term));
+  return findProminentTermsAbsentFromSource(blobLower, sourceLower).length >= 5;
 }
 
 function filterStaleFormulas(formulas: GeneratedFormulaItem[], sourceLower: string): GeneratedFormulaItem[] {
@@ -2156,33 +2087,75 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const layers = splitDocumentTextLayers(cleanedCombined);
   const extractionBase =
     layers.printedText.replace(/\s+/g, " ").trim().length > 400 ? layers.printedText : cleanedCombined;
-  const cleanedPrinted = applyMathNormalisation(cleanUploadedStudySourceText(extractionBase.replace(/\r\n/g, "\n")));
-
-  const cleanedPages = lectureFiles.flatMap((f) =>
-    (f.pages ?? []).map((p) => ({
-      pageNumber: p.pageNumber,
-      text: sanitiseExtractedText(applyMathNormalisation(cleanUploadedStudySourceText(p.text.replace(/\r\n/g, "\n")))),
-    })),
-  );
-
-  const documentProfile = profileDocument({
-    cleanedPages: cleanedPages.length ? cleanedPages : [{ pageNumber: 1, text: cleanedPrinted }],
-    combinedPrintedText: cleanedPrinted,
-  });
+  const cleanedPrintedFallback = applyMathNormalisation(cleanUploadedStudySourceText(extractionBase.replace(/\r\n/g, "\n")));
 
   const primaryStem =
     files.find((f) => f.role === "lecture_notes")?.name.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ") ??
     primaryName.replace(/\.[^.]+$/, "").replace(/[_-]+/g, " ");
 
+  const flatPagesRaw = flattenLectureFilesToFlatPages(lectureFiles);
+  const normalizedFlat = flatPagesRaw.map((p) => ({
+    pageNumber: p.pageNumber,
+    text: sanitiseExtractedText(applyMathNormalisation(cleanUploadedStudySourceText(p.text.replace(/\r\n/g, "\n")))),
+  }));
+  const syntheticSingle =
+    !normalizedFlat.length && lectureFiles[0]?.parsedText ?
+      [
+        {
+          pageNumber: 1,
+          text: sanitiseExtractedText(
+            applyMathNormalisation(cleanUploadedStudySourceText((lectureFiles[0].parsedText ?? "").replace(/\r\n/g, "\n"))),
+          ),
+        },
+      ]
+    : [];
+
+  const pagesForModel = normalizedFlat.length ? normalizedFlat : syntheticSingle.length ? syntheticSingle : [{ pageNumber: 1, text: cleanedPrintedFallback }];
+  const pageRecords = buildPageRecordsFromParsedPages(pagesForModel);
+  const cleanedPrinted = pageRecordsToMarkedFullText(primaryStem, pageRecords);
+
+  let documentProfile = profileDocument({
+    cleanedPages: pagesForModel,
+    combinedPrintedText: cleanedPrinted,
+  });
+
+  const headingCandidates = detectHeadingsByPage(pageRecords);
+  const tocResult = documentProfile.tocParseResult;
+  const preferToc = (tocResult?.entries?.filter((e) => e.startPage != null).length ?? 0) >= 3;
+  const { chapterMap: unifiedChapterMap, validation: chapterRangeValidation, source: chapterMapSource } = buildChapterMap({
+    tocEntries: tocResult?.entries ?? [],
+    tocFound: tocResult?.found ?? false,
+    headingCandidates,
+    pageCount: documentProfile.pageCount,
+    preferToc,
+  });
+
+  if (
+    unifiedChapterMap.length >= 2 &&
+    (unifiedChapterMap.length >= documentProfile.chapterMap.length || chapterRangeValidation.ok || chapterMapSource !== "none")
+  ) {
+    documentProfile = {
+      ...documentProfile,
+      chapterMap: unifiedChapterMap,
+      warnings: [...documentProfile.warnings, ...chapterRangeValidation.errors, ...chapterRangeValidation.warnings],
+    };
+  }
+
   const pageCountForBlocks = documentProfile.pageCount;
   let sectionBlocks: SectionBlock[] = [];
-  if (documentProfile.chapterMap.length >= 3) {
-    sectionBlocks = buildSectionBlocksFromChapterMap(
-      cleanedPrinted,
-      documentProfile.chapterMap,
-      primaryStem,
-      pageCountForBlocks,
-    );
+  if (documentProfile.chapterMap.length >= 2) {
+    sectionBlocks = buildSectionBlocksPageAware(documentProfile.chapterMap, headingCandidates, pageRecords, primaryStem);
+  }
+  if (!sectionBlocks.length || sectionBlocks.length < Math.min(documentProfile.chapterMap.length, 3)) {
+    if (documentProfile.chapterMap.length >= 2) {
+      const fromMap = buildSectionBlocksFromChapterMap(
+        cleanedPrinted,
+        documentProfile.chapterMap,
+        primaryStem,
+        pageCountForBlocks,
+      );
+      if (fromMap.length > sectionBlocks.length) sectionBlocks = fromMap;
+    }
   }
   if (!sectionBlocks.length || sectionBlocks.length < Math.min(documentProfile.chapterMap.length, 5)) {
     const fromHeadings = buildSectionBlocks(cleanedPrinted, primaryStem);
@@ -2267,7 +2240,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   let methods = algorithmBlocksToMethods(blocks);
   methods = filterStaleMethods(methods, sourceBlobLower);
 
-  const inferredTitle = inferCourseTitleFromNotes(cleanedPrinted, primaryStem);
+  const inferredTitle = inferCourseTitleFromNotes(primaryStem, documentProfile);
   const chapterTitle = documentProfile.courseName ?? documentProfile.title ?? inferredTitle;
 
   let courseMap: GeneratedCourseTopic[] = [];
@@ -2288,61 +2261,20 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   }
 
   const lowerCtx = cleanedPrinted.toLowerCase();
-  let mistakes: GeneratedCommonMistake[] = [];
-  if (isMonteCarloIntegrationHeavyContext(cleanedPrinted)) {
-    mistakes.push(
-      {
-        id: createId("mis"),
-        mistake: "Using MC variance formulas under proposal draws",
-        whyItHappens: "IS/SNIS moments depend on q unless weights are handled explicitly.",
-        howToAvoid: "State whether expectations are under q or p* before manipulating variance expressions.",
-      },
-      {
-        id: createId("mis"),
-        mistake: "Ignoring support overlap between target and proposal",
-        whyItHappens: "Weights explode where q≈0 but p*>0.",
-        howToAvoid: "Verify q>0 on the support of p* (and finite-variance conditions).",
-      },
-    );
-  } else if (
-    /\b(\bmcmc\b|markov\s+chain\s+monte|metropolis-hastings|detailed\s+balance)\b/i.test(lowerCtx) &&
-    !/\b(time\s+series|arma|arima|acf\b|autocovariance|stationar)\b/i.test(lowerCtx)
-  ) {
-    mistakes.push(
-      {
-        id: createId("mis"),
-        mistake: "Wrong proposal direction in MH ratio",
-        whyItHappens: "Asymmetric proposals need q(x′|x) and q(x|x′) consistently.",
-        howToAvoid: "Write the ratio before cancelling terms; track conditioning carefully.",
-      },
-      {
-        id: createId("mis"),
-        mistake: "Assuming irreducibility / aperiodicity without checking the chain",
-        whyItHappens: "Limit theorems need hypotheses stated in your notes.",
-        howToAvoid: "Quote the exact assumptions from the lecture before applying convergence results.",
-      },
-    );
-  } else if (/\b(time\s+series|arma|arima|stationar|autocovariance)\b/i.test(lowerCtx)) {
-    mistakes.push(
-      {
-        id: createId("mis"),
-        mistake: "Confusing strict and weak stationarity",
-        whyItHappens: "Second-order stationarity does not imply strict stationarity without extra assumptions.",
-        howToAvoid: "State which notion you mean and what finite moments are assumed.",
-      },
-      {
-        id: createId("mis"),
-        mistake: "Mixing up AR and MA signatures from the ACF alone",
-        whyItHappens: "Different processes can produce similar rough ACF shapes at small lags.",
-        howToAvoid: "Cross-check PACF / model equations and stationarity/invertibility root conditions.",
-      },
-    );
-  } else {
+  let mistakes: GeneratedCommonMistake[] = [
+    {
+      id: createId("mis"),
+      mistake: "Applying a theorem or formula without checking its hypotheses",
+      whyItHappens: "Conditions are often stated pages before the result you quote.",
+      howToAvoid: "List hypotheses explicitly before using a formula or limit theorem.",
+    },
+  ];
+  if (/\b(proof|show\s+that|derive)\b/i.test(lowerCtx)) {
     mistakes.push({
       id: createId("mis"),
-      mistake: "Applying a theorem without checking its hypotheses",
-      whyItHappens: "Lecture proofs often hide regularity conditions in earlier pages.",
-      howToAvoid: "List hypotheses explicitly before using a formula or limit theorem.",
+      mistake: "Skipping logical structure in proof-style answers",
+      whyItHappens: "Markers reward stated assumptions and clear intermediate steps.",
+      howToAvoid: "State assumptions first, then one short sentence per main step.",
     });
   }
 
@@ -2410,6 +2342,15 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     topActionableIssues.push("Very few definitions for 50+ pages — expand labelled blocks or conceptual harvesting.");
   }
 
+  const normalizedPrefixes = sectionBlocks.map((b) => b.text.replace(/\s+/g, " ").slice(0, 300));
+  const duplicateOpeningSlices =
+    normalizedPrefixes.some(
+      (p, i) => p.length > 50 && normalizedPrefixes.findIndex((x) => x === p) !== i,
+    );
+  if (duplicateOpeningSlices) {
+    topActionableIssues.push("Section blocks share the same opening text — page-aware slicing may be misaligned.");
+  }
+
   const extractionPipelineDiagnostics: ExtractionPipelineDiagnostics = {
     formulaCandidateCount: formulaCandidatesPreDedupe,
     formulaExtractedCount: formulas.length,
@@ -2417,20 +2358,29 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     formulaRejectionReasons: [...new Set(extractionRejected.filter((r) => r.kind === "formula").map((r) => r.reason))],
     conceptCandidateCount:
       blocks.filter((b) => b.kind === "definition").length + sectionsMerged.length + (documentProfile.chapterMap?.length ?? 0),
-    headingCandidateCount: sectionsMerged.length,
+    headingCandidateCount: Math.max(sectionsMerged.length, headingCandidates.length),
+    pageHeadingCandidateCount: headingCandidates.length,
     sectionBlockCount: sectionBlocks.length,
     chapterCandidateCount: documentProfile.chapterMap.length,
+    chapterMapSource,
+    chapterRangeValidation: {
+      ok: chapterRangeValidation.ok,
+      errors: chapterRangeValidation.errors,
+      warnings: chapterRangeValidation.warnings,
+    },
+    sectionBlocksSummary: { count: sectionBlocks.length, duplicateOpeningSlices },
     workedExampleCandidateCount: workedExamplesHarvest.length + derivations.filter((d) => d.type === "worked_example").length,
     proofCandidateCount: proofBlocks.length,
     exampleCandidateCount,
     rejectedItems: extractionRejected.slice(0, 400),
     extractionPipelineTrace: [
-      "sanitise_printed_layer",
-      "profileDocument+parseTableOfContents",
-      "chapterMap→sectionBlocks|structural_fallback",
-      "labelled_blocks+proof_blocks",
-      "formula_pipeline(canonical+ts+geometry+blocks+lines+cues)",
-      "stale_topic_filter",
+      "flatten_multi_file_pages → PageRecord",
+      "profileDocument + TOC.entries",
+      "buildChapterMap(toc|headings) + chapterRangeValidation",
+      "buildSectionBlocksPageAware | chapterMap | structural_fallback",
+      "labelled_blocks + proof_blocks",
+      "formula_pipeline(canonical + blocks + lines + cues)",
+      "source_grounding_filter",
       "derivation_and_worked_example_harvest",
       "examPack_bundle",
     ],

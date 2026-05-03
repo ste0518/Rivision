@@ -2,6 +2,9 @@
  * Structural segmentation of lecture notes by chapter & numbered headings (document-generic).
  */
 
+import type { HeadingCandidate } from "@/lib/heading-detection";
+import type { PageRecord } from "@/lib/page-records";
+import { slicePageRecordsToMarkedText } from "@/lib/page-records";
 import { sanitiseExtractedText, type ChapterMapEntry } from "@/lib/document-profile";
 import {
   chapterContextAt,
@@ -18,6 +21,10 @@ export type SectionBlock = {
   level: number;
   startPage: number;
   endPage: number;
+  /** Inclusive line index on startPage when derived from PageRecord lines (optional). */
+  startLineIndex?: number;
+  /** Exclusive line index on endPage when derived from PageRecord lines (optional). */
+  endLineIndex?: number;
   text: string;
   formulas: string[];
   definitions: string[];
@@ -36,7 +43,7 @@ export type SectionBlock = {
 
 const MAX_SECTION_PAGES = 12;
 
-function extractInlineArrays(body: string): {
+export function extractInlineArrays(body: string): {
   formulas: string[];
   definitions: string[];
   workedExamples: string[];
@@ -447,4 +454,128 @@ export function buildSectionBlocksFromChapterMap(
     });
   }
   return blocks.length ? dedupeBlocks(blocks) : [];
+}
+
+/** Inclusive start line, exclusive end line (end heading line starts the next block). */
+export function slicePrintedLinesRange(
+  pages: PageRecord[],
+  start: { pageNumber: number; lineIndex: number },
+  end: { pageNumber: number; lineIndex: number },
+): string {
+  const chunks: string[] = [];
+  for (const p of pages) {
+    if (p.pageNumber < start.pageNumber || p.pageNumber > end.pageNumber) continue;
+    const lines = p.printedText.split("\n");
+    let from = 0;
+    let to = lines.length;
+    if (p.pageNumber === start.pageNumber) from = Math.min(Math.max(0, start.lineIndex), lines.length);
+    if (p.pageNumber === end.pageNumber) {
+      to = Math.min(Math.max(0, end.lineIndex), lines.length);
+    } else if (p.pageNumber === start.pageNumber && start.pageNumber < end.pageNumber) {
+      to = lines.length;
+    }
+    const part = lines.slice(from, to).join("\n");
+    if (part.trim()) chunks.push(`[Page ${p.pageNumber}]`, part);
+  }
+  return chunks.join("\n\n").trim();
+}
+
+/**
+ * Page-aware section blocks: slice directly from {@link PageRecord}s — avoids blind combinedText slicing.
+ */
+export function buildSectionBlocksPageAware(
+  chapterMap: ChapterMapEntry[],
+  headings: HeadingCandidate[],
+  pages: PageRecord[],
+  primarySourceLabel: string,
+): SectionBlock[] {
+  if (!chapterMap.length || !pages.length) return [];
+
+  const blocks: SectionBlock[] = [];
+  let blockIdx = 0;
+
+  const innerHeadingsForChapter = (ch: ChapterMapEntry) =>
+    headings
+      .filter((h) => h.pageNumber >= ch.startPage && h.pageNumber <= ch.endPage)
+      .filter((h) => !(h.headingType === "chapter" && h.text.length < 120))
+      .sort((a, b) => a.pageNumber - b.pageNumber || a.lineIndex - b.lineIndex);
+
+  const lastLineOnPage = (pageNum: number): number => {
+    const pg = pages.find((p) => p.pageNumber === pageNum);
+    return pg ? pg.printedText.split("\n").length : 0;
+  };
+
+  for (const ch of chapterMap) {
+    const inner = innerHeadingsForChapter(ch);
+    if (inner.length < 2) {
+      const body = slicePageRecordsToMarkedText(pages, ch.startPage, ch.endPage);
+      if (body.length < 12) continue;
+      blockIdx += 1;
+      const inline = extractInlineArrays(body);
+      blocks.push({
+        sectionId: `${primarySourceLabel}-ch-${ch.chapterLabel}-${blockIdx}`,
+        chapterLabel: ch.chapterLabel,
+        chapterTitle: ch.chapterTitle,
+        heading: `${ch.chapterLabel} ${ch.chapterTitle}`.trim(),
+        level: 2,
+        startPage: ch.startPage,
+        endPage: ch.endPage,
+        text: body.slice(0, 120_000),
+        formulas: inline.formulas,
+        definitions: inline.definitions,
+        workedExamples: inline.workedExamples,
+        proofsAndDerivations: inline.proofsAndDerivations,
+        proofs: inline.proofsAndDerivations.filter((p) => /^Proof\b/i.test(p)),
+        exercises: [],
+        formulaCandidates: inline.formulas,
+        definitionCandidates: inline.definitions,
+        theoremCandidates: inline.theoremCandidates,
+        proofCandidates: inline.proofCandidates,
+        exampleCandidates: inline.exampleCandidates,
+        exerciseCandidates: inline.exerciseCandidates,
+      });
+      continue;
+    }
+
+    for (let i = 0; i < inner.length; i += 1) {
+      const cur = inner[i]!;
+      const next = inner[i + 1];
+      const start = { pageNumber: cur.pageNumber, lineIndex: cur.lineIndex };
+      const end = next ?
+        { pageNumber: next.pageNumber, lineIndex: next.lineIndex }
+      : { pageNumber: ch.endPage, lineIndex: lastLineOnPage(ch.endPage) };
+      const body = slicePrintedLinesRange(pages, start, end);
+      if (body.length < 12) continue;
+      blockIdx += 1;
+      const inline = extractInlineArrays(body);
+      blocks.push({
+        sectionId: `${primarySourceLabel}-${ch.chapterLabel}-h${blockIdx}`,
+        chapterLabel: ch.chapterLabel,
+        chapterTitle: ch.chapterTitle,
+        heading: cur.text.slice(0, 220),
+        level: cur.level,
+        startPage: cur.pageNumber,
+        endPage: next ?
+          (next.pageNumber > cur.pageNumber ? next.pageNumber - 1 : cur.pageNumber)
+        : ch.endPage,
+        startLineIndex: cur.lineIndex,
+        endLineIndex: next?.lineIndex,
+        text: body.slice(0, 120_000),
+        formulas: inline.formulas,
+        definitions: inline.definitions,
+        workedExamples: inline.workedExamples,
+        proofsAndDerivations: inline.proofsAndDerivations,
+        proofs: inline.proofsAndDerivations.filter((p) => /^Proof\b/i.test(p)),
+        exercises: [],
+        formulaCandidates: inline.formulas,
+        definitionCandidates: inline.definitions,
+        theoremCandidates: inline.theoremCandidates,
+        proofCandidates: inline.proofCandidates,
+        exampleCandidates: inline.exampleCandidates,
+        exerciseCandidates: inline.exerciseCandidates,
+      });
+    }
+  }
+
+  return dedupeBlocks(blocks).slice(0, 500);
 }

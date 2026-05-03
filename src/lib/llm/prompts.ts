@@ -11,7 +11,7 @@ First build a revision pack grounded only in the current upload, then generate h
 SOURCE RULES (mandatory):
 - Use ONLY the uploaded source text from this request (notes + guidance + assessment files provided in the prompt).
 - Do NOT use external knowledge, prior conversations, or remembered course material.
-- Infer the subject from THIS document only: title, headings, table of contents, repeated terms, notation, and formulas.
+- Infer standalone formulas, definitions, proofs, and exam tasks from the uploaded document itself — title, headings, table of contents, repeated terms, notation, and formulas (no fixed syllabus examples).
 - Every kept item MUST include accurate sourceLocation with sourcePage and a verbatim sourceExcerpt copied from the current file(s).
 - Do NOT output concepts, formulas, or terminology that are not grounded in the current files.
 - If you recall examples or phrases from unrelated courses or older templates, discard them — reject stale template content from hypothetical “previous uploads”.
