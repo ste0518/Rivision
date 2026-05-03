@@ -3,6 +3,7 @@
  * All signals are derived from the uploaded file text only.
  */
 
+import { inferTitleAndCourseFromEarlyPages } from "@/lib/document-title";
 import { collectStructuralHeadings, type StructuralHeading } from "@/lib/lecture-segmentation";
 import { extractSectionHeadingsFromText, mergeExtractedSectionHeadings, type ExtractedSectionHeading } from "@/lib/section-headings";
 import { parseTableOfContents, type TocParseResult } from "@/lib/table-of-contents";
@@ -37,12 +38,23 @@ export type HandwritingNoisePage = {
   examples: string[];
 };
 
+export type ChapterMapSourceKind = "toc" | "heading_scan" | "none";
+
 export type DocumentProfile = {
   title: string | null;
   courseName: string | null;
   subjectArea: string | null;
   documentType: DocumentType;
   pageCount: number;
+  /** How chapter spans were chosen when {@link chapterMap} is non-empty (filled after unified heading/TOC merge). */
+  chapterMapSource?: ChapterMapSourceKind;
+  /** Sprint 1 structure QA hints (local pipeline). */
+  structureDiagnostics?: {
+    titleConfidence: number;
+    titleSourcePage: number | null;
+    pageHeadingCandidateCount: number;
+    sectionBlockCountHint?: number;
+  };
   /** True when a contents/table-of-contents region was detected but no usable chapter rows could be parsed (critical quality gate). */
   criticalTocParseFailure?: boolean;
   chapterMap: ChapterMapEntry[];
@@ -272,6 +284,25 @@ const ADMIN_TOPIC_STOP = new Set([
   "bibliography",
 ]);
 
+/** Bigrams / phrases that are grammatical fragments, not course topics. */
+const TOPIC_PHRASE_STOP = new Set([
+  "for the",
+  "and the",
+  "of the",
+  "in the",
+  "to the",
+  "on the",
+  "at the",
+  "by the",
+  "such that",
+  "we have",
+  "note that",
+  "given that",
+  "assume that",
+  "suppose that",
+  "it follows",
+]);
+
 /** Short canonical topics from headings + repeated meaningful phrases (no fixed syllabus list). */
 function extractDetectedTopicsFromDocument(combined: string, headingTitles: string[]): string[] {
   const topics = new Set<string>();
@@ -304,7 +335,11 @@ function extractDetectedTopicsFromDocument(combined: string, headingTitles: stri
     .sort((x, y) => y[1] - x[1])
     .slice(0, 40)
     .map(([k]) => k);
-  for (const f of frequent) topics.add(f);
+  for (const f of frequent) {
+    if (TOPIC_PHRASE_STOP.has(f.toLowerCase())) continue;
+    if (/^(for|and|or|the|of|in|to)\s+(the|a|an)\b/i.test(f)) continue;
+    topics.add(f);
+  }
 
   return [...topics].slice(0, 90);
 }
@@ -472,14 +507,21 @@ function scorePageNoise(pageText: string): { score: number; examples: string[] }
   const examples: string[] = [];
 
   for (const ln of lines) {
+    const pushExample = (s: string) => {
+      const frag = s.trim();
+      if (!frag) return;
+      const excerpt = frag.length <= 72 ? frag : `${frag.slice(0, 68)}…`;
+      if (examples.length < 4) examples.push(excerpt);
+    };
+
     if (NOISE_WORD_RE.test(ln)) {
       score += 4;
-      if (examples.length < 4) examples.push(ln.slice(0, 120));
+      pushExample(ln);
       continue;
     }
     if (/^[a-z]{1,3}\.{3,}/i.test(ln)) {
       score += 3;
-      if (examples.length < 4) examples.push(ln.slice(0, 120));
+      pushExample(ln);
       continue;
     }
     const words = ln.split(/\s+/).filter((w) => /^[a-z]{5,}$/i.test(w));
@@ -489,7 +531,7 @@ function scorePageNoise(pageText: string): { score: number; examples: string[] }
     }
     if (words.length >= 2 && weird / words.length > 0.45) {
       score += 2;
-      if (examples.length < 4) examples.push(ln.slice(0, 120));
+      if (ln.length <= 85 || weird / words.length > 0.55) pushExample(ln);
     }
     if (ln.length <= 4 && /^[A-Za-z]$/.test(ln)) score += 1;
   }
@@ -624,7 +666,15 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
     layers.printedText.replace(/\s+/g, " ").trim().length > 400 ? layers.printedText : combined;
   const detectedNotation = dedupeNotationCounts(notationSource);
 
-  const title = inferTitleFromFirstPages(combined);
+  const earlyTitle = inferTitleAndCourseFromEarlyPages(
+    input.cleanedPages.length ?
+      input.cleanedPages.map((p) => ({
+        pageNumber: p.pageNumber,
+        text: sanitiseExtractedText(p.text.replace(/\r\n/g, "\n")),
+      }))
+    : [{ pageNumber: 1, text: combined.slice(0, 80_000) }],
+  );
+  const title = earlyTitle.title ?? inferTitleFromFirstPages(combined);
 
   const cleanedPagesArg =
     input.cleanedPages.length ?
@@ -657,8 +707,8 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
 
   const chapterHeadingTitles = chapterMap.map((c) => c.chapterTitle).filter(Boolean);
   const subjectArea = inferSubjectArea(title, chapterHeadingTitles.length ? chapterHeadingTitles : headingTopics, combined);
-  const courseName = title ?? subjectArea;
-  const finalTitle = title ?? (courseName ?? null);
+  const courseName = earlyTitle.courseName ?? title ?? subjectArea;
+  const finalTitle = title ?? courseName ?? subjectArea ?? null;
 
   const hasLemmaLabels = /\blemma\s+\d/i.test(combined);
   const hasPropLabels = /\bproposition\s+\d/i.test(combined);
@@ -703,6 +753,11 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
     subjectArea,
     documentType: classifyDocumentType(cleanedPagesArg, combined),
     pageCount,
+    structureDiagnostics: {
+      titleConfidence: earlyTitle.confidence,
+      titleSourcePage: earlyTitle.sourcePage,
+      pageHeadingCandidateCount: 0,
+    },
     criticalTocParseFailure,
     chapterMap,
     detectedTopics,

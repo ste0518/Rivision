@@ -208,7 +208,7 @@ export type ExtractionPipelineDiagnostics = {
   pageHeadingCandidateCount?: number;
   sectionBlockCount: number;
   chapterCandidateCount: number;
-  chapterMapSource?: "toc" | "headings" | "none";
+  chapterMapSource?: "toc" | "heading_scan" | "none";
   chapterRangeValidation?: ChapterRangeValidationSummary;
   sectionBlocksSummary?: { count: number; duplicateOpeningSlices: boolean };
   workedExampleCandidateCount: number;

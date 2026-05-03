@@ -2137,6 +2137,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     documentProfile = {
       ...documentProfile,
       chapterMap: unifiedChapterMap,
+      chapterMapSource,
       warnings: [...documentProfile.warnings, ...chapterRangeValidation.errors, ...chapterRangeValidation.warnings],
     };
   }
@@ -2165,6 +2166,21 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     sectionBlocks = buildSectionBlocks(cleanedPrinted, primaryStem);
   }
   sectionBlocks = ensureMinimumSectionBlocksForLongNotes(sectionBlocks, cleanedPrinted, primaryStem, pageCountForBlocks);
+
+  documentProfile = {
+    ...documentProfile,
+    structureDiagnostics: {
+      ...documentProfile.structureDiagnostics,
+      titleConfidence: documentProfile.structureDiagnostics?.titleConfidence ?? 0,
+      titleSourcePage: documentProfile.structureDiagnostics?.titleSourcePage ?? null,
+      pageHeadingCandidateCount: headingCandidates.length,
+      sectionBlockCountHint: sectionBlocks.length,
+    },
+    chapterMapSource:
+      documentProfile.chapterMap.length >= 2 ?
+        (documentProfile.chapterMapSource ?? (chapterMapSource !== "none" ? chapterMapSource : undefined))
+      : "none",
+  };
 
   const sectionsMerged = mergeSectionHeadingsForPack(lectureFiles, cleanedPrinted);
   const sections = extractSectionHeadings(cleanedPrinted);
@@ -2376,7 +2392,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     extractionPipelineTrace: [
       "flatten_multi_file_pages → PageRecord",
       "profileDocument + TOC.entries",
-      "buildChapterMap(toc|headings) + chapterRangeValidation",
+      "buildChapterMap(toc|heading_scan) + chapterRangeValidation",
       "buildSectionBlocksPageAware | chapterMap | structural_fallback",
       "labelled_blocks + proof_blocks",
       "formula_pipeline(canonical + blocks + lines + cues)",

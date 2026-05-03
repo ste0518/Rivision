@@ -480,6 +480,30 @@ export function slicePrintedLinesRange(
   return chunks.join("\n\n").trim();
 }
 
+/** Shorten chapter spans when a later "Chapter N" marker appears before the TOC-derived end page. */
+export function reconcileChapterMapEnds(
+  map: ChapterMapEntry[],
+  headings: HeadingCandidate[],
+): ChapterMapEntry[] {
+  const markers = headings
+    .filter((h) => /^Chapter\s*\d+/i.test(h.text.trim()))
+    .map((h) => ({
+      n: Number(/^Chapter\s*(\d+)/i.exec(h.text.trim())?.[1]),
+      p: h.pageNumber,
+    }))
+    .filter((x) => Number.isFinite(x.n) && x.n > 0)
+    .sort((a, b) => a.p - b.p || a.n - b.n);
+
+  return map.map((ch) => {
+    const myN = Number(String(ch.chapterLabel).replace(/\D/g, "") || 0);
+    if (!myN) return ch;
+    const nextMk = markers.find((m) => m.n > myN && m.p > ch.startPage);
+    if (!nextMk || nextMk.p > ch.endPage) return ch;
+    const end = Math.min(ch.endPage, Math.max(ch.startPage, nextMk.p - 1));
+    return { ...ch, endPage: end };
+  });
+}
+
 /**
  * Page-aware section blocks: slice directly from {@link PageRecord}s — avoids blind combinedText slicing.
  */
@@ -497,7 +521,31 @@ export function buildSectionBlocksPageAware(
   const innerHeadingsForChapter = (ch: ChapterMapEntry) =>
     headings
       .filter((h) => h.pageNumber >= ch.startPage && h.pageNumber <= ch.endPage)
-      .filter((h) => !(h.headingType === "chapter" && h.text.length < 120))
+      .filter((h) => {
+        if (h.headingType !== "chapter") return true;
+        const m = h.text.match(/^Chapter\s*(\d+)/i);
+        if (!m) return true;
+        const hn = Number(m[1]);
+        const myNum = Number(String(ch.chapterLabel).replace(/\D/g, "") || -1);
+        if (myNum < 0) return true;
+        if (hn > myNum) return true;
+        if (hn < myNum) return false;
+        const rest = h.text.replace(/^Chapter\s*\d+\s*/i, "").trim();
+        return rest.length >= 4;
+      })
+      .sort((a, b) => a.pageNumber - b.pageNumber || a.lineIndex - b.lineIndex);
+
+  const sectionLikeFallback = (ch: ChapterMapEntry) =>
+    headings
+      .filter((h) => h.pageNumber >= ch.startPage && h.pageNumber <= ch.endPage)
+      .filter(
+        (h) =>
+          h.headingType === "section" ||
+          h.headingType === "subsection" ||
+          h.headingType === "theorem" ||
+          h.headingType === "definition" ||
+          h.headingType === "lemma",
+      )
       .sort((a, b) => a.pageNumber - b.pageNumber || a.lineIndex - b.lineIndex);
 
   const lastLineOnPage = (pageNum: number): number => {
@@ -505,8 +553,14 @@ export function buildSectionBlocksPageAware(
     return pg ? pg.printedText.split("\n").length : 0;
   };
 
-  for (const ch of chapterMap) {
-    const inner = innerHeadingsForChapter(ch);
+  const fixedMap = reconcileChapterMapEnds(chapterMap, headings);
+
+  for (const ch of fixedMap) {
+    let inner = innerHeadingsForChapter(ch);
+    if (inner.length < 2) {
+      const fb = sectionLikeFallback(ch);
+      if (fb.length >= 2) inner = fb;
+    }
     if (inner.length < 2) {
       const body = slicePageRecordsToMarkedText(pages, ch.startPage, ch.endPage);
       if (body.length < 12) continue;

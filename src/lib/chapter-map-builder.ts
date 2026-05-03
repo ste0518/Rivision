@@ -6,6 +6,8 @@ import type { ChapterMapEntry } from "@/lib/document-profile";
 import type { HeadingCandidate } from "@/lib/heading-detection";
 import type { TocEntry } from "@/lib/table-of-contents";
 
+export type ChapterMapSource = "toc" | "heading_scan" | "none";
+
 export type ChapterRangeValidation = {
   ok: boolean;
   errors: string[];
@@ -29,7 +31,7 @@ function validateChapterMap(map: ChapterMapEntry[], pageCount: number): ChapterR
     if (ch.startPage > ch.endPage) {
       errors.push(`Chapter "${ch.chapterLabel}" has startPage > endPage.`);
     }
-    if (ch.startPage <= prevStart && i > 0) {
+    if (ch.startPage < prevStart && i > 0) {
       errors.push(`Chapter starts do not strictly increase at "${ch.chapterLabel}".`);
     }
     prevStart = ch.startPage;
@@ -51,6 +53,81 @@ function validateChapterMap(map: ChapterMapEntry[], pageCount: number): ChapterR
   return { ok: errors.length === 0, errors, warnings };
 }
 
+/** Strip "Chapter N" prefix and avoid swallowing long body paragraphs into the chapter title. */
+export function displayTitleFromChapterHeading(text: string): string {
+  const m = text.match(/^Chapter\s*\d+(?:\.\d+)?\s*(.*)$/i);
+  if (!m) return text.replace(/\s+/g, " ").trim().slice(0, 120);
+  const rest = (m[1] ?? "").trim();
+  const num = text.match(/^Chapter\s*(\d+)/i)?.[1] ?? "";
+  if (!rest) return num ? `Chapter ${num}` : text.slice(0, 120);
+  if (rest.length > 95 || rest.split(/\s+/).length > 14) return num ? `Chapter ${num}` : rest.slice(0, 80);
+  if ((rest.match(/=/g) ?? []).length >= 2 && rest.length > 40) return num ? `Chapter ${num}` : rest.slice(0, 80);
+  return rest;
+}
+
+function explicitChapterKeywordHeadings(headings: HeadingCandidate[]): HeadingCandidate[] {
+  return headings.filter((h) => h.headingType === "chapter" && /^Chapter\s*\d/i.test(h.text.trim()));
+}
+
+/**
+ * Chapter boundaries from inline "Chapter N …" heading candidates (page order).
+ * De-duplicates repeated detections of the same chapter number (first occurrence wins).
+ */
+export function buildChapterMapFromChapterMarkers(headings: HeadingCandidate[], pageCount: number): ChapterMapEntry[] {
+  const markers = explicitChapterKeywordHeadings(headings).sort(
+    (a, b) => a.pageNumber - b.pageNumber || a.lineIndex - b.lineIndex,
+  );
+  const byNum = new Map<string, HeadingCandidate>();
+  for (const m of markers) {
+    const num = m.text.match(/^Chapter\s*(\d+)/i)?.[1];
+    if (!num) continue;
+    if (!byNum.has(num)) byNum.set(num, m);
+  }
+  const unique = [...byNum.values()].sort(
+    (a, b) => a.pageNumber - b.pageNumber || a.lineIndex - b.lineIndex,
+  );
+  if (unique.length < 2) return [];
+
+  const out: ChapterMapEntry[] = [];
+  for (let i = 0; i < unique.length; i += 1) {
+    const cur = unique[i]!;
+    const next = unique[i + 1];
+    const label = cur.text.match(/^Chapter\s*(\d+)/i)?.[1] ?? `${i + 1}`;
+    const chapterTitle = displayTitleFromChapterHeading(cur.text);
+    const startPage = Math.min(pageCount, Math.max(1, cur.pageNumber));
+    const endPage = next ?
+      next.pageNumber > cur.pageNumber ?
+        Math.min(pageCount, Math.max(startPage, next.pageNumber - 1))
+      : Math.min(pageCount, Math.max(startPage, cur.pageNumber))
+    : pageCount;
+    out.push({
+      chapterLabel: label,
+      chapterTitle,
+      startPage,
+      endPage,
+      sectionHeadings: [],
+    });
+  }
+  return out.slice(0, 80);
+}
+
+function enrichChapterTitlesFromToc(map: ChapterMapEntry[], tocEntries: TocEntry[]): ChapterMapEntry[] {
+  if (!tocEntries.length) return map;
+  return map.map((ch) => {
+    const labelNum = ch.chapterLabel.replace(/\D/g, "");
+    const match = tocEntries.find((e) => {
+      const el = e.label.replace(/\D/g, "");
+      if (labelNum && el === labelNum) return true;
+      const title = e.title.toLowerCase();
+      return title.includes(`chapter ${ch.chapterLabel}`) || title.startsWith(`${ch.chapterLabel} `);
+    });
+    if (match && match.title.length >= 6 && match.title.length < 200) {
+      return { ...ch, chapterTitle: match.title.replace(/\s+/g, " ").trim() };
+    }
+    return ch;
+  });
+}
+
 function headingsToChapterMap(headings: HeadingCandidate[], pageCount: number): ChapterMapEntry[] {
   let use = headings.filter((h) => h.headingType === "chapter");
   if (use.length < 2) {
@@ -67,12 +144,17 @@ function headingsToChapterMap(headings: HeadingCandidate[], pageCount: number): 
   for (let i = 0; i < sorted.length; i += 1) {
     const cur = sorted[i]!;
     const next = sorted[i + 1];
-    const labelMatch = cur.text.match(/^Chapter\s+(\d+)/i);
+    const labelMatch = cur.text.match(/^Chapter\s*(\d+)/i);
     const numMatch = cur.text.match(/^(\d+(?:\.\d+)*)/);
     const chapterLabel = labelMatch?.[1] ?? numMatch?.[1] ?? `H${i + 1}`;
-    const chapterTitle = cur.text.replace(/^Chapter\s+\d+\s*/i, "").trim() || cur.text;
+    const chapterTitle =
+      /^Chapter\s*\d/i.test(cur.text) ? displayTitleFromChapterHeading(cur.text) : cur.text.replace(/\s+/g, " ").trim().slice(0, 120);
     const startPage = Math.min(pageCount, Math.max(1, cur.pageNumber));
-    const endPage = next ? Math.min(pageCount, Math.max(startPage, next.pageNumber - 1)) : pageCount;
+    const endPage = next ?
+      next.pageNumber > cur.pageNumber ?
+        Math.min(pageCount, Math.max(startPage, next.pageNumber - 1))
+      : Math.min(pageCount, Math.max(startPage, cur.pageNumber))
+    : pageCount;
     out.push({
       chapterLabel,
       chapterTitle,
@@ -115,28 +197,42 @@ export type BuildChapterMapInput = {
 };
 
 /**
- * Prefer TOC when entries have usable page numbers; otherwise chapter-style headings.
+ * Prefer explicit "Chapter N" heading scans for page ranges when available; TOC supplies titles when possible.
+ * Falls back to TOC-only or numbered-heading segmentation.
  */
 export function buildChapterMap(input: BuildChapterMapInput): {
   chapterMap: ChapterMapEntry[];
   validation: ChapterRangeValidation;
-  source: "toc" | "headings" | "none";
+  source: ChapterMapSource;
 } {
   const { tocEntries, tocFound, headingCandidates, pageCount, preferToc } = input;
 
   let chapterMap: ChapterMapEntry[] = [];
-  let source: "toc" | "headings" | "none" = "none";
+  let source: ChapterMapSource = "none";
 
   const tocWithPages = tocEntries.filter((e) => e.startPage != null);
-  const fromToc = tocFound && preferToc && tocWithPages.length >= 2 ? tocEntriesToChapterMap(tocEntries, pageCount) : [];
-  if (fromToc.length >= 2) {
+  const fromToc = tocFound && tocWithPages.length >= 2 ? tocEntriesToChapterMap(tocEntries, pageCount) : [];
+
+  const fromChapterMarkers = buildChapterMapFromChapterMarkers(headingCandidates, pageCount);
+  const markerValidation = validateChapterMap(fromChapterMarkers, pageCount);
+
+  if (fromChapterMarkers.length >= 2 && markerValidation.ok) {
+    chapterMap = enrichChapterTitlesFromToc(fromChapterMarkers, tocEntries);
+    source = "heading_scan";
+  } else if (fromChapterMarkers.length >= 2) {
+    chapterMap = enrichChapterTitlesFromToc(fromChapterMarkers, tocEntries);
+    source = "heading_scan";
+  } else if (preferToc && fromToc.length >= 2) {
     chapterMap = fromToc;
     source = "toc";
   } else {
     const fromHead = headingsToChapterMap(headingCandidates, pageCount);
     if (fromHead.length >= 2) {
       chapterMap = fromHead;
-      source = "headings";
+      source = "heading_scan";
+    } else if (!preferToc && fromToc.length >= 2) {
+      chapterMap = fromToc;
+      source = "toc";
     }
   }
 
