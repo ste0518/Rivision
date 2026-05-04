@@ -1549,6 +1549,7 @@ function harvestConceptualDefinitions(
   for (const rawTerm of candidateTerms) {
     const term = truncatePackConceptTerm(rawTerm.replace(/\s+/g, " ").trim());
     const key = term.toLowerCase();
+    if (isInvalidConceptualDefinitionTerm(term)) continue;
     if (used.has(key)) continue;
     const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
     const hit = new RegExp(`\\b${escaped}\\b`, "i").exec(lectureText);
@@ -1583,6 +1584,7 @@ function harvestConceptualDefinitions(
     const block = `We define ${termGuess} as ${body}`;
     const idx = m.index ?? 0;
     if (termGuess.length < 6 || termGuess.length > 140) continue;
+    if (isInvalidConceptualDefinitionTerm(termGuess)) continue;
     const key = termGuess.toLowerCase();
     if (used.has(key)) continue;
     const v = validateLatexSnippet(block.slice(0, 600));
@@ -1632,6 +1634,14 @@ function harvestConceptualDefinitions(
   }
 
   return out;
+}
+
+function isInvalidConceptualDefinitionTerm(term: string): boolean {
+  const t = term.replace(/\s+/g, " ").trim().toLowerCase();
+  if (!t || t.length < 4) return true;
+  if (/^(algorithm|exercise|example|proof|remark|proposition|theorem|lemma|corollary)\b/.test(t)) return true;
+  if (/\b(pseudocode|input|output|return)\b/.test(t)) return true;
+  return false;
 }
 
 function proofSkeletonFromBody(title: string, body: string): { skeleton: string; mistake: string } {
@@ -1940,6 +1950,13 @@ function courseTopicsFromSections(files: LecturePackFile[], sections: ExtractedS
     importance: "high" as TopicImportance,
     evidenceReason: "Detected numbered section heading in lecture text.",
   }));
+}
+
+function shouldPreferSectionCourseMap(chapterCount: number, sections: ExtractedSection[]): boolean {
+  if (chapterCount === 0 || sections.length === 0) return true;
+  const dottedSections = sections.filter((s) => /^\d+\.\d+/.test(s.sectionNumber));
+  if (!dottedSections.length) return false;
+  return sections.length >= Math.max(chapterCount + 2, 4);
 }
 
 // ---------------------------------------------------------------------------
@@ -2354,7 +2371,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   let courseMap: GeneratedCourseTopic[] = [];
   if (documentProfile.chapterMap.length) {
     const names = files.filter((f) => f.role === "lecture_notes" || !f.role).map((f) => f.name);
-    courseMap = documentProfile.chapterMap.map((ch) => ({
+    const chapterTopics = documentProfile.chapterMap.map((ch) => ({
       id: createId("topic"),
       title: `${ch.chapterLabel}: ${ch.chapterTitle}`.replace(/^\s*:\s*/, "").trim(),
       sourceFileNames: names.length ? names : files.map((f) => f.name),
@@ -2363,6 +2380,8 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
         "Parsed from table of contents (primary structure)."
       : "Chapter / section headings detected in lecture text.",
     }));
+    const sectionTopics = courseTopicsFromSections(files, sectionsMerged);
+    courseMap = shouldPreferSectionCourseMap(documentProfile.chapterMap.length, sectionsMerged) ? sectionTopics.slice(0, 40) : chapterTopics;
   } else {
     courseMap = courseTopicsFromSections(files, sectionsMerged);
     if (!courseMap.length) courseMap = guessTopicsFallback(files);

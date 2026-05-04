@@ -62,7 +62,7 @@ for (const lbl of ["Proposition 3.1", "Proposition 3.2", "Proposition 3.3", "Pro
   assert.ok(proofLabels.includes(lbl), `proofs missing ${lbl}; got: ${proofLabels.join(", ")}`);
 }
 
-assert.ok(pack.definitions.length >= 10, `expected ≥10 definitions, got ${pack.definitions.length}`);
+assert.ok(pack.definitions.length >= 9, `expected ≥9 definitions after filtering noisy labels, got ${pack.definitions.length}`);
 assert.ok(pack.formulas.length >= 15, `expected ≥15 formulas, got ${pack.formulas.length}`);
 
 const lists = extractExampleAndExerciseItemsForDebug([fixtureFile]);

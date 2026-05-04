@@ -5,6 +5,7 @@ import { extractRevisionItems } from "../src/lib/extraction";
 import { normalizeCuratedRevisionResult, normalizeRevisionItem } from "../src/lib/normalization";
 import { filterRevisionItemsByRelevance } from "../src/lib/relevance";
 import { convertCommonMathToLatex } from "../src/lib/revision-item-utils";
+import { validateLatexSnippet } from "../src/lib/latex-validate";
 import { spatialStatisticsFixtureDocument, spatialStatisticsGuidanceDocument } from "../src/lib/test-fixtures/spatial-statistics-ch2-excerpt";
 import { timeSeriesFixtureDocument } from "../src/lib/test-fixtures/time-series-notes-excerpt";
 import { validateAndRepairRevisionItems } from "../src/lib/validation";
@@ -46,6 +47,10 @@ const latex = convertCommonMathToLatex(definitionStatement);
 
 assert.match(latex, /\\\(X=\(X_t\)_\{t\\in T\}\\\)/);
 assert.match(latex, /\\\(T\\subset\\mathbb\{R\}\^d\\\)/);
+
+assert.equal(validateLatexSnippet("\\[ \\frac{1}{N}\\sum_{i=1}^N X_i \\]").status, "ok");
+assert.equal(validateLatexSnippet("\\[ \\X_i \\]").status, "broken");
+assert.equal(validateLatexSnippet("\\mathbb{R} outside delimiters").status, "needs_check");
 
 run().catch((error: unknown) => {
   console.error(error);
