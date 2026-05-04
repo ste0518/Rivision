@@ -125,7 +125,8 @@ export type LabelledBlock = {
 const LABEL_START_RE =
   /\b(Definition|Theorem|Proposition|Lemma|Corollary|Example|Exercise|Remark|Algorithm)\s+(\d+(?:\.\d+)*)(?:\s*\(([^)]+)\))?/gi;
 
-const PROOF_HEAD = /(?:^|\n)\s*Proof\s*[.:]\s*/gim;
+/** Inline proofs after page markers / merged PDF lines — must not require line-start (see real PDFs). */
+const PROOF_HEAD = /\bProof\s*[.:]\s*/gi;
 
 /** Exported for recall-card builders that skip placeholder definitions. */
 export const CORE_IDEA_PLACEHOLDER = /^Core idea\s+\d+$/i;
@@ -1411,7 +1412,7 @@ function buildExamStructureFromProfile(profile: DocumentProfile, hasPastEvidence
   const chapters = profile.chapterMap.slice(0, 10).map((c) => c.chapterTitle || c.chapterLabel).filter(Boolean);
   const topicPart = topics.length ? topics.join(", ") : "the concepts surfaced from headings";
   const chapterPart = chapters.length ? chapters.join("; ") : "chapter banners detected in the PDF text";
-  return `Structured overview from this upload only: ${topicPart}. Chapter themes include ${chapterPart}. Add past papers to estimate exam weighting.`;
+  return `Structured overview from this upload only: ${topicPart}. Sections: ${chapterPart}. Add past papers to estimate exam weighting.`;
 }
 
 // ---------------------------------------------------------------------------
@@ -1692,7 +1693,7 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[], h
 
     const heading = `${b.formalLabel}: ${b.displayTitle}`;
     const { skeleton, mistake } = proofSkeletonFromBody(b.displayTitle, `${b.body}\n${proof.body}`);
-    const statementOnly = truncateBodyBeforeInteriorSectionHeading(b.body.split(/(?:^|\n)\s*Proof\s*[.:]/i)[0]!.trim());
+    const statementOnly = truncateBodyBeforeInteriorSectionHeading(b.body.split(/\bProof\s*[.:]\s*/i)[0]!.trim());
     if (/^(example|sketch|remark)\b/i.test(statementOnly) || /^consider\s+the\s+following\s+example\b/i.test(statementOnly)) continue;
     if (/\btheorem\s+1\s+for\s+the\s+proof\b/i.test(statementOnly)) continue;
 

@@ -142,6 +142,8 @@ export function detectSourceContamination(generatedBlobLower: string, sourceLowe
     if (p.length < 22) continue;
     const pN = normalizeForTechnicalGrounding(p);
     if (!sourceLower.includes(p) && !srcN.includes(pN)) {
+      const tokens = pN.split(/\s+/).filter((x) => x.length >= 5 && !GENERIC_STOPWORDS.has(x));
+      if (tokens.length >= 3 && tokens.every((tok) => srcN.includes(tok))) continue;
       const words = p.split(/\s+/).filter((x) => !APP_SYSTEM_WORD_WHITELIST.has(x));
       if (words.length < 3) continue;
       issues.push(`Generated phrase not grounded in source: “${p.slice(0, 80)}”.`);
@@ -158,9 +160,13 @@ export function isStaleVersusSource(blobLower: string, sourceLower: string): boo
 /** Fold common abbreviation / spelling variants for technical grounding checks. */
 export function normalizeForTechnicalGrounding(text: string): string {
   let t = text.toLowerCase().replace(/\s+/g, " ").trim();
-  t = t.replace(/\bself[-\s]?normali[sz]ed\s+importance\s+sampling\b/g, "snis");
-  t = t.replace(/\bself[-\s]?normali[sz]ed\b/g, "snis");
+  t = t.replace(/\bimportance\s+sampler\s+importance\s+sampling\b/g, "is");
+  t = t.replace(/\bself[-\s]?normali[sz]ed\s+importance\s+sampling(?:\s+estimator)?\b/g, "snis");
+  t = t.replace(/\bnormali[sz]ed\s+importance\s+sampling(?:\s+estimator)?\b/g, "snis");
+  t = t.replace(/\bimportance\s+sampling\s+estimator\b/g, "isest");
+  t = t.replace(/\bimportance\s+sampler\b/g, "isampler");
   t = t.replace(/\bimportance\s+sampling\b/g, "is");
+  t = t.replace(/\bself[-\s]?normali[sz]ed\b/g, "snis");
   t = t.replace(/\bmonte\s+carlo\b/g, "mc");
   t = t.replace(/\bnormali[sz]ed\b/g, "normalised");
   t = t.replace(/\bvariance\b/g, "var");

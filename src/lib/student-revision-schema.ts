@@ -356,6 +356,8 @@ export interface GeneratedRevisionPack {
   documentProfile?: DocumentProfile;
   /** Set when generic validation finds blocking issues (contamination, grounding, segmentation). */
   criticalQualityFailure?: boolean;
+  /** False when the pack met the relaxed “usable” bar but not full structural thresholds (heterogeneous lecture PDFs). */
+  strictQualityPass?: boolean;
   pipelineHealth?: PipelineHealth;
   /** Thin recoverable snapshot — shown instead of implying exam-ready when critical failures occur. */
   safeFallbackPack?: SafeFallbackStudyPack;

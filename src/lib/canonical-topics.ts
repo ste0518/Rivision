@@ -70,6 +70,8 @@ function isGarbageTopic(t: string): boolean {
   const n = normalisePhrase(t);
   if (n.length < 5 || n.length > 72) return true;
   if (STOP_PHRASES.has(n)) return true;
+  if (/\bconcentr\b/i.test(n)) return true;
+  if (/\beffectiv\b/i.test(n)) return true;
   if (/\b(this|that|other)\s+\w+\s+(estimator|integral|section|case|value)\b/.test(n)) return true;
   if (ADMIN_PHRASE.test(n)) return true;
   if (/\b(the|a|an)\s+(the|same|form|following)\b/.test(n)) return true;

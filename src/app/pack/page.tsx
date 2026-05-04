@@ -218,6 +218,16 @@ export default function PackPage() {
         description="Structured revision built from your uploads. Everything stays on your device."
       />
 
+      {pack.strictQualityPass === false && !pack.criticalQualityFailure ? (
+        <Card className="border-sky-200 bg-sky-50/90">
+          <CardContent className="py-3 text-sm text-sky-950">
+            This pack was approved under <strong>relaxed layout rules</strong> so notes with unusual formatting still produce
+            study cards. If your PDF has odd headings or page breaks, spot-check a few definitions and formulas against the
+            source.
+          </CardContent>
+        </Card>
+      ) : null}
+
       {pack.pipelineHealth ? (
         <Card className="border-slate-200">
           <CardHeader className="pb-2">

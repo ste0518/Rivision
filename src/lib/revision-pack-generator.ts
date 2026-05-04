@@ -83,9 +83,7 @@ export function generateStudentRevisionPack(input: {
 
   const text = combinedText(files);
   const keywordHits = text.match(KEYWORDS);
-  const keywordSummary = keywordHits
-    ? `${new Set(keywordHits.map((k) => k.toLowerCase())).size} conceptual markers detected across uploads.`
-    : "";
+  const keywordSummary = keywordHits ? ` · ${new Set(keywordHits.map((k) => k.toLowerCase())).size} cue-classes` : "";
 
   const sourceForValidation = cleanUploadedStudySourceText(text);
   const validation = validateGenericStudyPack(pack, pack.documentProfile ?? null, sourceForValidation, {
@@ -152,6 +150,7 @@ export function generateStudentRevisionPack(input: {
   return {
     ...pack,
     criticalQualityFailure: validation.criticalQualityFailure,
+    strictQualityPass: validation.strictQualityPass,
     pipelineHealth,
     safeFallbackPack,
     ...(extractionPipelineDiagnostics ? { extractionPipelineDiagnostics } : {}),

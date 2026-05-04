@@ -38,6 +38,8 @@ export type GenericAcceptanceTests = {
 export type GenericStudyPackValidation = {
   ok: boolean;
   criticalQualityFailure: boolean;
+  /** True when strict per-page / per-section thresholds pass; false if we only met the relaxed “usable pack” bar. */
+  strictQualityPass: boolean;
   /** Prioritised human-readable failures for UI + Debug JSON. */
   topActionableFailures: string[];
   acceptanceTests: GenericAcceptanceTests;
@@ -45,6 +47,15 @@ export type GenericStudyPackValidation = {
   recommendations: string[];
   generatedItemStatsByChapter: Record<string, { definitions: number; formulas: number; proofs: number }>;
 };
+
+/** Cards users actually study (excludes placeholder heuristic defs). */
+export function countTypedStudyPackCards(pack: GeneratedRevisionPack): number {
+  let defs = 0;
+  for (const d of pack.definitions) {
+    if (!/^Core idea\s+\d+$/i.test(d.term)) defs += 1;
+  }
+  return defs + pack.formulas.length + pack.proofs.length + pack.methods.length;
+}
 
 function normaliseQuizKey(q: string): string {
   return q
@@ -406,7 +417,12 @@ export function computePipelineHealth(
       detail: `proofs ${pack.proofs.length}, merged ${pack.proofsAndDerivations?.length ?? 0}`,
     },
     { id: "grounding", label: "Source grounding", pass: validation.acceptanceTests.hasGroundingForAllItems, detail: validation.acceptanceTests.hasGroundingForAllItems ? "ok" : "missing excerpts" },
-    { id: "exam_pack", label: "Final exam pack", pass: validation.ok && !validation.criticalQualityFailure, detail: validation.ok ? "ok" : "issues remain" },
+    {
+      id: "exam_pack",
+      label: "Final exam pack",
+      pass: validation.ok,
+      detail: validation.ok ? (validation.strictQualityPass ? "ok" : "ok · relaxed thresholds") : "issues remain",
+    },
   ];
   const overallPass = stages.every((s) => s.pass);
   return { stages, overallPass };
@@ -451,12 +467,14 @@ export function validateGenericStudyPack(
     badMathTokenCount: badMathCount,
     duplicateQuizPrompts,
     overlongBlocks,
-    bibliographyInPack: /\bBIBLIOGRAPHY\b/i.test(blob),
+    bibliographyInPack: /\bBIBLIOGRAPHY\b/i.test(blob) && !/\bBIBLIOGRAPHY\b/i.test(sourceLower),
     contaminationLines: [...contamination],
     quiz: pack.examPack?.practiceQuestions ?? undefined,
   });
 
   const topActionableFailures = computeTopActionableFailures(pack, documentProfile, sourceText, contamination, longNotes.issues);
+
+  const typedCards = countTypedStudyPackCards(pack);
 
   const structuralGateFail =
     Boolean(documentProfile?.criticalTocParseFailure) ||
@@ -500,6 +518,9 @@ export function validateGenericStudyPack(
     (diag?.proofLikeMarkerLineCount ?? 0) >= 3 &&
     (diag?.proofCandidateCount ?? 0) === 0;
 
+  const proofDiagnosticsConcern =
+    proofMarkerGateFail && pack.proofs.length === 0 && (pack.proofsAndDerivations?.length ?? 0) === 0;
+
   const workedGateFail =
     pageCount > 50 &&
     Boolean(documentProfile?.hasWorkedExamples) &&
@@ -532,11 +553,7 @@ export function validateGenericStudyPack(
     (diag?.formulaCandidateCount ?? 0) >= 25 &&
     formulaRawEq < 8;
 
-  const criticalQualityFailure =
-    contamination.length > 0 ||
-    !acceptanceTests.hasGroundingForAllItems ||
-    !acceptanceTests.hasChapterMapIfContentsPresent ||
-    !longNotes.ok ||
+  const structuralConcern =
     structuralGateFail ||
     candidateFormulaGap ||
     headingGateFail ||
@@ -544,26 +561,52 @@ export function validateGenericStudyPack(
     headingSourceContradiction ||
     sectionDensityFail ||
     formulaDensityFail ||
-    proofMarkerGateFail ||
+    proofDiagnosticsConcern ||
     workedGateFail ||
     topicNoiseFail ||
     pageChunkSemanticFail ||
     titleLaterSectionFail ||
-    formulaHeavyRawEquationFail ||
-    !acceptanceTests.noBadMathTokensInStudyPack;
+    formulaHeavyRawEquationFail;
 
-  const ok =
-    acceptanceTests.noSourceContamination &&
-    acceptanceTests.noBibliographyLeakage &&
+  const strictStudyQuality =
     acceptanceTests.hasDefinitionsForMainTopics &&
     acceptanceTests.hasFormulasFromFormulaDenseSections &&
-    acceptanceTests.hasGroundingForAllItems &&
+    acceptanceTests.hasChapterMapIfContentsPresent &&
     longNotes.ok &&
-    !criticalQualityFailure;
+    !structuralConcern;
+
+  const relaxedStudyQuality =
+    typedCards >= 6 ||
+    (typedCards >= 4 && pageCount <= 40) ||
+    (typedCards >= 3 && pageCount <= 18);
+
+  /** Fatal issues only — heterogeneous lecture PDFs often trip structural heuristics without being useless. */
+  const criticalQualityFailure =
+    contamination.length > 0 ||
+    !acceptanceTests.hasGroundingForAllItems ||
+    !acceptanceTests.noBadMathTokensInStudyPack ||
+    typedCards === 0;
+
+  const hygieneOk =
+    acceptanceTests.noSourceContamination &&
+    acceptanceTests.noBibliographyLeakage &&
+    acceptanceTests.hasGroundingForAllItems &&
+    acceptanceTests.noBadMathTokensInStudyPack;
+
+  const ok = hygieneOk && !criticalQualityFailure && (strictStudyQuality || relaxedStudyQuality);
+
+  const strictQualityPass = strictStudyQuality && hygieneOk && !criticalQualityFailure;
+
+  if (ok && !strictStudyQuality && relaxedStudyQuality && !recommendations.some((r) => r.includes("heterogeneous"))) {
+    recommendations.push(
+      "Structured QA used relaxed thresholds — layout or headings may differ from ideal; spot-check cards against your PDF.",
+    );
+  }
 
   return {
     ok,
     criticalQualityFailure,
+    strictQualityPass,
     topActionableFailures,
     acceptanceTests,
     sourceContamination: [...contamination],

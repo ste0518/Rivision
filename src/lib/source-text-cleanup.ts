@@ -42,6 +42,28 @@ export function normalizeGluedWords(text: string): string {
   return out;
 }
 
+/**
+ * Inserts newlines before structural cues that PDF extractors often glue onto the previous line.
+ * Improves labelled-block / proof detection across heterogeneous lecture formats (same logic for all uploads).
+ */
+export function normalizeLectureLayoutForExtraction(text: string): string {
+  let t = text.replace(/\r\n/g, "\n");
+
+  t = t.replace(/([^\n])\s*(\[Page\s+\d+\])/gi, "$1\n$2");
+
+  t = t.replace(
+    /([a-z0-9\)\]\}])(\s+)((?:Definition|Theorem|Proposition|Lemma|Corollary|Remark|Example|Exercise|Algorithm)\s+\d+(?:\.\d+)*(?:\s*\([^)]*\))?)/gi,
+    "$1\n$3",
+  );
+
+  t = t.replace(/([a-z0-9\)\]\}])(\s+)(Proof\s*[.:])/gi, "$1\n$3");
+
+  t = t.replace(/([a-z0-9\)\]\}])(\s+)(Chapter\s+\d+)\b/gi, "$1\n$3");
+
+  t = t.replace(/\n{3,}/g, "\n\n");
+  return t;
+}
+
 /** Removes C0/C1 control characters except newline (LF) and tab. */
 export function stripControlCharactersExceptNewlineTab(text: string): string {
   return text.replace(/[\u0000-\u0008\u000B\u000C\u000E-\u001F]/g, "");
@@ -55,5 +77,6 @@ export function cleanUploadedStudySourceText(text: string): string {
   t = stripControlCharactersExceptNewlineTab(t);
   t = stripBibliographySection(t);
   t = normalizeGluedWords(t);
+  t = normalizeLectureLayoutForExtraction(t);
   return t;
 }

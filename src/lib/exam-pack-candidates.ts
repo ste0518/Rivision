@@ -92,42 +92,59 @@ function countFormulaLikeLinesInPages(pages: PageRecord[]): number {
   return n;
 }
 
+/** Proof labels often appear mid-line after `[Page n]` when PDF text is merged — scan inline starts too. */
+const INLINE_FORMAL_PROOF = /\bProof\s*[.:]\s*/g;
+
 function collectProofBlocks(pages: PageRecord[], sourceFile: string): RawExamPackCandidate[] {
   const out: RawExamPackCandidate[] = [];
   for (const p of pages) {
     const lines = printedLines(p);
     for (let i = 0; i < lines.length; i += 1) {
-      const t = lines[i]!.trim();
-      if (!t) continue;
-      if (!PROOF_START.test(t)) continue;
-      const buf: string[] = [t];
-      let j = i + 1;
-      while (j < lines.length && j < i + 120) {
-        const u = lines[j]!.trim();
-        if (!u) {
-          j += 1;
-          continue;
-        }
-        if (j > i && isProofBoundary(u)) break;
-        buf.push(lines[j]!);
-        if (buf.join("\n").length > 3500) break;
-        j += 1;
+      const rawLine = lines[i]!;
+      const trimmed = rawLine.trim();
+      if (!trimmed) continue;
+
+      const segments: string[] = [];
+      INLINE_FORMAL_PROOF.lastIndex = 0;
+      let im: RegExpExecArray | null;
+      while ((im = INLINE_FORMAL_PROOF.exec(rawLine)) !== null) {
+        segments.push(rawLine.slice(im.index).trim());
       }
-      const rawText = buf.join("\n").trim();
-      if (rawText.length < 12) continue;
-      out.push({
-        candidateType: /^example|^worked/i.test(t) ? "worked_example" : "proof",
-        rawText: rawText.slice(0, 4000),
-        sourceFile,
-        sourcePage: p.pageNumber,
-        startLineIndex: i,
-        endLineIndex: j,
-        sourceExcerpt: rawText.slice(0, 420),
-        confidence: 0.72,
-        extractionReason: "block_starting_with_proof_or_example_marker",
-        cleanupStatus: "ok",
-      });
-      i = j - 1;
+      if (segments.length === 0 && PROOF_START.test(trimmed)) {
+        segments.push(trimmed);
+      }
+      if (segments.length === 0) continue;
+
+      for (const t of segments) {
+        if (!/^Proof\s*[.:]/i.test(t) && !PROOF_START.test(t)) continue;
+        const buf: string[] = [t];
+        let j = i + 1;
+        while (j < lines.length && j < i + 120) {
+          const u = lines[j]!.trim();
+          if (!u) {
+            j += 1;
+            continue;
+          }
+          if (j > i && isProofBoundary(u)) break;
+          buf.push(lines[j]!);
+          if (buf.join("\n").length > 3500) break;
+          j += 1;
+        }
+        const rawText = buf.join("\n").trim();
+        if (rawText.length < 12) continue;
+        out.push({
+          candidateType: /^example|^worked/i.test(t) ? "worked_example" : "proof",
+          rawText: rawText.slice(0, 4000),
+          sourceFile,
+          sourcePage: p.pageNumber,
+          startLineIndex: i,
+          endLineIndex: j,
+          sourceExcerpt: rawText.slice(0, 420),
+          confidence: 0.72,
+          extractionReason: "block_starting_with_proof_or_example_marker",
+          cleanupStatus: "ok",
+        });
+      }
     }
   }
   return out;
@@ -505,7 +522,12 @@ export function countProofLikeLineMarkers(pages: PageRecord[]): number {
   for (const p of pages) {
     for (const ln of printedLines(p)) {
       const t = ln.trim();
-      if (PROOF_START.test(t) || THEOREM_LIKE_START.test(t) || /^lemma\s+\d|^theorem\s+\d|^proposition\s+\d|^corollary\s+\d/i.test(t)) {
+      if (
+        /\bProof\s*[.:]/i.test(ln) ||
+        PROOF_START.test(t) ||
+        THEOREM_LIKE_START.test(t) ||
+        /^lemma\s+\d|^theorem\s+\d|^proposition\s+\d|^corollary\s+\d/i.test(t)
+      ) {
         n += 1;
       }
     }
