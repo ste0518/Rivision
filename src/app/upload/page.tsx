@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import { FileText, Trash2, UploadCloud } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -40,6 +40,9 @@ export default function UploadPage() {
   const store = useStudyStore();
   const [loading, setLoading] = useState(false);
   const [generating, setGenerating] = useState(false);
+  const [packGenerateProgress, setPackGenerateProgress] = useState(0);
+  const [packGeneratePhase, setPackGeneratePhase] = useState("");
+  const packProgressNudgeRef = useRef<number | null>(null);
   const [message, setMessage] = useState("");
   const [replacePack, setReplacePack] = useState(() =>
     typeof window !== "undefined" ? loadStorageSettings().uploadReplacePack : true,
@@ -48,6 +51,17 @@ export default function UploadPage() {
   const [pendingUpload, setPendingUpload] = useState<{ files: File[]; kind: "notes" | "guidance" } | null>(null);
 
   const allFiles = useMemo(() => [...store.notesFiles, ...store.guidanceFiles] as StudyFile[], [store.guidanceFiles, store.notesFiles]);
+
+  function stopPackProgressNudge() {
+    if (packProgressNudgeRef.current) {
+      clearInterval(packProgressNudgeRef.current);
+      packProgressNudgeRef.current = null;
+    }
+  }
+
+  useEffect(() => {
+    return () => stopPackProgressNudge();
+  }, []);
 
   const canGenerate = useMemo(() => {
     if (allFiles.length === 0) return false;
@@ -114,6 +128,13 @@ export default function UploadPage() {
     if (!canGenerate) return;
     setGenerating(true);
     setMessage("");
+    setPackGenerateProgress(6);
+    setPackGeneratePhase("Preparing your materials…");
+    stopPackProgressNudge();
+    packProgressNudgeRef.current = window.setInterval(() => {
+      setPackGenerateProgress((p) => (p < 64 ? Math.min(64, p + 1.4) : p));
+    }, 420);
+
     try {
       store.resetDerivedPackState();
       store.ensureActivePackId();
@@ -126,6 +147,9 @@ export default function UploadPage() {
       const solutionDocuments = allParsedDocuments.filter((d) => d.role === "solution_sheet" || d.role === "mark_scheme");
       const sourceFile = uploadedFiles.map((f) => f.name).join(", ") || "Course files";
 
+      setPackGeneratePhase("Extracting revision topics for your exam pack…");
+      setPackGenerateProgress((p) => Math.max(p, 18));
+
       const result = await extractRevisionItems({
         notesDocuments,
         guidanceDocuments,
@@ -135,6 +159,10 @@ export default function UploadPage() {
         sourceFile,
       });
 
+      stopPackProgressNudge();
+      setPackGenerateProgress(72);
+      setPackGeneratePhase("Saving workspace data…");
+
       const storageSettings = loadStorageSettings();
       try {
         if (storageSettings.persistDebugData) await persistRevisionCandidates(allParsedDocuments);
@@ -142,6 +170,9 @@ export default function UploadPage() {
       } catch {
         /* non-fatal */
       }
+
+      setPackGenerateProgress(78);
+      setPackGeneratePhase("Building your study pack…");
 
       const packSources = uploadedFiles.map(fileToPackSource);
       const studentPack = generateStudentRevisionPack({
@@ -162,6 +193,9 @@ export default function UploadPage() {
         examOverview: { ...studentPack.examOverview, ...(recallWarning ? { reviewCardsWarning: recallWarning } : {}) },
       };
 
+      setPackGenerateProgress(86);
+      setPackGeneratePhase("Creating starter practice questions…");
+
       const starterPractice = generateQuickPracticeQuestions(studentPackWithNote, 18);
       const revisionItemsForStore = recallFromPack.length > 0 ? recallFromPack : result.items;
 
@@ -178,12 +212,18 @@ export default function UploadPage() {
       });
       store.setPracticeQuestions(starterPractice);
 
+      setPackGenerateProgress(96);
+      setPackGeneratePhase("Opening study pack…");
       setMessage("Revision pack generated locally. Opening study pack…");
+      setPackGenerateProgress(100);
       router.push("/pack");
     } catch (e) {
       setMessage(e instanceof Error ? e.message : "Could not generate pack.");
     } finally {
+      stopPackProgressNudge();
       setGenerating(false);
+      setPackGenerateProgress(0);
+      setPackGeneratePhase("");
     }
   }
 
@@ -307,6 +347,9 @@ export default function UploadPage() {
             <Button size="lg" disabled={loading || generating || !canGenerate} onClick={() => void runGeneratePack()}>
               {generating ? "Generating…" : "Generate revision pack"}
             </Button>
+            {generating ? (
+              <PackGenerateProgressBar phase={packGeneratePhase} progress={packGenerateProgress} />
+            ) : null}
             {!canGenerate && allFiles.length === 0 ? (
               <p className="text-sm text-amber-900">Upload at least one file to start — lecture notes and/or assessment materials.</p>
             ) : null}
@@ -317,6 +360,38 @@ export default function UploadPage() {
           </div>
         </CardContent>
       </Card>
+    </div>
+  );
+}
+
+function PackGenerateProgressBar({ phase, progress }: { phase: string; progress: number }) {
+  const clamped = Math.min(100, Math.max(0, progress));
+  return (
+    <div
+      className="rounded-xl border border-blue-200/80 bg-gradient-to-b from-white to-slate-50/90 px-4 py-3 shadow-sm"
+      role="progressbar"
+      aria-valuenow={Math.round(clamped)}
+      aria-valuemin={0}
+      aria-valuemax={100}
+      aria-label="Generating revision pack"
+      aria-busy={true}
+    >
+      <div className="mb-2 flex items-center justify-between gap-3 text-sm">
+        <span className="font-medium text-slate-800">Generating exam pack</span>
+        <span className="tabular-nums text-slate-500">{Math.round(clamped)}%</span>
+      </div>
+      <div className="relative h-2.5 w-full overflow-hidden rounded-full bg-slate-200/90">
+        <div
+          className="relative h-full overflow-hidden rounded-full bg-gradient-to-r from-blue-600 via-sky-500 to-blue-600 transition-[width] duration-500 ease-out"
+          style={{ width: `${clamped}%` }}
+        >
+          <div
+            className="rivision-pack-progress-shine pointer-events-none absolute inset-y-0 left-0 w-[45%] bg-gradient-to-r from-transparent via-white/30 to-transparent"
+            aria-hidden
+          />
+        </div>
+      </div>
+      {phase ? <p className="mt-2 text-xs text-slate-600">{phase}</p> : null}
     </div>
   );
 }

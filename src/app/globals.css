@@ -1,5 +1,18 @@
 @import "tailwindcss";
 
+@keyframes rivision-pack-progress-shine {
+  0% {
+    transform: translateX(-100%);
+  }
+  100% {
+    transform: translateX(350%);
+  }
+}
+
+.rivision-pack-progress-shine {
+  animation: rivision-pack-progress-shine 1.35s ease-in-out infinite;
+}
+
 :root {
   --background: #f8fafc;
   --foreground: #0f172a;
