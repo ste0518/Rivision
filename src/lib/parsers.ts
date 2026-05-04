@@ -5,6 +5,17 @@ import { normalizeExtractedMathText } from "@/lib/revision-item-utils";
 
 const MIN_PDF_CHARS_PER_PAGE = 80;
 
+export type ParsePdfFileOptions = {
+  /** When false, only the PDF text layer is used; OCR runs later (e.g. when generating the pack). Default true. */
+  runOcr?: boolean;
+  onOcrProgress?: (completed: number, total: number) => void;
+};
+
+export type ParseStudyFileOptions = {
+  runOcr?: boolean;
+  onPdfOcrProgress?: (completed: number, total: number) => void;
+};
+
 export async function parseTextFile(file: File): Promise<ParsedDocument> {
   const fullText = await file.text();
   return finalizeParsedDocument({
@@ -23,9 +34,10 @@ export async function parseMarkdownFile(file: File): Promise<ParsedDocument> {
   });
 }
 
-export async function parsePdfFile(file: File): Promise<ParsedDocument> {
+export async function parsePdfFile(file: File, options?: ParsePdfFileOptions): Promise<ParsedDocument> {
   const warnings: string[] = [];
   const errors: string[] = [];
+  const runOcr = options?.runOcr ?? true;
 
   try {
     const [{ getDocument, GlobalWorkerOptions, OPS }, arrayBuffer] = await Promise.all([
@@ -61,10 +73,16 @@ export async function parsePdfFile(file: File): Promise<ParsedDocument> {
       });
     }
 
-    if (typeof window !== "undefined") {
+    if (!runOcr && typeof window !== "undefined") {
+      warnings.push("OCR is deferred until you generate the revision pack; preview uses the PDF text layer only.");
+    }
+
+    if (typeof window !== "undefined" && runOcr) {
       try {
         const { augmentPdfPagesWithBrowserOcr } = await import("@/lib/pdf-ocr-client");
-        const aug = await augmentPdfPagesWithBrowserOcr(pdf, pages, warnings);
+        const aug = await augmentPdfPagesWithBrowserOcr(pdf, pages, warnings, {
+          onProgress: options?.onOcrProgress,
+        });
         pages = aug.pages;
       } catch (ocrError) {
         warnings.push(
@@ -234,10 +252,15 @@ export async function parseDocxFile(file: File): Promise<ParsedDocument> {
   }
 }
 
-export async function parseStudyFile(file: File): Promise<ParsedDocument> {
+export async function parseStudyFile(file: File, options?: ParseStudyFileOptions): Promise<ParsedDocument> {
   const extension = file.name.split(".").pop()?.toLowerCase();
   if (extension === "md" || file.type === "text/markdown") return parseMarkdownFile(file);
-  if (extension === "pdf" || file.type === "application/pdf") return parsePdfFile(file);
+  if (extension === "pdf" || file.type === "application/pdf") {
+    return parsePdfFile(file, {
+      runOcr: options?.runOcr ?? true,
+      onOcrProgress: options?.onPdfOcrProgress,
+    });
+  }
   if (extension === "docx" || file.type.includes("wordprocessingml")) return parseDocxFile(file);
   if (extension === "txt" || file.type.startsWith("text/")) return parseTextFile(file);
   return finalizeParsedDocument({

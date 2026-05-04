@@ -17,7 +17,7 @@ import {
 } from "@/lib/storage";
 import { createId } from "@/lib/utils";
 import type { GeneratedPracticeQuestion, GeneratedRevisionPack, MathStatus } from "@/lib/student-revision-schema";
-import type { AssessmentMap, CourseKnowledgeMap, CourseMap, CourseStructureMap, CurationReport, EmbeddedRevisionItem, ExamPriorityMap, GuidanceFile, RejectedRevisionItem, RevisionItem, RevisionPack, ReviewRating, ReviewSession, StudyFile } from "@/lib/types";
+import type { AssessmentMap, CourseKnowledgeMap, CourseMap, CourseStructureMap, CurationReport, EmbeddedRevisionItem, ExamPriorityMap, GuidanceFile, ParsedDocument, RejectedRevisionItem, RevisionItem, RevisionPack, ReviewRating, ReviewSession, StudyFile } from "@/lib/types";
 import { applyReviewRating } from "@/lib/srs";
 import { withValidation } from "@/lib/validation";
 
@@ -74,6 +74,28 @@ export function useStudyStore() {
         notesFiles: current.notesFiles.map((file) => file.id === id ? { ...file, role, parsedDocument: file.parsedDocument ? { ...file.parsedDocument, role } : file.parsedDocument } : file),
         guidanceFiles: current.guidanceFiles.map((file) => file.id === id ? { ...file, role, parsedDocument: file.parsedDocument ? { ...file.parsedDocument, role } : file.parsedDocument } : file),
       }));
+    },
+    patchUploadedFileParse(payload: { id: string; collection: "notes" | "guidance"; content: string; parsedDocument: ParsedDocument }) {
+      setState((current) => {
+        if (payload.collection === "notes") {
+          return {
+            ...current,
+            notesFiles: current.notesFiles.map((file) =>
+              file.id === payload.id ?
+                { ...file, content: payload.content, parsedDocument: { ...payload.parsedDocument, role: file.role } }
+              : file,
+            ),
+          };
+        }
+        return {
+          ...current,
+          guidanceFiles: current.guidanceFiles.map((file) =>
+            file.id === payload.id ?
+              { ...file, content: payload.content, parsedDocument: { ...payload.parsedDocument, role: file.role } }
+            : file,
+          ),
+        };
+      });
     },
     removeNotesFile(id: string) { setState((current) => ({ ...current, notesFiles: current.notesFiles.filter((file) => file.id !== id) })); },
     removeGuidanceFile(id: string) { setState((current) => ({ ...current, guidanceFiles: current.guidanceFiles.filter((file) => file.id !== id) })); },

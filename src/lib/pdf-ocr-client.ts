@@ -11,11 +11,32 @@ import type { ParsedPage } from "@/lib/types";
 /** Hard cap so very large lecture PDFs do not hang the tab indefinitely. */
 const MAX_OCR_PAGES = 200;
 
+/**
+ * Same idea as `MIN_PDF_CHARS_PER_PAGE` in parsers.ts — below this, the text layer is
+ * thin enough that OCR may help.
+ */
+const MIN_CHARS_FOR_TARGETED_OCR = 80;
+
+/**
+ * If no single page looks “needy” but the whole document has very little text, treat as
+ * scanned and OCR every page (up to {@link MAX_OCR_PAGES}).
+ */
+const SCANNED_DOCUMENT_AVG_CHARS = 120;
+
 export type PdfOcrAugmentResult = {
   pages: ParsedPage[];
   ocrPageCount: number;
   ocrStoppedAtPage?: number;
 };
+
+export type PdfOcrAugmentCallbacks = {
+  /** Fires after each OCR page completes (`completed` 1..total). */
+  onProgress?: (completed: number, total: number) => void;
+};
+
+function pageLikelyNeedsOcr(page: ParsedPage): boolean {
+  return page.visualHeavy || page.charCount < MIN_CHARS_FOR_TARGETED_OCR;
+}
 
 function mergePageText(vectorText: string, ocrText: string): string {
   const v = vectorText.trim();
@@ -32,14 +53,31 @@ export async function augmentPdfPagesWithBrowserOcr(
   pdf: PDFDocumentProxy,
   pages: ParsedPage[],
   warnings: string[],
+  callbacks?: PdfOcrAugmentCallbacks,
 ): Promise<PdfOcrAugmentResult> {
   if (typeof window === "undefined" || typeof document === "undefined") return { pages, ocrPageCount: 0 };
 
   const total = pages.length;
   if (!total) return { pages, ocrPageCount: 0 };
 
-  const limit = Math.min(total, MAX_OCR_PAGES);
-  const ocrStoppedAtPage = total > MAX_OCR_PAGES ? MAX_OCR_PAGES : undefined;
+  const sumChars = pages.reduce((acc, p) => acc + p.charCount, 0);
+  const avgPerPage = sumChars / total;
+
+  let indicesToOcr = pages.map((p, i) => (pageLikelyNeedsOcr(p) ? i : -1)).filter((i): i is number => i >= 0);
+
+  if (indicesToOcr.length === 0 && avgPerPage < SCANNED_DOCUMENT_AVG_CHARS) {
+    indicesToOcr = pages.map((_, i) => i);
+  }
+
+  if (indicesToOcr.length === 0) {
+    return { pages, ocrPageCount: 0 };
+  }
+
+  const hitPageCap = indicesToOcr.length > MAX_OCR_PAGES;
+  indicesToOcr = indicesToOcr.slice(0, MAX_OCR_PAGES);
+  const ocrStoppedAtPage = hitPageCap ? pages[indicesToOcr[indicesToOcr.length - 1]!]!.pageNumber : undefined;
+
+  callbacks?.onProgress?.(0, indicesToOcr.length);
 
   let ocrPageCount = 0;
   const { createWorker } = await import("tesseract.js");
@@ -51,7 +89,7 @@ export async function augmentPdfPagesWithBrowserOcr(
   try {
     const byNum = new Map(pages.map((p) => [p.pageNumber, { ...p }]));
 
-    for (let i = 0; i < limit; i += 1) {
+    for (const i of indicesToOcr) {
       const original = pages[i]!;
       const page = await pdf.getPage(original.pageNumber);
       const baseVp = page.getViewport({ scale: 1 });
@@ -86,16 +124,19 @@ export async function augmentPdfPagesWithBrowserOcr(
         warnings: [],
       });
       ocrPageCount += 1;
+      callbacks?.onProgress?.(ocrPageCount, indicesToOcr.length);
     }
 
     if (ocrPageCount > 0) {
       const tail =
         ocrStoppedAtPage !== undefined ?
-          ` Processing stopped at page ${ocrStoppedAtPage} of ${total} (limit ${MAX_OCR_PAGES}) — split very long PDFs if you need the rest.`
+          ` Processing stopped after page ${ocrStoppedAtPage} (limit ${MAX_OCR_PAGES} OCR pages) — split very long scanned PDFs if you need the rest.`
         : "";
-      warnings.push(
-        `Full-document OCR ran on ${ocrPageCount} page(s), accuracy-first: OCR text is primary and the PDF text layer is appended below each page.${tail} Verify equations against the PDF — OCR often garbles math.`,
-      );
+      const mode =
+        indicesToOcr.length < total ?
+          `Targeted OCR ran on ${ocrPageCount} of ${total} page(s) (diagram-heavy or low-text pages). Text-heavy pages kept the PDF text layer only.`
+        : `OCR ran on ${ocrPageCount} page(s); OCR text is primary and the PDF text layer is appended below each processed page.`;
+      warnings.push(`${mode}${tail} Verify equations against the PDF — OCR often garbles math.`);
     }
 
     const next = pages.map((p) => byNum.get(p.pageNumber) ?? p);

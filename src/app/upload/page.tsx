@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FileText, Trash2, UploadCloud } from "lucide-react";
+import { FileText, Loader2, Trash2, UploadCloud } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
@@ -78,7 +78,7 @@ export default function UploadPage() {
   async function parseIncoming(files: File[]): Promise<StudyFile[] | GuidanceFile[]> {
     return Promise.all(
       files.map(async (file) => {
-        const parsedDocument = await parseStudyFile(file);
+        const parsedDocument = await parseStudyFile(file, { runOcr: false });
         const role = inferStudyFileRole(file.name);
         return {
           id: createId("upload"),
@@ -117,8 +117,11 @@ export default function UploadPage() {
       return;
     }
     setLoading(true);
+    setMessage("");
     try {
       await commitUpload(list, kind);
+    } catch (err) {
+      setMessage(err instanceof Error ? err.message : "Could not read or parse the file.");
     } finally {
       setLoading(false);
     }
@@ -128,27 +131,83 @@ export default function UploadPage() {
     if (!canGenerate) return;
     setGenerating(true);
     setMessage("");
-    setPackGenerateProgress(6);
-    setPackGeneratePhase("Preparing your materials…");
     stopPackProgressNudge();
-    packProgressNudgeRef.current = window.setInterval(() => {
-      setPackGenerateProgress((p) => (p < 64 ? Math.min(64, p + 1.4) : p));
-    }, 420);
 
     try {
+      setPackGenerateProgress(2);
+      setPackGeneratePhase("Prepare · clearing previous pack output");
       store.resetDerivedPackState();
       store.ensureActivePackId();
-      const uploadedFiles = [...store.notesFiles, ...store.guidanceFiles];
-      const allParsedDocuments = uploadedFiles.map(toRoleParsedDocument);
+
+      let workingNotes = store.notesFiles.map((f) => ({ ...f }));
+      let workingGuidance = store.guidanceFiles.map((f) => ({ ...f }));
+      const pdfTargets = [...workingNotes, ...workingGuidance].filter(isPdfStudyFile);
+      const pdfCount = pdfTargets.length;
+
+      if (pdfCount === 0) {
+        setPackGenerateProgress(34);
+        setPackGeneratePhase("OCR · skipped (no PDF uploads)");
+      } else {
+        for (let fi = 0; fi < pdfCount; fi += 1) {
+          const sf = pdfTargets[fi]!;
+          const inputFile = studyFileToInputFile(sf);
+          if (!inputFile) {
+            setPackGenerateProgress(Math.round(4 + (30 / pdfCount) * (fi + 1)));
+            setPackGeneratePhase(`OCR · ${sf.name} · skipped (missing file data)`);
+            continue;
+          }
+          const spanPerFile = 30 / pdfCount;
+          const base = 4 + spanPerFile * fi;
+          setPackGenerateProgress(Math.round(base));
+          setPackGeneratePhase(`OCR · ${sf.name} · starting…`);
+
+          const parsed = await parseStudyFile(inputFile, {
+            runOcr: true,
+            onPdfOcrProgress: (done, total) => {
+              const p = base + spanPerFile * (done / Math.max(1, total));
+              setPackGenerateProgress(Math.min(34, Math.round(p)));
+              setPackGeneratePhase(`OCR · ${sf.name} · page ${done} / ${total}`);
+            },
+          });
+
+          const collection: "notes" | "guidance" = workingNotes.some((x) => x.id === sf.id) ? "notes" : "guidance";
+          store.patchUploadedFileParse({
+            id: sf.id,
+            collection,
+            content: parsed.fullText,
+            parsedDocument: { ...parsed, role: sf.role },
+          });
+          if (collection === "notes") {
+            workingNotes = workingNotes.map((f) =>
+              f.id === sf.id ? { ...f, content: parsed.fullText, parsedDocument: { ...parsed, role: f.role } } : f,
+            );
+          } else {
+            workingGuidance = workingGuidance.map((f) =>
+              f.id === sf.id ? { ...f, content: parsed.fullText, parsedDocument: { ...parsed, role: f.role } } : f,
+            );
+          }
+
+          setPackGenerateProgress(Math.round(4 + spanPerFile * (fi + 1)));
+          setPackGeneratePhase(`OCR · ${sf.name} · complete`);
+        }
+        setPackGenerateProgress(35);
+        setPackGeneratePhase("OCR · all PDFs finished");
+      }
+
+      const uploadedFilesForExtract = [...workingNotes, ...workingGuidance];
+      const allParsedDocuments = uploadedFilesForExtract.map(toRoleParsedDocument);
       const notesDocuments = allParsedDocuments.filter((d) => d.role === "lecture_notes" || d.role === "formula_sheet" || d.role === "other");
       const guidanceDocuments = allParsedDocuments.filter((d) => d.role === "exam_guidance");
       const pastPaperDocuments = allParsedDocuments.filter((d) => d.role === "past_paper");
       const problemSheetDocuments = allParsedDocuments.filter((d) => d.role === "problem_sheet");
       const solutionDocuments = allParsedDocuments.filter((d) => d.role === "solution_sheet" || d.role === "mark_scheme");
-      const sourceFile = uploadedFiles.map((f) => f.name).join(", ") || "Course files";
+      const sourceFile = uploadedFilesForExtract.map((f) => f.name).join(", ") || "Course files";
 
-      setPackGeneratePhase("Extracting revision topics for your exam pack…");
-      setPackGenerateProgress((p) => Math.max(p, 18));
+      setPackGenerateProgress(38);
+      setPackGeneratePhase("Extract · AI / local extraction pipeline");
+      packProgressNudgeRef.current = window.setInterval(() => {
+        setPackGenerateProgress((p) => (p < 62 ? Math.min(62, p + 1.2) : p));
+      }, 420);
 
       const result = await extractRevisionItems({
         notesDocuments,
@@ -161,7 +220,7 @@ export default function UploadPage() {
 
       stopPackProgressNudge();
       setPackGenerateProgress(72);
-      setPackGeneratePhase("Saving workspace data…");
+      setPackGeneratePhase("Save · workspace / debug data");
 
       const storageSettings = loadStorageSettings();
       try {
@@ -172,9 +231,9 @@ export default function UploadPage() {
       }
 
       setPackGenerateProgress(78);
-      setPackGeneratePhase("Building your study pack…");
+      setPackGeneratePhase("Build · structuring your study pack");
 
-      const packSources = uploadedFiles.map(fileToPackSource);
+      const packSources = uploadedFilesForExtract.map(fileToPackSource);
       const studentPack = generateStudentRevisionPack({
         files: packSources,
         settings: {
@@ -194,7 +253,7 @@ export default function UploadPage() {
       };
 
       setPackGenerateProgress(86);
-      setPackGeneratePhase("Creating starter practice questions…");
+      setPackGeneratePhase("Practice · generating starter questions");
 
       const starterPractice = generateQuickPracticeQuestions(studentPackWithNote, 18);
       const revisionItemsForStore = recallFromPack.length > 0 ? recallFromPack : result.items;
@@ -213,7 +272,7 @@ export default function UploadPage() {
       store.setPracticeQuestions(starterPractice);
 
       setPackGenerateProgress(96);
-      setPackGeneratePhase("Opening study pack…");
+      setPackGeneratePhase("Open · navigating to study pack");
       setMessage("Revision pack generated locally. Opening study pack…");
       setPackGenerateProgress(100);
       router.push("/pack");
@@ -245,7 +304,7 @@ export default function UploadPage() {
             <div className="space-y-1">
               <CardTitle className="text-base">Upload behaviour</CardTitle>
               <CardDescription>
-                Controls whether new files replace your saved study pack and progress. PDFs always run full-page OCR in your browser for extraction (large files can take a while).
+                Controls whether new files replace your saved study pack and progress. PDFs are parsed in your browser without OCR so they appear immediately; OCR runs when you generate the revision pack (can take several minutes for large or scanned PDFs).
               </CardDescription>
             </div>
             <label className="flex cursor-pointer items-center gap-2 text-sm sm:self-end">
@@ -297,8 +356,11 @@ export default function UploadPage() {
                 if (!job) return;
                 void (async () => {
                   setLoading(true);
+                  setMessage("");
                   try {
                     await commitUpload(job.files, job.kind);
+                  } catch (err) {
+                    setMessage(err instanceof Error ? err.message : "Could not read or parse the file.");
                   } finally {
                     setLoading(false);
                   }
@@ -334,6 +396,22 @@ export default function UploadPage() {
         />
       </div>
 
+      {loading ? (
+        <div
+          className="flex gap-3 rounded-xl border border-blue-200 bg-white/90 px-4 py-3 text-sm text-slate-700 shadow-sm"
+          role="status"
+          aria-live="polite"
+        >
+          <Loader2 className="h-5 w-5 shrink-0 animate-spin text-blue-700" aria-hidden />
+          <div>
+            <p className="font-medium text-slate-900">Parsing your upload…</p>
+            <p className="mt-1 text-slate-600">
+              Files appear below after the text layer is read (no OCR yet). OCR runs later when you click Generate revision pack. Large PDFs should still finish this step quickly; keep this tab open and watch for errors here.
+            </p>
+          </div>
+        </div>
+      ) : null}
+
       <Card>
         <CardHeader>
           <CardTitle>Your files</CardTitle>
@@ -366,6 +444,7 @@ export default function UploadPage() {
 
 function PackGenerateProgressBar({ phase, progress }: { phase: string; progress: number }) {
   const clamped = Math.min(100, Math.max(0, progress));
+  const detailLine = phase ? `${Math.round(clamped)}% · ${phase}` : `${Math.round(clamped)}%`;
   return (
     <div
       className="rounded-xl border border-blue-200/80 bg-gradient-to-b from-white to-slate-50/90 px-4 py-3 shadow-sm"
@@ -373,13 +452,11 @@ function PackGenerateProgressBar({ phase, progress }: { phase: string; progress:
       aria-valuenow={Math.round(clamped)}
       aria-valuemin={0}
       aria-valuemax={100}
+      aria-valuetext={detailLine}
       aria-label="Generating revision pack"
       aria-busy={true}
     >
-      <div className="mb-2 flex items-center justify-between gap-3 text-sm">
-        <span className="font-medium text-slate-800">Generating exam pack</span>
-        <span className="tabular-nums text-slate-500">{Math.round(clamped)}%</span>
-      </div>
+      <div className="mb-2 text-sm font-medium text-slate-800">Generating exam pack</div>
       <div className="relative h-2.5 w-full overflow-hidden rounded-full bg-slate-200/90">
         <div
           className="relative h-full overflow-hidden rounded-full bg-gradient-to-r from-blue-600 via-sky-500 to-blue-600 transition-[width] duration-500 ease-out"
@@ -391,9 +468,20 @@ function PackGenerateProgressBar({ phase, progress }: { phase: string; progress:
           />
         </div>
       </div>
-      {phase ? <p className="mt-2 text-xs text-slate-600">{phase}</p> : null}
+      <p className="mt-2 text-xs leading-relaxed text-slate-600">{detailLine}</p>
     </div>
   );
+}
+
+function isPdfStudyFile(file: Pick<StudyFile, "name" | "mimeType">): boolean {
+  const ext = file.name.split(".").pop()?.toLowerCase();
+  return ext === "pdf" || (file.mimeType?.toLowerCase().includes("pdf") ?? false);
+}
+
+function studyFileToInputFile(file: StudyFile): File | null {
+  if (!file.blob) return null;
+  if (file.blob instanceof File) return file.blob;
+  return new File([file.blob], file.name, { type: file.mimeType || "application/pdf" });
 }
 
 function UploadBox({
