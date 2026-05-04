@@ -5,6 +5,6 @@ import { AppShell } from "@/components/app-shell";
 
 export const metadata: Metadata = {
   title: "Rivision",
-  description: "Local-first exam revision assistant — study packs, recall cards, and practice from your course files.",
+  description: "Local-first exam revision assistant for exam packs, recall cards, and practice from your course files.",
 };
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) { return <html lang="en"><body><AppShell>{children}</AppShell></body></html>; }

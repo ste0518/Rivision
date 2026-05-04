@@ -568,6 +568,7 @@ export type RevisionItem = {
   proofRequired?: boolean;
   sourceFile: string;
   sourceLocation?: string;
+  sourceExcerpt?: string;
   pageNumber?: number;
   section?: string;
   theoremNumber?: string;

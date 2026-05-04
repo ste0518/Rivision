@@ -12,7 +12,7 @@ SOURCE RULES (mandatory):
 - Use ONLY the uploaded source text from this request (notes + guidance + assessment files provided in the prompt).
 - Do NOT use external knowledge, prior conversations, or remembered course material.
 - Infer standalone formulas, definitions, proofs, and exam tasks from the uploaded document itself — title, headings, table of contents, repeated terms, notation, and formulas (no fixed syllabus examples).
-- Every kept item MUST include accurate sourceLocation with sourcePage and a verbatim sourceExcerpt copied from the current file(s).
+- Every kept item MUST include accurate sourceLocation, pageNumber when available, and sourceExcerpt copied verbatim from the current file(s).
 - Do NOT output concepts, formulas, or terminology that are not grounded in the current files.
 - If you recall examples or phrases from unrelated courses or older templates, discard them — reject stale template content from hypothetical “previous uploads”.
 - Reject any candidate whose technical claims cannot be tied to a verbatim excerpt in the current source text.

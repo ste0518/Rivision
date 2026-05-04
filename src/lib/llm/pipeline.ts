@@ -49,7 +49,12 @@ export async function runLlmExtractionPipeline(input: {
 
   const verification = await primary.verifyExtractionCompleteness({
     notesDocuments: input.notesDocuments,
-    guidanceDocuments: input.guidanceDocuments,
+    guidanceDocuments: [
+      ...input.guidanceDocuments,
+      ...(input.pastPaperDocuments ?? []),
+      ...(input.problemSheetDocuments ?? []),
+      ...(input.solutionDocuments ?? []),
+    ],
     extractedItems: [...curated.keptItems, ...curated.needsReviewItems],
   });
 

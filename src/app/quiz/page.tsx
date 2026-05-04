@@ -112,7 +112,7 @@ export default function QuizPage() {
       {!pack ? (
         <Card>
           <CardContent className="py-8 text-center text-sm text-slate-600">
-            Generate a study pack from the Upload page to unlock tailored practice. You can still use due-card review below if you have cards.
+            Generate an exam pack from the Upload page to unlock tailored practice. You can still use due-card review below if you have cards.
           </CardContent>
         </Card>
       ) : (

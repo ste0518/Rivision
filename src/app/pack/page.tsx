@@ -55,10 +55,10 @@ export default function PackPage() {
   if (!pack) {
     return (
       <div className="space-y-6">
-        <PageHeader title="Study pack" description="Your exam overview, definitions, formulas, proofs, and cram sheet — generated locally." />
+        <PageHeader title="Exam pack" description="Your exam overview, definitions, formulas, proofs, method templates, practice, and cram sheet." />
         <Card className="border-dashed">
           <CardContent className="space-y-3 py-10 text-center text-slate-600">
-            <p>No study pack yet. Upload materials and choose <strong>Generate revision pack</strong> on the Upload page.</p>
+            <p>No exam pack yet. Upload materials and choose <strong>Generate exam pack</strong> on the Upload page.</p>
             <div className="flex flex-wrap justify-center gap-2">
               <Link className="inline-flex h-10 items-center justify-center rounded-md bg-blue-700 px-4 text-sm font-medium text-white" href="/upload">
                 Upload &amp; generate
@@ -88,6 +88,14 @@ export default function PackPage() {
     setToast(msg);
     window.setTimeout(() => setToast(""), 3500);
   }
+
+  const examPackMetrics = {
+    sourceFileCount: store.notesFiles.length + store.guidanceFiles.length,
+    assessmentFileCount: store.guidanceFiles.filter((f) => ["exam_guidance", "past_paper", "problem_sheet", "solution_sheet", "mark_scheme"].includes(f.role)).length,
+    coreItemCount: pack.definitions.length + pack.formulas.length + pack.proofs.length + pack.methods.length,
+    practiceCount: store.practiceQuestions?.length ?? 0,
+    highPriorityTopics: pack.examOverview.highPriorityTopics.slice(0, 3),
+  };
 
   const tabs = [
     {
@@ -214,8 +222,8 @@ export default function PackPage() {
   return (
     <div className="space-y-6">
       <PageHeader
-        title="Study pack"
-        description="Structured revision built from your uploads. Everything stays on your device."
+        title="Exam pack"
+        description="A structured exam pack built from your uploads. Everything stays on your device."
       />
 
       {pack.strictQualityPass === false && !pack.criticalQualityFailure ? (
@@ -389,6 +397,31 @@ export default function PackPage() {
             ) : null}
           </div>
         </CardHeader>
+        <CardContent className="grid gap-3 md:grid-cols-3">
+          <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Pack includes</p>
+            <p className="mt-2 text-2xl font-semibold text-slate-950">{examPackMetrics.coreItemCount}</p>
+            <p className="mt-1 text-sm text-slate-600">
+              definitions, formulas, proofs, and methods, plus {examPackMetrics.practiceCount} starter practice question(s).
+            </p>
+          </div>
+          <div className="rounded-lg border border-slate-200 bg-slate-50/70 p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-slate-500">Source basis</p>
+            <p className="mt-2 text-2xl font-semibold text-slate-950">{examPackMetrics.sourceFileCount}</p>
+            <p className="mt-1 text-sm text-slate-600">
+              uploaded file(s), including {examPackMetrics.assessmentFileCount} assessment evidence file(s).
+            </p>
+          </div>
+          <div className="rounded-lg border border-blue-200 bg-blue-50/70 p-4">
+            <p className="text-xs font-medium uppercase tracking-wide text-blue-700">Start here</p>
+            <p className="mt-2 text-sm font-medium text-slate-950">
+              {examPackMetrics.highPriorityTopics[0] ?? "Review the overview, then start active recall."}
+            </p>
+            {examPackMetrics.highPriorityTopics.length > 1 ? (
+              <p className="mt-1 text-sm text-slate-600">{examPackMetrics.highPriorityTopics.slice(1).join(" · ")}</p>
+            ) : null}
+          </div>
+        </CardContent>
       </Card>
 
       <Tabs tabs={tabs} defaultValue="overview" />
@@ -399,7 +432,7 @@ export default function PackPage() {
             <Card className="border-amber-200 bg-amber-50">
               <CardContent className="pt-4 text-sm text-amber-950">
                 {debugExport.qualityChecks.acceptanceWarningMessage ??
-                  "Study pack generated, but quality checks failed. Review Debug JSON."}
+                  "Exam pack generated, but quality checks failed. Review Debug JSON."}
               </CardContent>
             </Card>
           ) : null}
@@ -407,7 +440,7 @@ export default function PackPage() {
             <CardHeader>
               <CardTitle className="text-base">Export</CardTitle>
               <CardDescription>
-                Download or copy the full generated pack for an external reviewer (JSON includes extraction, study pack, and quality checks). Everything stays local — no upload.
+                Download or copy the full generated pack for an external reviewer (JSON includes extraction, exam pack, and quality checks). Everything stays local — no upload.
               </CardDescription>
             </CardHeader>
             <CardContent className="flex flex-wrap gap-2">

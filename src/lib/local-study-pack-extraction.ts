@@ -1629,86 +1629,21 @@ function harvestConceptualDefinitions(
 }
 
 function proofSkeletonFromBody(title: string, body: string): { skeleton: string; mistake: string } {
-  const lower = `${title} ${body}`.toLowerCase();
-  const mcChapter = /\bmonte\s*carlo\b|\bimportance\s*sampling\b|\bsnis\b|\bself[-\s]?normali/.test(lower);
-  if (mcChapter && /monte\s*carlo/.test(lower) && /unbiased|expectation/.test(lower) && /hat|mc\s+estimator|\bphi\b/i.test(lower)) {
+  const steps = proofStepsFromBody(body);
+  const highSignal = steps.filter((step) =>
+    /\b(assume|suppose|let|then|hence|therefore|thus|since|because|so|conclude|it follows|we have|we get|we obtain|show|prove)\b/i.test(step) ||
+    /[=∫∑∂≤≥⇒⇔]/.test(step),
+  );
+  const selected = (highSignal.length >= 2 ? highSignal : steps).slice(0, 5);
+  if (selected.length) {
     return {
-      skeleton:
-        "Write the MC estimator as an average of ϕ(X_i); use linearity of expectation and i.i.d. sampling from the target to relate E[estimator] to E[ϕ(X)].",
-      mistake: "Forgetting independence between samples when passing expectation through the sum, or confusing target expectation with proposal expectation.",
+      skeleton: selected.map((step, i) => `${i + 1}. ${normalizeMathText(step).slice(0, 260)}`).join("\n"),
+      mistake: "Do not replace the source proof with a memorised template; check each stated assumption and reproduce the uploaded proof's logical order.",
     };
   }
-  if (mcChapter && (/variance.*mc|mc.*variance|var\s*\(\s*hat\s*phi/i.test(lower) || title.toLowerCase().includes("variance of the monte carlo"))) {
-    return {
-      skeleton: "Expand Var( (1/N)Σ ϕ(X_i) ) using independence → (1/N²)Σ Var(ϕ(X)). Identify Var(ϕ(X))/N.",
-      mistake: "Using proposal variance formulas under i.i.d. target sampling, or dropping the 1/N scaling.",
-    };
-  }
-  if (mcChapter && /importance\s*sampling/.test(lower) && /unbiased/.test(lower)) {
-    return {
-      skeleton: "Rewrite expectation under q using weights w=p*/q; apply expectation linearity and ∫ p*(x)dx=1.",
-      mistake: "Mixing up expectation under q vs p* when moving w inside the integral.",
-    };
-  }
-  if (mcChapter && /snis|self[-\s]?normali/.test(lower) && /mse|mean\s+squared/i.test(lower)) {
-    return {
-      skeleton: "Express SNIS estimator as ratio of sums; bound MSE via bias–variance or Cauchy–Schwarz style arguments on normalized weights.",
-      mistake: "Treating self-normalised weights as deterministic, or ignoring dependence introduced by the random denominator.",
-    };
-  }
-  if (mcChapter && (/marginal\s+likelihood|evidence/.test(lower) || title.toLowerCase().includes("marginal likelihood"))) {
-    return {
-      skeleton: "Identify an unbiased estimator of the marginal likelihood as an integral identity under an importance proposal; verify expectation step-by-step.",
-      mistake: "Confusing marginal likelihood with posterior density, or wrong proposal normalization.",
-    };
-  }
-  if (
-    lower.includes("f_x") ||
-    lower.includes("probability integral") ||
-    (lower.includes("f_x^{-1}") && lower.includes("cdf"))
-  ) {
-    return {
-      skeleton:
-        "Let U ~ Uniform(0,1); set X = F_X^{-1}(U). Then P(X<=x) = P(F_X^{-1}(U)<=x) = P(U<=F_X(x)) = F_X(x).",
-      mistake: "Forgetting monotonicity/right-continuity of F_X when pushing the inequality through F_X^{-1}.",
-    };
-  }
-  if (lower.includes("conditional bayes") || (lower.includes("p(x|y)") && lower.includes("p(y|x)"))) {
-    return {
-      skeleton: "Apply Bayes with conditional independence structure; simplify using factors shared across observations.",
-      mistake: "Mixing up conditioning directions in p(y|x) vs p(x|y).",
-    };
-  }
-  if (lower.includes("detailed balance") && (lower.includes("stationar") || lower.includes("invariant"))) {
-    return {
-      skeleton: "Assume detailed balance K(x'|x)p*(x)=K(x|x')p*(x') → integrate both sides over x' → use that K(·|x) integrates to 1 → conclude p*(x) = ∫ K(x|x')p*(x')dx', i.e. K-invariance.",
-      mistake: "Forgetting that K(·|x) integrates to 1 (in the discrete case Σ_j Mij = 1) when collapsing the integral.",
-    };
-  }
-  if (lower.includes("metropolis") && (lower.includes("detailed balance") || lower.includes("accept"))) {
-    return {
-      skeleton: "Write MH kernel K(x'|x) = α(x,x')q(x'|x) + (1-a(x))δx(x'). Multiply by p*(x). For the proposal term, expand α = min{1, p*(x')q(x|x')/[p*(x)q(x'|x)]} and use min{a,b}·a = min{ab,b·a}=min{c,d}·b form to swap (x,x') → (x',x). Dirac term is symmetric in (x,x'). Conclude p*(x)K(x'|x)=p*(x')K(x|x').",
-      mistake: "Using the wrong conditional order in q(x'|x) vs q(x|x') in the ratio, or forgetting the rejection (Dirac) term contributes symmetrically.",
-    };
-  }
-  if (lower.includes("gibbs") && (lower.includes("invariant") || lower.includes("kernel") || lower.includes("conditional"))) {
-    return {
-      skeleton: "Each Gibbs sweep updates one block from its full conditional p*(x_k | x_{-k}). Show that p* is invariant under one such update by integrating over the updated coordinate. Compose updates: each leaves p* invariant, so the sweep does too.",
-      mistake: "Assuming the random/systematic scan order does not matter without verifying invariance per update; ignoring reducibility on disconnected supports.",
-    };
-  }
-  if (lower.includes("chapman") || (lower.includes("m^n") || /m\s*\(\s*n\s*\)\s*=\s*m\s*n/.test(lower))) {
-    return {
-      skeleton: "Condition on Xn at intermediate time → apply Markov property → recognise sum/integral as matrix/kernel product → induct to obtain M^{(n)} = M^n.",
-      mistake: "Conditioning incorrectly (Markov property requires conditioning on the most recent state).",
-    };
-  }
-  const markovish = /\b(markov|transition\s+matrix|irreducible|aperiodic|detailed\s+balance|stationar)\b/i.test(lower);
   return {
-    skeleton: "State assumptions → expand definitions → algebraic manipulation → conclude.",
-    mistake: markovish
-      ? "Skipping hypotheses (irreducibility, aperiodicity, positivity) when invoking limit theorems."
-      : "Omitting integrability/support conditions when swapping limits, sums, and expectations.",
+    skeleton: `Use the proof body from the source for ${title}; the parsed text was too short or too fragmented to make a reliable outline.`,
+    mistake: "Treat this as needs-review: verify the proof against the uploaded notes before relying on it.",
   };
 }
 
@@ -1760,7 +1695,7 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[], h
       proofName: heading,
       statement: normalizeMathText(statementOnly.slice(0, 1500)),
       proofSteps: steps,
-      proofSkeleton: `Proof outline: ${normalizeMathText(proofBodyForPack.slice(0, 800))}\n\nKey idea: ${skeleton}`,
+      proofSkeleton: `Source proof excerpt: ${normalizeMathText(proofBodyForPack.slice(0, 800))}\n\nExtractive outline:\n${skeleton}`,
       commonMistake: mistake,
       importance: hasPastEvidence ? "must_know" : "needs_review",
       source: b.sourceFile,
@@ -2176,13 +2111,14 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const headingHierarchySummary = summarizeHeadingHierarchy(headingTree);
   const tocResult = documentProfile.tocParseResult;
   const preferToc = (tocResult?.entries?.filter((e) => e.startPage != null).length ?? 0) >= 3;
-  let { chapterMap: unifiedChapterMap, validation: chapterRangeValidation, source: chapterMapSource } = buildChapterMap({
+  const { chapterMap: unifiedChapterMap, validation: chapterRangeValidation, source } = buildChapterMap({
     tocEntries: tocResult?.entries ?? [],
     tocFound: tocResult?.found ?? false,
     headingCandidates,
     pageCount: documentProfile.pageCount,
     preferToc,
   });
+  let chapterMapSource = source;
   if (
     unifiedChapterMap.length >= 2 &&
     chapterMapSource === "heading_scan" &&
@@ -2384,7 +2320,11 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
 
   mistakes = filterStaleMistakes(mistakes, sourceBlobLower);
 
-  const patterns = buildPastPaperPatterns(hasPastEvidence, settings);
+  const assessmentText = files
+    .filter((f) => ["exam_guidance", "past_paper", "problem_sheet", "solution_sheet", "mark_scheme"].includes(f.role ?? ""))
+    .map((f) => f.parsedText ?? "")
+    .join("\n\n");
+  const patterns = buildPastPaperPatterns(assessmentText, hasPastEvidence, settings);
 
   const courseMapChapters = buildRichCourseMap(documentProfile, definitions, formulas, derivations);
 
@@ -2777,7 +2717,7 @@ function guessTopicsFallback(files: LecturePackFile[]): GeneratedCourseTopic[] {
   });
 }
 
-function buildPastPaperPatterns(hasEvidence: boolean, settings: PackGeneratorSettings): GeneratedPastPaperPattern[] {
+function buildPastPaperPatterns(assessmentText: string, hasEvidence: boolean, settings: PackGeneratorSettings): GeneratedPastPaperPattern[] {
   if (!hasEvidence) {
     return [
       {
@@ -2789,15 +2729,55 @@ function buildPastPaperPatterns(hasEvidence: boolean, settings: PackGeneratorSet
       },
     ];
   }
+  const questionBlocks = extractAssessmentQuestionPatterns(assessmentText);
+  if (questionBlocks.length) return questionBlocks.slice(0, 8);
   return [
     {
       id: createId("pat"),
-      title: "Repeated exam emphasis",
-      evidence: "Assessment-class files included in this project.",
-      likelyExamStyle: settings.revisionStyle === "problem_heavy" ? "Multi-part calculation with interpretation" : "Short recall plus applied follow-up",
-      suggestedPracticeQuestion: "Timed past-paper question: definitions first, then a medium-length computation.",
+      title: "Assessment evidence uploaded",
+      evidence: "Assessment-class files were included, but clear question stems were not detected in the parsed text.",
+      likelyExamStyle: settings.revisionStyle === "problem_heavy" ? "Problem-heavy revision recommended." : "Use uploaded assessment files for manual cross-checking.",
+      suggestedPracticeQuestion: "Open the assessment source, pick one question stem, and regenerate after OCR if the text looks incomplete.",
     },
   ];
+}
+
+function extractAssessmentQuestionPatterns(assessmentText: string): GeneratedPastPaperPattern[] {
+  const text = cleanUploadedStudySourceText(assessmentText.replace(/\r\n/g, "\n"));
+  const lines = text.split("\n").map((line) => line.replace(/\s+/g, " ").trim()).filter(Boolean);
+  const out: GeneratedPastPaperPattern[] = [];
+  for (let i = 0; i < lines.length; i += 1) {
+    const line = lines[i] ?? "";
+    const startsQuestion = /^(?:question|problem|exercise)\s+\d+[A-Za-z]?(?:[).:\s]|$)/i.test(line) || /^(?:\d+|[a-z])\)\s+/.test(line);
+    const commandStem = /^(?:show|prove|derive|calculate|compute|find|explain|state|define|estimate|simulate|discuss)\b/i.test(line);
+    if (!startsQuestion && !commandStem) continue;
+    const body = [line, lines[i + 1] ?? "", lines[i + 2] ?? ""].join(" ").replace(/\s+/g, " ").trim();
+    if (body.length < 24) continue;
+    const lower = body.toLowerCase();
+    const style =
+      /\b(show|prove|derive)\b/.test(lower) ? "Proof or derivation question"
+      : /\b(calculate|compute|find|estimate|simulate)\b/.test(lower) ? "Calculation or applied method question"
+      : /\b(state|define|explain|discuss)\b/.test(lower) ? "Short-answer conceptual question"
+      : "Assessment question pattern";
+    out.push({
+      id: createId("pat"),
+      title: style,
+      evidence: body.slice(0, 360),
+      likelyExamStyle: style,
+      suggestedPracticeQuestion: body.length > 220 ? `${body.slice(0, 217).trim()}...` : body,
+    });
+    i += 2;
+  }
+  return dedupePastPaperPatterns(out);
+}
+
+function dedupePastPaperPatterns(items: GeneratedPastPaperPattern[]): GeneratedPastPaperPattern[] {
+  const out: GeneratedPastPaperPattern[] = [];
+  for (const item of items) {
+    if (out.some((x) => jaccardSimilarity(x.evidence, item.evidence) > 0.82)) continue;
+    out.push(item);
+  }
+  return out;
 }
 
 /** Labelled Example / Exercise blocks for debug export (not shown as separate Study Pack tabs today). */

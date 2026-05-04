@@ -8,7 +8,7 @@ import { cn } from "@/lib/utils";
 const nav = [
   ["Dashboard", "/dashboard"],
   ["Upload", "/upload"],
-  ["Study pack", "/pack"],
+  ["Exam pack", "/pack"],
   ["Practice", "/quiz"],
   ["Review", "/review"],
   ["Progress", "/progress"],

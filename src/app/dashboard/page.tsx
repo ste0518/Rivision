@@ -45,15 +45,15 @@ export default function DashboardPage() {
     if (stats.weakTopics.length > 0) {
       return { title: "Today's priority", lines: stats.weakTopics.map((t) => `Spend 15 minutes on: ${t}`) };
     }
-    if (stats.defs > 0) return { title: "Today's priority", lines: ["Review must-know definitions in your study pack or Review tab."] };
-    return { title: "Suggested next step", lines: ["Upload course materials, then generate your revision pack."] };
+    if (stats.defs > 0) return { title: "Today's priority", lines: ["Review must-know definitions in your exam pack or Review tab."] };
+    return { title: "Suggested next step", lines: ["Upload course materials, then generate your exam pack."] };
   }, [stats.defs, stats.weakTopics]);
 
   const onboarding = uploadedCount === 0 || !hasPack;
 
   return (
     <div className="space-y-10">
-      <PageHeader title="Dashboard" description="Your exam-focused revision workspace." />
+      <PageHeader title="Dashboard" description="Turn lecture notes, problem sheets, and past papers into one exam-ready revision pack." />
 
       {onboarding ? (
         <section className="rounded-2xl border border-blue-100 bg-gradient-to-br from-blue-50/80 to-white px-6 py-10 sm:px-10">
@@ -61,17 +61,17 @@ export default function DashboardPage() {
             <div className="mx-auto mb-4 flex h-12 w-12 items-center justify-center rounded-full bg-blue-700 text-white">
               <Sparkles className="h-6 w-6" />
             </div>
-            <h2 className="text-2xl font-semibold tracking-tight text-slate-950">Build your exam-focused revision pack</h2>
+            <h2 className="text-2xl font-semibold tracking-tight text-slate-950">Build your exam pack from course files</h2>
             <p className="mt-3 text-slate-600">
-              Upload your lecture notes, past papers, problem sheets, and solutions. Rivision will organise them into definitions, formulas, proofs, method templates,
-              practice questions, and a cram sheet.
+              Upload one useful source to start, or combine lectures with problem sheets, past papers, and mark schemes for a stronger pack. Rivision turns them into priorities,
+              recall cards, method templates, exam-style practice, and a cram sheet.
             </p>
             <ol className="mt-8 grid gap-4 text-left text-sm text-slate-700 sm:grid-cols-2">
               {[
-                "Upload course files",
-                "Generate study pack",
-                "Review must-know topics",
-                "Start practice and active recall",
+                "Upload notes or exam material",
+                "Generate the exam pack",
+                "Check high-priority topics",
+                "Practise, review, and cram",
               ].map((label, index) => (
                 <li key={label} className="flex gap-3 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
                   <span className="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-blue-100 text-sm font-semibold text-blue-800">{index + 1}</span>
@@ -85,12 +85,12 @@ export default function DashboardPage() {
               </Link>
               {uploadedCount > 0 ? (
                 <Link className="inline-flex h-11 items-center justify-center rounded-md bg-slate-100 px-6 text-sm font-medium text-slate-900 hover:bg-slate-200" href="/upload">
-                  Generate revision pack
+                  Generate exam pack
                 </Link>
               ) : null}
               {hasPack ? (
                 <Link className="inline-flex h-11 items-center justify-center rounded-md border border-slate-300 bg-white px-6 text-sm font-medium hover:bg-slate-50" href="/pack">
-                  Open study pack
+                  Open exam pack
                 </Link>
               ) : null}
               {kept.length > 0 ? (
@@ -136,7 +136,7 @@ export default function DashboardPage() {
           </CardHeader>
           <CardContent className="flex flex-col gap-3">
             <LinkRow href="/upload" label="Upload your course materials" />
-            <LinkRow href="/pack" label="Open study pack" disabled={!hasPack} />
+            <LinkRow href="/pack" label="Open exam pack" disabled={!hasPack} />
             <LinkRow href="/review" label="Review must-know items" disabled={kept.length === 0} />
             <LinkRow href="/quiz" label="Practice exam-style questions" />
             <LinkRow href="/progress" label="Track progress" />

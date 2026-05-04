@@ -5,6 +5,7 @@ import { extractionSystemPrompt, verificationSystemPrompt } from "@/lib/llm/prom
 import type { LLMProvider } from "@/lib/llm/provider";
 import { curatedDeckResponseSchema, verificationReportSchema } from "@/lib/llm/schemas";
 import { attachProofsToPreviousTheorem, segmentRevisionCandidates } from "@/lib/segmentation";
+import { excerptGroundedInSource } from "@/lib/source-grounding";
 import type { CandidateRevisionBlock, CuratedDeckResult, ExtractionPipelineMode, ExtractionVerificationReport, ParsedDocument, RejectedRevisionItem, RevisionItem } from "@/lib/types";
 
 type OpenAiProviderOptions = {
@@ -45,12 +46,13 @@ export class OpenAiResponsesProvider implements LLMProvider {
     const problemSheetDocuments = input.problemSheetDocuments ?? [];
     const solutionDocuments = input.solutionDocuments ?? [];
     const notesText = renderCandidateDocumentSet(input.notesDocuments, input.guidanceDocuments);
+    const notesFullText = renderDocumentSet("NOTES", input.notesDocuments);
     const guidanceText = renderDocumentSet("GUIDANCE", input.guidanceDocuments);
     const assessmentText = [
       renderDocumentSet("GUIDANCE", input.guidanceDocuments),
-      renderDocumentSet("GUIDANCE", pastPaperDocuments),
-      renderDocumentSet("GUIDANCE", problemSheetDocuments),
-      renderDocumentSet("GUIDANCE", solutionDocuments),
+      renderDocumentSet("PAST_PAPER", pastPaperDocuments),
+      renderDocumentSet("PROBLEM_SHEET", problemSheetDocuments),
+      renderDocumentSet("SOLUTION_OR_MARK_SCHEME", solutionDocuments),
     ].filter(Boolean).join("\n\n");
 
     const response = await this.client.responses.create({
@@ -73,7 +75,10 @@ export class OpenAiResponsesProvider implements LLMProvider {
     });
 
     const payload = safeParseJson<CuratedDeckResult>(response.output_text);
-    if (payload) return { ...payload, rejectedItems: hydrateRejectedItems(payload.rejectedItems, candidates, assessmentText || guidanceText) };
+    if (payload) {
+      const grounded = applySourceExcerptGate(payload, `${notesFullText}\n\n${assessmentText || guidanceText}`);
+      return { ...grounded, rejectedItems: hydrateRejectedItems(grounded.rejectedItems, candidates, assessmentText || guidanceText) };
+    }
     const examPriorityMap = await buildExamPriorityMap({
       notesDocuments: input.notesDocuments,
       guidanceDocuments: input.guidanceDocuments,
@@ -151,6 +156,41 @@ function hydrateRejectedItems(rejectedItems: RejectedRevisionItem[], candidates:
   });
 }
 
+function applySourceExcerptGate(curated: CuratedDeckResult, sourceText: string): CuratedDeckResult {
+  const keptItems: RevisionItem[] = [];
+  const needsReviewItems: RevisionItem[] = [...curated.needsReviewItems];
+
+  for (const item of curated.keptItems) {
+    const excerpt = item.sourceExcerpt?.trim() || item.originalRawText?.slice(0, 500).trim() || "";
+    const grounded = excerpt.length >= 12 && excerptGroundedInSource(excerpt, sourceText);
+    if (grounded) {
+      keptItems.push(item);
+      continue;
+    }
+    needsReviewItems.push({
+      ...item,
+      curationDecision: "needs_review",
+      curationStatus: "needs_review",
+      classificationConfidence: "low",
+      extractionWarning: item.extractionWarning ?? "Source excerpt is missing or not grounded in the current upload.",
+      warnings: [...(item.warnings ?? []), "Source excerpt is missing or not grounded in the current upload."],
+    });
+  }
+
+  return {
+    ...curated,
+    keptItems,
+    needsReviewItems,
+    curationReport: {
+      ...curated.curationReport,
+      notes: [
+        ...(curated.curationReport?.notes ?? []),
+        keptItems.length === curated.keptItems.length ? "All kept LLM items passed source-excerpt grounding." : "Some LLM kept items were moved to needs review because source excerpts were missing or ungrounded.",
+      ],
+    },
+  };
+}
+
 function safeParseJson<T>(value: string): T | null {
   try {
     return JSON.parse(value) as T;
@@ -159,7 +199,7 @@ function safeParseJson<T>(value: string): T | null {
   }
 }
 
-function renderDocumentSet(kind: "NOTES" | "GUIDANCE", docs: ParsedDocument[]) {
+function renderDocumentSet(kind: "NOTES" | "GUIDANCE" | "PAST_PAPER" | "PROBLEM_SHEET" | "SOLUTION_OR_MARK_SCHEME", docs: ParsedDocument[]) {
   return docs
     .map((doc) => {
       const candidates = detectCandidateLines(doc.fullText);

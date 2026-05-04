@@ -62,6 +62,7 @@ export function normalizeRevisionItem(raw: unknown): RevisionItem {
     proofRequired: typeof value.proofRequired === "boolean" ? value.proofRequired : undefined,
     sourceFile: stringValue(value.sourceFile) || "Unknown source",
     sourceLocation: optionalString(value.sourceLocation),
+    sourceExcerpt: optionalString(value.sourceExcerpt),
     pageNumber: numberValue(value.pageNumber),
     section: optionalString(value.section),
     theoremNumber: optionalString(value.theoremNumber),

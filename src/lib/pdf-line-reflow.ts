@@ -6,7 +6,7 @@
 const LONG_LINE = 200;
 
 export function reflowPrintedTextForHeadingDetection(raw: string): string {
-  let t = raw.replace(/\r\n/g, "\n");
+  const t = raw.replace(/\r\n/g, "\n");
   const lines = t.split("\n");
   const out: string[] = [];
   for (const line of lines) {

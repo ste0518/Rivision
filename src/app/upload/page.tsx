@@ -2,7 +2,7 @@
 
 import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { FileText, Loader2, Trash2, UploadCloud } from "lucide-react";
+import { AlertTriangle, CheckCircle2, ClipboardList, FileText, Loader2, Trash2, UploadCloud } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Dialog, DialogContent } from "@/components/ui/dialog";
@@ -231,7 +231,7 @@ export default function UploadPage() {
       }
 
       setPackGenerateProgress(78);
-      setPackGeneratePhase("Build · structuring your study pack");
+      setPackGeneratePhase("Build · structuring your exam pack");
 
       const packSources = uploadedFilesForExtract.map(fileToPackSource);
       const studentPack = generateStudentRevisionPack({
@@ -272,8 +272,8 @@ export default function UploadPage() {
       store.setPracticeQuestions(starterPractice);
 
       setPackGenerateProgress(96);
-      setPackGeneratePhase("Open · navigating to study pack");
-      setMessage("Revision pack generated locally. Opening study pack…");
+      setPackGeneratePhase("Open · navigating to exam pack");
+      setMessage("Exam pack generated locally. Opening pack…");
       setPackGenerateProgress(100);
       router.push("/pack");
     } catch (e) {
@@ -295,7 +295,7 @@ export default function UploadPage() {
     <div className="space-y-8">
       <PageHeader
         title="Upload course materials"
-        description="Classify files so Rivision can weight lectures vs assessment evidence. By default a new upload replaces the current pack — switch to “Add to current pack” only when you mean to merge sources."
+        description="Give Rivision lecture notes, problem sheets, past papers, or mark schemes. It will build one exam pack with priorities, recall cards, worked-method templates, practice questions, and a cram sheet."
       />
 
       <Card>
@@ -304,7 +304,7 @@ export default function UploadPage() {
             <div className="space-y-1">
               <CardTitle className="text-base">Upload behaviour</CardTitle>
               <CardDescription>
-                Controls whether new files replace your saved study pack and progress. PDFs are parsed in your browser without OCR so they appear immediately; OCR runs when you generate the revision pack (can take several minutes for large or scanned PDFs).
+                Controls whether new files replace your saved exam pack and progress. PDFs are parsed in your browser without OCR so they appear immediately; OCR runs when you generate the exam pack (can take several minutes for large or scanned PDFs).
               </CardDescription>
             </div>
             <label className="flex cursor-pointer items-center gap-2 text-sm sm:self-end">
@@ -314,18 +314,18 @@ export default function UploadPage() {
                 onChange={(event) => persistReplaceSetting(event.target.checked)}
                 className="rounded border-slate-300"
               />
-              {hasRealStudyPack ? "Replace current study pack (recommended)" : "Create new study pack from uploads (recommended)"}
+              {hasRealStudyPack ? "Replace current exam pack (recommended)" : "Create new exam pack from uploads (recommended)"}
             </label>
           </div>
           {!replacePack ? (
             <p className="text-sm text-amber-900">
-              Advanced: new files will be appended. Generate again to merge them into one pack; older cards may mix sources.
+              Advanced: new files will be appended. Generate again to merge them into one exam pack; older cards may mix sources.
             </p>
           ) : null}
           <div className="flex flex-wrap gap-2">
             <Button type="button" variant="outline" size="sm" className="gap-2 text-red-800 border-red-200 hover:bg-red-50" onClick={() => store.clearCurrentPack()}>
               <Trash2 className="h-4 w-4" />
-              Clear current pack
+              Clear current exam pack
             </Button>
           </div>
           {primaryNotesName ? (
@@ -338,9 +338,9 @@ export default function UploadPage() {
 
       <Dialog open={confirmOpen} onOpenChange={setConfirmOpen}>
         <DialogContent>
-          <h2 className="text-lg font-semibold text-slate-950">Replace current study pack?</h2>
+          <h2 className="text-lg font-semibold text-slate-950">Replace current exam pack?</h2>
           <p className="text-sm text-slate-600">
-            This will clear the current pack, review cards, practice questions, and progress for the previous upload before adding the new file(s).
+            This will clear the current exam pack, review cards, practice questions, and progress for the previous upload before adding the new file(s).
           </p>
           <div className="mt-4 flex flex-wrap justify-end gap-2">
             <Button type="button" variant="outline" onClick={() => { setConfirmOpen(false); setPendingUpload(null); }}>
@@ -373,6 +373,8 @@ export default function UploadPage() {
         </DialogContent>
       </Dialog>
 
+      <SourceReadinessPanel files={allFiles} canGenerate={canGenerate} />
+
       <div className="grid gap-6 lg:grid-cols-2">
         <UploadBox
           title="Lecture notes & sources"
@@ -380,8 +382,8 @@ export default function UploadPage() {
           buttonLabel={
             replacePack ?
               hasRealStudyPack ?
-                "Upload file and replace current study pack"
-              : "Upload file and create study pack"
+                "Upload file and replace current exam pack"
+              : "Upload file and create exam pack"
             : "Add lecture files"
           }
           onChange={(files) => void handleFiles(files, "notes")}
@@ -406,7 +408,7 @@ export default function UploadPage() {
           <div>
             <p className="font-medium text-slate-900">Parsing your upload…</p>
             <p className="mt-1 text-slate-600">
-              Files appear below after the text layer is read (no OCR yet). OCR runs later when you click Generate revision pack. Large PDFs should still finish this step quickly; keep this tab open and watch for errors here.
+              Files appear below after the text layer is read (no OCR yet). OCR runs later when you click Generate exam pack. Large PDFs should still finish this step quickly; keep this tab open and watch for errors here.
             </p>
           </div>
         </div>
@@ -423,7 +425,7 @@ export default function UploadPage() {
 
           <div className="flex flex-col gap-3 border-t pt-6">
             <Button size="lg" disabled={loading || generating || !canGenerate} onClick={() => void runGeneratePack()}>
-              {generating ? "Generating…" : "Generate revision pack"}
+              {generating ? "Generating…" : "Generate exam pack"}
             </Button>
             {generating ? (
               <PackGenerateProgressBar phase={packGeneratePhase} progress={packGenerateProgress} />
@@ -453,7 +455,7 @@ function PackGenerateProgressBar({ phase, progress }: { phase: string; progress:
       aria-valuemin={0}
       aria-valuemax={100}
       aria-valuetext={detailLine}
-      aria-label="Generating revision pack"
+      aria-label="Generating exam pack"
       aria-busy={true}
     >
       <div className="mb-2 text-sm font-medium text-slate-800">Generating exam pack</div>
@@ -482,6 +484,70 @@ function studyFileToInputFile(file: StudyFile): File | null {
   if (!file.blob) return null;
   if (file.blob instanceof File) return file.blob;
   return new File([file.blob], file.name, { type: file.mimeType || "application/pdf" });
+}
+
+function SourceReadinessPanel({ files, canGenerate }: { files: StudyFile[]; canGenerate: boolean }) {
+  const hasLecture = files.some((f) => f.role === "lecture_notes" || f.role === "formula_sheet");
+  const hasAssessment = files.some((f) => isAssessmentRole(f.role));
+  const hasPastPaper = files.some((f) => f.role === "past_paper");
+  const hasSolutions = files.some((f) => f.role === "solution_sheet" || f.role === "mark_scheme");
+  const level =
+    hasLecture && hasAssessment && hasSolutions ? "Strong exam pack"
+    : hasLecture && hasAssessment ? "Good exam pack"
+    : canGenerate ? "Starter exam pack"
+    : "Waiting for files";
+  const levelClass =
+    level === "Strong exam pack" ? "border-green-200 bg-green-50 text-green-950"
+    : level === "Good exam pack" ? "border-blue-200 bg-blue-50 text-blue-950"
+    : level === "Starter exam pack" ? "border-amber-200 bg-amber-50 text-amber-950"
+    : "border-slate-200 bg-slate-50 text-slate-700";
+  const nextBest =
+    !hasLecture ? "Add lecture notes to capture definitions, formulas, theorems, and course structure."
+    : !hasAssessment ? "Add a problem sheet or past paper to make priorities and practice more exam-shaped."
+    : !hasSolutions ? "Add solutions or a mark scheme to improve answer style, pitfalls, and marking cues."
+    : hasPastPaper ? "You have the strongest mix: notes, assessment evidence, and answer guidance."
+    : "A past paper would make pattern detection stronger, but this is already a useful pack.";
+
+  const inputs = [
+    { label: "Lecture notes", ok: hasLecture, detail: "Definitions, formulas, proofs, course map" },
+    { label: "Problem or past paper", ok: hasAssessment, detail: "Question styles, topic frequency, exam pressure" },
+    { label: "Solutions or mark scheme", ok: hasSolutions, detail: "Expected steps, traps, answer quality" },
+  ];
+
+  return (
+    <Card className="overflow-hidden">
+      <CardHeader className="pb-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div>
+            <CardTitle className="flex items-center gap-2 text-lg">
+              <ClipboardList className="h-5 w-5 text-blue-700" />
+              Exam pack readiness
+            </CardTitle>
+            <CardDescription className="mt-2">
+              A single lecture file is enough to start. Lectures plus assessment material produce a more exam-focused pack.
+            </CardDescription>
+          </div>
+          <span className={`inline-flex w-fit items-center rounded-md border px-3 py-1 text-sm font-medium ${levelClass}`}>{level}</span>
+        </div>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-3 md:grid-cols-3">
+          {inputs.map((item) => (
+            <div key={item.label} className="rounded-lg border border-slate-200 bg-slate-50/70 p-3">
+              <div className="flex items-center gap-2 text-sm font-medium text-slate-900">
+                {item.ok ? <CheckCircle2 className="h-4 w-4 text-green-700" /> : <AlertTriangle className="h-4 w-4 text-amber-700" />}
+                {item.label}
+              </div>
+              <p className="mt-1 text-xs leading-relaxed text-slate-600">{item.detail}</p>
+            </div>
+          ))}
+        </div>
+        <p className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">
+          <span className="font-medium text-slate-950">Next best upload:</span> {nextBest}
+        </p>
+      </CardContent>
+    </Card>
+  );
 }
 
 function UploadBox({

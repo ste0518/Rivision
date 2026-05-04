@@ -9,23 +9,6 @@ import { useStudyStore } from "@/hooks/use-study-store";
 
 export default function ProgressPage() {
   const store = useStudyStore();
-
-  if (!store.studentRevisionPack) {
-    return (
-      <div className="space-y-8">
-        <PageHeader title="Progress" description="High-level view of how your revision is going — all computed locally." />
-        <Card className="border-dashed">
-          <CardContent className="py-12 text-center text-slate-600">
-            <p>No study pack yet. Upload files and generate a revision pack first.</p>
-            <Link className="mt-4 inline-flex h-10 items-center justify-center rounded-md bg-blue-700 px-4 text-sm font-medium text-white" href="/upload">
-              Upload &amp; generate
-            </Link>
-          </CardContent>
-        </Card>
-      </div>
-    );
-  }
-
   const active = useMemo(() => store.revisionItems.filter((i) => !i.isDeleted), [store.revisionItems]);
   const kept = useMemo(() => active.filter((i) => (i.curationDecision ?? "keep") === "keep"), [active]);
 
@@ -43,6 +26,22 @@ export default function ProgressPage() {
     };
   }, [kept, store.reviewSessions]);
 
+  if (!store.studentRevisionPack) {
+    return (
+      <div className="space-y-8">
+        <PageHeader title="Progress" description="High-level view of how your revision is going — all computed locally." />
+        <Card className="border-dashed">
+          <CardContent className="py-12 text-center text-slate-600">
+            <p>No exam pack yet. Upload files and generate an exam pack first.</p>
+            <Link className="mt-4 inline-flex h-10 items-center justify-center rounded-md bg-blue-700 px-4 text-sm font-medium text-white" href="/upload">
+              Upload &amp; generate
+            </Link>
+          </CardContent>
+        </Card>
+      </div>
+    );
+  }
+
   const practiceAttempted = store.practiceAttempts?.length ?? 0;
   const practiceBank = store.practiceQuestions?.length ?? 0;
 
@@ -58,11 +57,11 @@ export default function ProgressPage() {
       <div className="grid gap-4 md:grid-cols-2">
         <Card>
           <CardHeader>
-            <CardTitle>Study pack</CardTitle>
+            <CardTitle>Exam pack</CardTitle>
             <CardDescription>Structured exam overview and sections.</CardDescription>
           </CardHeader>
           <CardContent className="text-sm">
-            <Row label="Study pack generated" value="Yes" />
+            <Row label="Exam pack generated" value="Yes" />
             <Row label="Files uploaded" value={String(filesCount)} />
           </CardContent>
         </Card>
@@ -107,7 +106,7 @@ export default function ProgressPage() {
         </CardHeader>
         <CardContent>
           {weakTopics.length === 0 ? (
-            <p className="text-sm text-slate-500">Generate a study pack after uploading files to see weak topics, or you&apos;re in good shape on emphasis.</p>
+            <p className="text-sm text-slate-500">Generate an exam pack after uploading files to see weak topics, or you&apos;re in good shape on emphasis.</p>
           ) : (
             <ul className="list-inside list-disc space-y-1 text-sm text-slate-800">
               {weakTopics.map((t) => (

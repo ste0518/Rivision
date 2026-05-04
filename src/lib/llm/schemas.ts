@@ -25,6 +25,7 @@ const revisionItemSchema = {
     proofRequired: { type: "boolean" },
     sourceFile: { type: "string" },
     sourceLocation: { type: "string" },
+    sourceExcerpt: { type: "string" },
     pageNumber: { type: "number" },
     section: { type: "string" },
     theoremNumber: { type: "string" },
@@ -50,7 +51,7 @@ const revisionItemSchema = {
     createdAt: { type: "string" },
     updatedAt: { type: "string" },
   },
-  required: ["id", "type", "title", "cardFront", "cardPurpose", "statement", "sourceFile", "tags", "importance", "questionPrompt", "answer", "createdAt", "updatedAt"],
+  required: ["id", "type", "title", "cardFront", "cardPurpose", "statement", "sourceFile", "sourceLocation", "sourceExcerpt", "tags", "importance", "questionPrompt", "answer", "createdAt", "updatedAt"],
 } as const;
 
 export const revisionItemsResponseSchema = {
