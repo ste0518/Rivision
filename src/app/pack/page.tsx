@@ -899,7 +899,9 @@ function MethodSection({ methods }: { methods: GeneratedRevisionPack["methods"] 
           <CardContent>
             <ol className="list-inside list-decimal space-y-1 text-sm text-slate-700">
               {m.steps.map((s) => (
-                <li key={s}>{s}</li>
+                <li key={s}>
+                  <MathMarkdown content={s} className="inline !bg-transparent !p-0 text-sm text-slate-700" />
+                </li>
               ))}
             </ol>
             <p className="mt-3 text-xs text-slate-500">Related practice: {m.relatedPracticeType}</p>

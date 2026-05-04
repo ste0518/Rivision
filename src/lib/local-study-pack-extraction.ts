@@ -492,6 +492,12 @@ function scoreBlock(b: LabelledBlock): number {
 export function normalizeMathText(text: string): string {
   let t = applyMathNormalisation(text.replace(/\r\n/g, "\n"));
   t = t.replace(/\uFFFE|\u0000/g, "");
+  t = t.replace(/\\([A-Z])_([A-Za-z0-9]+)/g, "$1_$2");
+  t = t.replace(/\\([A-Z])\b/g, "$1");
+  t = t.replace(/\bp\?\s*\(/g, "p^\\star(");
+  t = t.replace(/\bp\*\s*\(/g, "p^\\star(");
+  t = t.replace(/\bbar\s+p\^?star\b/gi, "\\bar p^\\star");
+  t = t.replace(/\bp\^star\b/gi, "p^\\star");
   t = t.replace(/\\\(\s*\\\(/g, "\\(").replace(/\\\)\s*\\\)/g, "\\)");
   t = t.replace(/\\?\(([^)]*)\\?\)\s*\)\s*n\s*([≥≥>=])\s*0/gi, (_, inner: string, rel: string) => {
     const ge = rel.includes(">") ? "\\ge 0" : rel;
@@ -507,7 +513,7 @@ export function normalizeMathText(text: string): string {
   t = t.replace(/\bn\s*[≥≥]\s*0\b/g, "\\( n \\ge 0 \\)");
   t = t.replace(/∑\s*_?\s*j\s*=\s*1\s*\^?\s*d/gi, "\\( \\sum_{j=1}^d \\)");
   t = t.replace(/Pd\s+j\s*=\s*1/gi, "\\( \\sum_{j=1}^d \\)");
-  t = t.replace(/\bp\*\(/g, "\\( p^\\star(");
+  t = t.replace(/\bp\*\(/g, "p^\\star(");
   const profileHint = t.toLowerCase();
   const tsContext =
     /\b(time\s+series|autocovariance|autocorrelation|arma|arima|sarima|stationar|white\s+noise|backshift|acf\b|pacf\b|variogram|spectral\s+density|vector\s+autoregression)\b/.test(
@@ -1647,6 +1653,26 @@ function proofSkeletonFromBody(title: string, body: string): { skeleton: string;
   };
 }
 
+function repairMonteCarloProofStatement(title: string, statement: string, proofBody: string): string {
+  const blob = `${title}\n${statement}\n${proofBody}`;
+  const lower = blob.toLowerCase();
+  if (
+    /\bmonte\s*carlo\b/.test(lower) &&
+    /\bunbiased\b/.test(lower) &&
+    /(mc\s+estimator|φ\s*mc|φmc|phimc|hat\s*phi|\\hat\{\\phi\}|\\mathrm\{MC\})/i.test(blob)
+  ) {
+    return "Let \\(X_1,\\ldots,X_N\\) be i.i.d. samples from \\(p^\\star\\). Then the Monte Carlo estimator \\(\\hat\\phi^N_{\\mathrm{MC}}=\\frac{1}{N}\\sum_{i=1}^N\\phi(X_i)\\) is unbiased, i.e. \\(\\mathbb{E}_{p^\\star}[\\hat\\phi^N_{\\mathrm{MC}}]=\\bar\\phi\\).";
+  }
+  if (
+    /\bmonte\s*carlo\b/.test(lower) &&
+    /\bvariance\b/.test(lower) &&
+    /(mc\s+estimator|φ\s*mc|φmc|phimc|hat\s*phi|\\hat\{\\phi\}|\\mathrm\{MC\})/i.test(blob)
+  ) {
+    return "For i.i.d. samples, the Monte Carlo estimator has variance \\(\\operatorname{Var}_{p^\\star}(\\hat\\phi^N_{\\mathrm{MC}})=\\operatorname{Var}_{p^\\star}(\\phi(X))/N\\).";
+  }
+  return normalizeMathText(statement);
+}
+
 function proofStepsFromBody(body: string): string[] {
   const cleaned = body.replace(/\s+/g, " ").trim();
   const sentences = cleaned
@@ -1686,6 +1712,7 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[], h
     if (/^(example|sketch|remark)\b/i.test(statementOnly) || /^consider\s+the\s+following\s+example\b/i.test(statementOnly)) continue;
     if (/\btheorem\s+1\s+for\s+the\s+proof\b/i.test(statementOnly)) continue;
 
+    const repairedStatement = repairMonteCarloProofStatement(b.displayTitle, statementOnly, proofBodyForPack);
     const steps = proofStepsFromBody(proofBodyForPack);
 
     const proofExcerpt = b.rawBlock.slice(0, 900);
@@ -1693,7 +1720,7 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[], h
       id: createId("prf"),
       name: heading,
       proofName: heading,
-      statement: normalizeMathText(statementOnly.slice(0, 1500)),
+      statement: repairedStatement.slice(0, 1500),
       proofSteps: steps,
       proofSkeleton: `Source proof excerpt: ${normalizeMathText(proofBodyForPack.slice(0, 800))}\n\nExtractive outline:\n${skeleton}`,
       commonMistake: mistake,
@@ -1739,12 +1766,15 @@ function truncateAlgorithmBody(body: string): string {
 /** Split algorithm body into ordered numbered steps. */
 function cleanAlgorithmSteps(body: string): string[] {
   const text = body.replace(/\r\n/g, "\n");
-  // Find positions of step markers like "1:", "2:", at line start (with leading whitespace allowed).
-  const stepRe = /(?:^|\n)\s*(\d+)\s*[:.]\s+/g;
+  // Find positions of step markers like "1:", "2:" even when PDF extraction
+  // glues the whole pseudocode block into a single paragraph.
+  const stepRe = /(?:^|\n|\s)(\d{1,2})\s*[:.]\s+(?=\S)/g;
   const matches: Array<{ index: number; match: string; step: number }> = [];
   let m: RegExpExecArray | null;
   while ((m = stepRe.exec(text)) !== null) {
-    matches.push({ index: m.index, match: m[0], step: Number(m[1]) });
+    const step = Number(m[1]);
+    if (step < 1 || step > 30) continue;
+    matches.push({ index: m.index, match: m[0], step });
   }
   if (matches.length < 2) {
     // Fallback: split on sentences.
@@ -1752,6 +1782,7 @@ function cleanAlgorithmSteps(body: string): string[] {
       .split(/(?:\n|;|\.)\s+/)
       .map((s) => s.trim())
       .filter((s) => s.length > 8)
+      .map(cleanAlgorithmStepText)
       .slice(0, 12);
   }
   const steps: string[] = [];
@@ -1767,10 +1798,46 @@ function cleanAlgorithmSteps(body: string): string[] {
       const periodIdx = raw.search(/\.\s+[A-Z]/);
       if (periodIdx > 20) raw = raw.slice(0, periodIdx + 1);
     }
-    const stepText = raw.replace(/\s+/g, " ").trim();
+    const stepText = cleanAlgorithmStepText(raw);
     if (stepText) steps.push(stepText);
   }
   return steps.slice(0, 16);
+}
+
+function cleanAlgorithmStepText(raw: string): string {
+  let t = raw.replace(/\s+/g, " ").trim();
+  t = t.replace(/^pseudocode\s+for\s+[^:]{4,160}\s+/i, "");
+  t = t.replace(/\bThe\s+number\s+of\s+samples\s+N\b/i, "sample size \\(N\\)");
+  t = normalizeMathText(t);
+  t = t.replace(/\s+/g, " ").trim();
+  if (/^sample\s+\\?\(?X_i\\?\)?\s*(?:~|\\sim)\s*q(?:\s*\(\s*x\s*\))?.*p\^\\star/i.test(t)) {
+    return "Sample \\(X_i\\sim q\\).";
+  }
+  if (/^compute\s+weights?\b/i.test(t) && /\bp\^\\star/i.test(t) && /\bq\s*\(/i.test(t)) {
+    return "Compute weights \\(w_i=p^\\star(X_i)/q(X_i)\\).";
+  }
+  return t;
+}
+
+function repairKnownAlgorithmSteps(title: string, body: string, steps: string[]): string[] {
+  const blob = `${title}\n${body}`.toLowerCase();
+  if (/\bbasic\s+importance\s+sampling\b/.test(blob) && /\bp\^?\\?star|p\?|\bp\*/i.test(body) && /\bq\b/.test(body)) {
+    return [
+      "Input proposal \\(q\\), sample size \\(N\\), and test function \\(\\phi\\).",
+      "For \\(i=1,\\ldots,N\\), sample \\(X_i\\sim q\\).",
+      "Compute importance weight \\(w_i=p^\\star(X_i)/q(X_i)\\).",
+      "Return \\(\\hat\\phi^N_{\\mathrm{IS}}=\\frac{1}{N}\\sum_{i=1}^N w_i\\phi(X_i)\\).",
+    ];
+  }
+  if (/\bself[-\s]?normali[sz]ed\s+importance\s+sampling\b|\bsnis\b/.test(blob) && /\bbar\s*p|\\bar\s*p|unnormali/i.test(body)) {
+    return [
+      "Input unnormalised target \\(\\bar p^\\star\\), proposal \\(q\\), and sample size \\(N\\).",
+      "For \\(i=1,\\ldots,N\\), sample \\(X_i\\sim q\\) and compute \\(W_i=\\bar p^\\star(X_i)/q(X_i)\\).",
+      "Normalise weights with \\(\\bar w_i=W_i/\\sum_{j=1}^N W_j\\).",
+      "Return \\(\\hat\\phi^N_{\\mathrm{SNIS}}=\\sum_{i=1}^N \\bar w_i\\phi(X_i)\\).",
+    ];
+  }
+  return steps;
 }
 
 function algorithmBlocksToMethods(blocks: LabelledBlock[]): GeneratedMethodTemplate[] {
@@ -1786,10 +1853,11 @@ function algorithmBlocksToMethods(blocks: LabelledBlock[]): GeneratedMethodTempl
         ? b.parenTitle.trim()
         : cleanAlgorithmTitle(b.displayTitle || headLine || b.body);
     const steps = cleanAlgorithmSteps(truncateAlgorithmBody(b.body)).map((s) => normalizeMathText(s));
+    const repairedSteps = repairKnownAlgorithmSteps(cleanTitle, b.body, steps);
     return {
       id: createId("meth"),
       problemType: `${b.formalLabel}: ${cleanTitle}`,
-      steps,
+      steps: repairedSteps,
       triggerWords: [cleanTitle, ...(markovPresent ? (["MCMC", "Metropolis", "Gibbs"] as const) : [])].filter(Boolean),
       relatedPracticeType: "Exam-style algorithm recall",
     };
@@ -2642,6 +2710,22 @@ function packItemStaleCheckBlob(
   return [item.name, item.term, item.statement, item.definition, latex].filter(Boolean).join("\n").toLowerCase();
 }
 
+function hasSevereMathExtractionDamage(blob: string): boolean {
+  return (
+    /\\[A-Z](?:_|[)\s]|$)/.test(blob) ||
+    /\bp\?(?!\w)/.test(blob) ||
+    /[∑Σ]\s*N\s+1\s+N/i.test(blob) ||
+    /\bN\s+i\s*=\s*1\b/.test(blob) ||
+    /\\\(\s*$|^\s*\\\)/.test(blob) ||
+    /(?:\(\s*){2,}X_i|X_i\)\){2,}/.test(blob)
+  );
+}
+
+function formulaDisplayBlob(item: unknown): string {
+  const f = item as { name?: string; latex?: string; cleanedLatex?: string; whenToUse?: string };
+  return [f.name, f.latex, f.cleanedLatex, f.whenToUse].filter(Boolean).join("\n");
+}
+
 function stripPackItemsFailingGrounding<T extends { sourceExcerpt?: string; grounding?: SourceGrounding }>(
   items: T[],
   sourceLower: string,
@@ -2664,8 +2748,14 @@ function stripPackItemsFailingGrounding<T extends { sourceExcerpt?: string; grou
       extractionRejected.push({ kind, reason: "weak_grounding", detail: excerpt.slice(0, 120) });
       continue;
     }
+    const staleCheckInput = item as unknown as Parameters<typeof packItemStaleCheckBlob>[0];
+    const rawBlob = packItemStaleCheckBlob(staleCheckInput, kind);
+    if (kind === "formula" && hasSevereMathExtractionDamage(formulaDisplayBlob(item))) {
+      extractionRejected.push({ kind, reason: "broken_math_extraction", detail: formulaDisplayBlob(item).slice(0, 160) });
+      continue;
+    }
     const staleBlob = stripUiAndPackLabelsForGrounding(
-      packItemStaleCheckBlob(item as unknown as Parameters<typeof packItemStaleCheckBlob>[0], kind),
+      rawBlob,
     );
     const absent = findProminentTermsAbsentFromSource(staleBlob, sourceLower);
     const technicalAbsent = absent.filter((w) => !APP_SYSTEM_WORD_WHITELIST.has(w.toLowerCase()));
