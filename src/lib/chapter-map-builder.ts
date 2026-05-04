@@ -6,7 +6,7 @@ import type { ChapterMapEntry } from "@/lib/document-profile";
 import type { HeadingCandidate } from "@/lib/heading-detection";
 import type { TocEntry } from "@/lib/table-of-contents";
 
-export type ChapterMapSource = "toc" | "heading_scan" | "none";
+export type ChapterMapSource = "toc" | "heading_scan" | "manual_fallback" | "none";
 
 export type ChapterRangeValidation = {
   ok: boolean;
@@ -19,8 +19,14 @@ function validateChapterMap(map: ChapterMapEntry[], pageCount: number): ChapterR
   const warnings: string[] = [];
 
   if (!map.length) {
-    return { ok: pageCount < 30, errors: pageCount >= 30 ? ["chapterMap empty for long document"] : [], warnings: [] };
+    return {
+      ok: pageCount < 30,
+      errors: pageCount >= 30 ? ["chapterMap has zero rows for a long document (segmentation failed)."] : [],
+      warnings: [],
+    };
   }
+
+  const nonEmptyNote = "chapterMap is non-empty; following issues refer to page spans only.";
 
   let prevStart = 0;
   for (let i = 0; i < map.length; i += 1) {
@@ -50,19 +56,27 @@ function validateChapterMap(map: ChapterMapEntry[], pageCount: number): ChapterR
     }
   }
 
+  if (errors.length) warnings.unshift(nonEmptyNote);
+
   return { ok: errors.length === 0, errors, warnings };
 }
+
+const CHAPTER_TITLE_MAX = 180;
 
 /** Strip "Chapter N" prefix and avoid swallowing long body paragraphs into the chapter title. */
 export function displayTitleFromChapterHeading(text: string): string {
   const m = text.match(/^Chapter\s*\d+(?:\.\d+)?\s*(.*)$/i);
-  if (!m) return text.replace(/\s+/g, " ").trim().slice(0, 120);
+  if (!m) {
+    const s = text.replace(/\s+/g, " ").trim();
+    return s.length > CHAPTER_TITLE_MAX ? `${s.slice(0, CHAPTER_TITLE_MAX - 1)}…` : s;
+  }
   const rest = (m[1] ?? "").trim();
   const num = text.match(/^Chapter\s*(\d+)/i)?.[1] ?? "";
-  if (!rest) return num ? `Chapter ${num}` : text.slice(0, 120);
+  if (!rest) return num ? `Chapter ${num}` : text.slice(0, CHAPTER_TITLE_MAX);
   if (rest.length > 95 || rest.split(/\s+/).length > 14) return num ? `Chapter ${num}` : rest.slice(0, 80);
   if ((rest.match(/=/g) ?? []).length >= 2 && rest.length > 40) return num ? `Chapter ${num}` : rest.slice(0, 80);
-  return rest;
+  const out = rest;
+  return out.length > CHAPTER_TITLE_MAX ? `${out.slice(0, CHAPTER_TITLE_MAX - 1)}…` : out;
 }
 
 function explicitChapterKeywordHeadings(headings: HeadingCandidate[]): HeadingCandidate[] {
@@ -103,6 +117,7 @@ export function buildChapterMapFromChapterMarkers(headings: HeadingCandidate[], 
     out.push({
       chapterLabel: label,
       chapterTitle,
+      chapterTitleNeedsReview: cur.text.replace(/\s+/g, " ").trim().length > CHAPTER_TITLE_MAX,
       startPage,
       endPage,
       sectionHeadings: [],
@@ -158,6 +173,7 @@ function headingsToChapterMap(headings: HeadingCandidate[], pageCount: number): 
     out.push({
       chapterLabel,
       chapterTitle,
+      chapterTitleNeedsReview: cur.text.replace(/\s+/g, " ").trim().length > CHAPTER_TITLE_MAX,
       startPage,
       endPage,
       sectionHeadings: [],
@@ -234,6 +250,14 @@ export function buildChapterMap(input: BuildChapterMapInput): {
       chapterMap = fromToc;
       source = "toc";
     }
+  }
+
+  if (chapterMap.length > 0 && source === "none") {
+    source = preferToc && fromToc.length >= 2 ? "toc" : "heading_scan";
+  }
+
+  if (chapterMap.length >= 2 && source === "heading_scan" && explicitChapterKeywordHeadings(headingCandidates).length === 0 && !tocFound) {
+    source = "manual_fallback";
   }
 
   const validation = validateChapterMap(chapterMap, pageCount);

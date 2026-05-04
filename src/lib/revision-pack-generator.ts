@@ -88,16 +88,33 @@ export function generateStudentRevisionPack(input: {
     : "";
 
   const sourceForValidation = cleanUploadedStudySourceText(text);
-  const validation = validateGenericStudyPack(pack, pack.documentProfile ?? null, sourceForValidation);
+  const validation = validateGenericStudyPack(pack, pack.documentProfile ?? null, sourceForValidation, {
+    rawHeadingCandidates: pack.extractionPipelineDiagnostics?.rawHeadingCandidates,
+  });
   const pipelineHealth = computePipelineHealth(pack, pack.documentProfile ?? null, validation);
 
   const safeFallbackPack =
     validation.criticalQualityFailure ?
       {
         documentProfile: pack.documentProfile,
+        rawHeadingCandidates: pack.extractionPipelineDiagnostics?.rawHeadingCandidates,
         rawDetectedHeadings: pack.sectionBlocks?.map((s) => s.heading).slice(0, 60),
         topConceptCandidates: pack.definitions.map((d) => d.term).slice(0, 28),
-        topFormulaCandidates: pack.formulas.map((f) => (f.rawFormula ?? f.latex ?? "").slice(0, 240)).slice(0, 28),
+        topFormulaCandidates: (() => {
+          const raw = pack.extractionPipelineDiagnostics?.rawCandidateSnippets?.formulas ?? [];
+          const merged = [...raw, ...pack.formulas.map((f) => (f.rawFormula ?? f.latex ?? "").slice(0, 240))];
+          return merged.filter(Boolean).slice(0, 28);
+        })(),
+        topProofCandidates: (() => {
+          const raw = pack.extractionPipelineDiagnostics?.rawCandidateSnippets?.proofs ?? [];
+          const merged = [...raw, ...pack.proofs.map((p) => p.statement.slice(0, 320))];
+          return merged.filter(Boolean).slice(0, 16);
+        })(),
+        topWorkedExampleCandidates: (() => {
+          const raw = pack.extractionPipelineDiagnostics?.rawCandidateSnippets?.workedExamples ?? [];
+          const merged = [...raw, ...(pack.workedExamples ?? []).map((w) => w.body.slice(0, 320))];
+          return merged.filter(Boolean).slice(0, 16);
+        })(),
         topProofOrExampleCandidates: [
           ...pack.proofs.map((p) => p.statement.slice(0, 320)),
           ...(pack.proofsAndDerivations?.map((d) => d.summary.slice(0, 320)) ?? []),

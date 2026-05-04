@@ -3,7 +3,7 @@
  * Used by document profiling for local-first revision packs.
  */
 
-import { sanitiseExtractedText } from "@/lib/document-profile";
+import { sanitiseExtractedText } from "@/lib/text-layers";
 
 const DEPARTMENT_LINE =
   /^(department|faculty|school|institute)\s+of\b/i;

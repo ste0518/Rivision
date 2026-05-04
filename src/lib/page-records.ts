@@ -3,20 +3,23 @@
  * All structure uses pageNumber + lineIndex — not blind combinedText offsets alone.
  */
 
-import { sanitiseExtractedText, splitDocumentTextLayers } from "@/lib/document-profile";
+import { sanitiseExtractedText, splitDocumentTextLayers } from "@/lib/text-layers";
 
-export type LineSource = "printed" | "handwritten" | "noise" | "unknown";
+export type LineSourceLayer = "printed" | "handwritten" | "ocr_noise" | "unknown";
 
 export type LineRecord = {
   text: string;
   normalizedText: string;
   pageNumber: number;
   lineIndex: number;
-  source: LineSource;
+  /** Primary classification for extraction (printed body vs annotation vs OCR junk). */
+  sourceLayer: LineSourceLayer;
   confidence?: number;
 };
 
 export type PageRecord = {
+  fileId: string;
+  fileName: string;
   pageNumber: number;
   rawText: string;
   cleanedText: string;
@@ -42,14 +45,15 @@ function looksLikeNoiseLine(line: string): boolean {
   return false;
 }
 
+/** Only flag obvious marginalia / OCR artefacts — not normal printed prose. */
 function looksHandwrittenMarginalia(line: string): boolean {
   const t = line.trim();
-  if (t.length < 8 || t.length > 120) return false;
-  const words = t.split(/\s+/);
-  if (words.length <= 4 && /^[a-z]+$/i.test(t) && t.length < 40) return true;
-  const weirdCaps = (t.match(/[a-z][A-Z]/g) ?? []).length >= 2;
+  if (t.length < 6 || t.length > 140) return false;
   const punctRun = /[!?.]{3,}/.test(t);
-  return weirdCaps || punctRun;
+  const weirdCaps = (t.match(/[a-z][A-Z]/g) ?? []).length >= 3;
+  const digitLetterChaos = (t.match(/\d/g) ?? []).length >= 4 && (t.match(/[A-Za-z]/g) ?? []).length >= 4 && /\d[A-Za-z]\d/.test(t);
+  const noSpacesLongToken = /\S{36,}/.test(t);
+  return weirdCaps || punctRun || (digitLetterChaos && t.length < 90) || noSpacesLongToken;
 }
 
 function normaliseLine(s: string): string {
@@ -61,27 +65,27 @@ function normaliseLine(s: string): string {
     .toLowerCase();
 }
 
-/** Classify each raw line into printed / handwritten / noise for downstream extractors. */
+/** Classify each raw line into printed / handwritten / ocr_noise for downstream extractors. */
 function buildLineRecordsForPage(pageNumber: number, rawText: string): LineRecord[] {
   const lines = rawText.replace(/\r\n/g, "\n").split("\n");
   const out: LineRecord[] = [];
   lines.forEach((line, lineIndex) => {
     const text = line;
-    let source: LineSource = "printed";
-    let confidence = 0.85;
+    let sourceLayer: LineSourceLayer = "printed";
+    let confidence = 0.88;
     if (looksLikeNoiseLine(line)) {
-      source = "noise";
+      sourceLayer = "ocr_noise";
       confidence = 0.35;
     } else if (looksHandwrittenMarginalia(line)) {
-      source = "handwritten";
-      confidence = 0.55;
+      sourceLayer = "handwritten";
+      confidence = 0.52;
     }
     out.push({
       text,
       normalizedText: normaliseLine(text),
       pageNumber,
       lineIndex,
-      source,
+      sourceLayer,
       confidence,
     });
   });
@@ -89,7 +93,13 @@ function buildLineRecordsForPage(pageNumber: number, rawText: string): LineRecor
 }
 
 /** Single-page document from arbitrary text (DOCX/TXT with no page breaks). */
-export function singlePageRecordFromText(rawText: string, pageNumber = 1): PageRecord {
+export function singlePageRecordFromText(
+  rawText: string,
+  options?: { pageNumber?: number; fileId?: string; fileName?: string },
+): PageRecord {
+  const pageNumber = options?.pageNumber ?? 1;
+  const fileId = options?.fileId ?? "local";
+  const fileName = options?.fileName ?? "document";
   const raw = rawText.replace(/\r\n/g, "\n");
   const cleaned = sanitiseExtractedText(raw);
   const layers = splitDocumentTextLayers(cleaned);
@@ -97,6 +107,8 @@ export function singlePageRecordFromText(rawText: string, pageNumber = 1): PageR
     layers.printedText.replace(/\s+/g, " ").trim().length > 80 ? layers.printedText : cleaned;
   const lineRecords = buildLineRecordsForPage(pageNumber, printed);
   return {
+    fileId,
+    fileName,
     pageNumber,
     rawText: raw,
     cleanedText: cleaned,
@@ -113,9 +125,12 @@ export function singlePageRecordFromText(rawText: string, pageNumber = 1): PageR
  */
 export function buildPageRecordsFromParsedPages(
   pages: Array<{ pageNumber: number; text: string }>,
+  options?: { fileId?: string; fileName?: string },
 ): PageRecord[] {
+  const fileId = options?.fileId ?? "local";
+  const fileName = options?.fileName ?? "document";
   if (!pages.length) {
-    return [singlePageRecordFromText("", 1)];
+    return [singlePageRecordFromText("", { fileId, fileName, pageNumber: 1 })];
   }
   return pages.map((p) => {
     const raw = p.text.replace(/\r\n/g, "\n");
@@ -124,6 +139,8 @@ export function buildPageRecordsFromParsedPages(
     const printed =
       layers.printedText.replace(/\s+/g, " ").trim().length > 40 ? layers.printedText : cleaned;
     return {
+      fileId,
+      fileName,
       pageNumber: p.pageNumber,
       rawText: raw,
       cleanedText: cleaned,
@@ -189,4 +206,56 @@ export function pageAtOffsetInMarkedText(markedFullText: string, offset: number)
     page = Number(m[1]) || page;
   }
   return page;
+}
+
+/** Anchor for mapping a substring offset in marked full text back to page + line (for search / grounding). */
+export type PageLineAnchor = {
+  offset: number;
+  pageNumber: number;
+  lineIndex: number;
+};
+
+/**
+ * Build monotonic anchors: each line start in the marked document gets pageNumber + lineIndex.
+ * Use with {@link resolvePageLineAtOffset} when searching in combined `[Page N]` text.
+ */
+export function buildPageLineAnchorsFromMarkedText(markedFullText: string): PageLineAnchor[] {
+  const anchors: PageLineAnchor[] = [];
+  let pageNumber = 1;
+  let lineIndex = 0;
+  const lines = markedFullText.split("\n");
+  let offset = 0;
+  for (const line of lines) {
+    const pageMark = /^\[Page\s+(\d+)\]\s*$/i.exec(line.trim());
+    if (pageMark) {
+      pageNumber = Number(pageMark[1]) || pageNumber;
+      lineIndex = 0;
+      anchors.push({ offset, pageNumber, lineIndex });
+      offset += line.length + 1;
+      continue;
+    }
+    anchors.push({ offset, pageNumber, lineIndex });
+    lineIndex += 1;
+    offset += line.length + 1;
+  }
+  return anchors;
+}
+
+/** Binary-friendly scan: last anchor with offset <= target. */
+export function resolvePageLineAtOffset(anchors: PageLineAnchor[], offset: number): PageLineAnchor | null {
+  if (!anchors.length) return null;
+  let lo = 0;
+  let hi = anchors.length - 1;
+  let best = anchors[0]!;
+  while (lo <= hi) {
+    const mid = (lo + hi) >> 1;
+    const a = anchors[mid]!;
+    if (a.offset <= offset) {
+      best = a;
+      lo = mid + 1;
+    } else {
+      hi = mid - 1;
+    }
+  }
+  return best;
 }

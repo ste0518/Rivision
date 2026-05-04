@@ -3,7 +3,7 @@
  */
 
 import type { DocumentProfile } from "@/lib/document-profile";
-import { detectSourceContamination } from "@/lib/document-profile";
+import { detectSourceContamination } from "@/lib/source-grounding";
 import type { GeneratedPracticeQuestion, GeneratedRevisionPack, PipelineHealth, PipelineHealthStage } from "@/lib/student-revision-schema";
 
 export type GenericAcceptanceTests = {
@@ -384,11 +384,18 @@ export function computePipelineHealth(
   return { stages, overallPass };
 }
 
-export function validateGenericStudyPack(pack: GeneratedRevisionPack, documentProfile: DocumentProfile | null, sourceText: string): GenericStudyPackValidation {
+export function validateGenericStudyPack(
+  pack: GeneratedRevisionPack,
+  documentProfile: DocumentProfile | null,
+  sourceText: string,
+  options?: { rawHeadingCandidates?: Array<{ text: string; pageNumber: number; lineIndex: number; headingType: string }> },
+): GenericStudyPackValidation {
   const sourceLower = sourceText.toLowerCase();
   const blob = collectPackBlob(pack);
   const contamination = detectSourceContamination(blob, sourceLower);
   const longNotes = validateLongMathLectureNotes(pack, documentProfile);
+  const diag = pack.extractionPipelineDiagnostics;
+  const headingCand = diag?.pageHeadingCandidateCount ?? options?.rawHeadingCandidates?.length ?? 0;
 
   const recommendations: string[] = [];
   const pageCount = documentProfile?.pageCount ?? 1;
@@ -434,6 +441,46 @@ export function validateGenericStudyPack(pack: GeneratedRevisionPack, documentPr
     (pack.extractionPipelineDiagnostics?.formulaCandidateCount ?? 0) >= 20 &&
     pack.formulas.length < 15;
 
+  const headingGateFail =
+    pageCount > 45 &&
+    headingCand === 0 &&
+    /\bchapter\s+\d+/i.test(sourceText) &&
+    (documentProfile?.documentType === "lecture_notes" || documentProfile == null);
+
+  const chapterSourceGateFail =
+    Boolean(documentProfile?.chapterMap?.length) && documentProfile?.chapterMapSource === "none";
+
+  const sectionDensityFail =
+    pageCount > 50 &&
+    headingCand >= 8 &&
+    (pack.sectionBlocks ?? []).length < 10 &&
+    /\d+\.\d+\s+\S/.test(sourceText);
+
+  const formulaDensityFail =
+    pageCount > 55 &&
+    Boolean(documentProfile?.hasFormulas) &&
+    (sourceLower.match(/=/g)?.length ?? 0) > pageCount * 2 &&
+    (diag?.formulaCandidateCount ?? 0) < 20;
+
+  const proofMarkerGateFail =
+    pageCount > 35 &&
+    (diag?.proofLikeMarkerLineCount ?? 0) >= 3 &&
+    (diag?.proofCandidateCount ?? 0) === 0;
+
+  const workedGateFail =
+    pageCount > 50 &&
+    Boolean(documentProfile?.hasWorkedExamples) &&
+    (diag?.workedExampleCandidateCount ?? 0) === 0 &&
+    (pack.workedExamples?.length ?? 0) === 0;
+
+  const topicNoiseFail = (() => {
+    const topics = documentProfile?.detectedTopics ?? [];
+    const junk = topics.filter((t) =>
+      /\b(the same|called the|for all|all the|that the)\b/i.test(t),
+    );
+    return topics.length >= 10 && junk.length >= 5 && junk.length / topics.length > 0.4;
+  })();
+
   const criticalQualityFailure =
     contamination.length > 0 ||
     !acceptanceTests.hasGroundingForAllItems ||
@@ -441,6 +488,13 @@ export function validateGenericStudyPack(pack: GeneratedRevisionPack, documentPr
     !longNotes.ok ||
     structuralGateFail ||
     candidateFormulaGap ||
+    headingGateFail ||
+    chapterSourceGateFail ||
+    sectionDensityFail ||
+    formulaDensityFail ||
+    proofMarkerGateFail ||
+    workedGateFail ||
+    topicNoiseFail ||
     !acceptanceTests.noBadMathTokensInStudyPack;
 
   const ok =

@@ -3,10 +3,20 @@
  * All signals are derived from the uploaded file text only.
  */
 
+import { extractFrontMatter } from "@/lib/front-matter";
+import { detectHeadingsByPage } from "@/lib/heading-detection";
 import { inferTitleAndCourseFromEarlyPages } from "@/lib/document-title";
 import { collectStructuralHeadings, type StructuralHeading } from "@/lib/lecture-segmentation";
+import { buildPageRecordsFromParsedPages } from "@/lib/page-records";
 import { extractSectionHeadingsFromText, mergeExtractedSectionHeadings, type ExtractedSectionHeading } from "@/lib/section-headings";
 import { parseTableOfContents, type TocParseResult } from "@/lib/table-of-contents";
+import {
+  canonicalTopicEntriesFromDocument,
+  canonicalTopicsFromDocument,
+  type CanonicalTopicEntry,
+} from "@/lib/canonical-topics";
+import { buildSourceKeywordSet, detectSourceContamination, findProminentTermsAbsentFromSource } from "@/lib/source-grounding";
+import { sanitiseExtractedText, splitDocumentTextLayers } from "@/lib/text-layers";
 
 export type DocumentType =
   | "lecture_notes"
@@ -24,6 +34,8 @@ export type ChapterMapEntry = {
   startPage: number;
   endPage: number;
   sectionHeadings: string[];
+  /** Title was truncated or defaulted because body text leaked into the heading line. */
+  chapterTitleNeedsReview?: boolean;
 };
 
 export type NotationEntry = {
@@ -38,7 +50,7 @@ export type HandwritingNoisePage = {
   examples: string[];
 };
 
-export type ChapterMapSourceKind = "toc" | "heading_scan" | "none";
+export type ChapterMapSourceKind = "toc" | "heading_scan" | "manual_fallback" | "none";
 
 export type DocumentProfile = {
   title: string | null;
@@ -59,6 +71,8 @@ export type DocumentProfile = {
   criticalTocParseFailure?: boolean;
   chapterMap: ChapterMapEntry[];
   detectedTopics: string[];
+  /** Same labels as {@link detectedTopics} where possible, with page + confidence for QA. */
+  canonicalTopicEntries?: CanonicalTopicEntry[];
   detectedNotation: NotationEntry[];
   /** True when the raw text contains proof-like markers (not extraction success). */
   proofLikeMarkersInSource: boolean;
@@ -87,21 +101,13 @@ export type DocumentProfile = {
   warnings: string[];
   /** Latest TOC parse (may be empty if no contents page found). */
   tocParseResult?: TocParseResult;
+  /** Structured cover / admin split from early pages. */
+  frontMatter?: import("@/lib/front-matter").FrontMatter;
 };
 
-export type TextLayers = {
-  printedText: string;
-  handwrittenText: string;
-  noiseText: string;
-};
-
-const CTRL = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g;
-const SOFT_HYPHEN = /\u00ad/g;
-
-/** Strip control chars and soft hyphens for safe matching and display. */
-export function sanitiseExtractedText(raw: string): string {
-  return raw.replace(CTRL, "").replace(SOFT_HYPHEN, "");
-}
+export type { TextLayers } from "@/lib/text-layers";
+export { sanitiseExtractedText, splitDocumentTextLayers } from "@/lib/text-layers";
+export { buildSourceKeywordSet, detectSourceContamination, findProminentTermsAbsentFromSource } from "@/lib/source-grounding";
 
 function pageNumberFromOffset(fullText: string, offset: number): number {
   let page = 1;
@@ -117,62 +123,6 @@ function inferPageCount(cleanedPages: Array<{ pageNumber: number; text: string }
   const marks = [...fallbackText.matchAll(/\[Page\s+(\d+)\]/gi)].map((m) => Number(m[1])).filter((n) => Number.isFinite(n));
   if (marks.length) return Math.max(...marks);
   return 1;
-}
-
-/** Heuristic split: printed lecture body vs marginalia / OCR garbage. */
-export function splitDocumentTextLayers(fullText: string): TextLayers {
-  const text = sanitiseExtractedText(fullText.replace(/\r\n/g, "\n"));
-  const lines = text.split("\n");
-  const printed: string[] = [];
-  const handwritten: string[] = [];
-  const noise: string[] = [];
-
-  const looksLikeNoiseLine = (line: string): boolean => {
-    const t = line.trim();
-    if (!t) return false;
-    if (t.length <= 2 && /^[A-Za-z0-9]$/.test(t)) return true;
-    if (/^[a-z]{1,3}\.{2,}/i.test(t)) return true;
-    if (/\bfii+i+n\.?to\b/i.test(t)) return true;
-    if (/\bDopulation\b/i.test(t)) return true;
-    const alnum = (t.match(/[A-Za-z0-9]/g) ?? []).length;
-    const ratio = alnum / Math.max(1, t.length);
-    if (t.length < 50 && ratio < 0.35 && /[^\sA-Za-z0-9.,;=+\-()[\]{}]/.test(t)) return true;
-    if (t.length < 24 && /^[A-Za-z]\s*$/.test(t)) return true;
-    return false;
-  };
-
-  const looksHandwrittenMarginalia = (line: string): boolean => {
-    const t = line.trim();
-    if (t.length < 8 || t.length > 120) return false;
-    const words = t.split(/\s+/);
-    if (words.length <= 4 && /^[a-z]+$/i.test(t) && t.length < 40) return true;
-    const weirdCaps = (t.match(/[a-z][A-Z]/g) ?? []).length >= 2;
-    const punctRun = /[!?.]{3,}/.test(t);
-    return weirdCaps || punctRun;
-  };
-
-  for (const line of lines) {
-    const t = line.trimEnd();
-    if (!t.trim()) {
-      printed.push("");
-      continue;
-    }
-    if (looksLikeNoiseLine(t)) {
-      noise.push(t);
-      continue;
-    }
-    if (looksHandwrittenMarginalia(t)) {
-      handwritten.push(t);
-      continue;
-    }
-    printed.push(line);
-  }
-
-  return {
-    printedText: printed.join("\n"),
-    handwrittenText: handwritten.join("\n"),
-    noiseText: noise.join("\n"),
-  };
 }
 
 /**
@@ -267,81 +217,6 @@ export function classifyDocumentType(
   if (/\bchapter\s+\d+/i.test(combined) || sectionLike >= 5) return "lecture_notes";
   if (problemSheetStrong) return "problem_sheet";
   return "unknown";
-}
-
-const ADMIN_TOPIC_STOP = new Set([
-  "introduction",
-  "module",
-  "admin",
-  "structure",
-  "prerequisites",
-  "assessment",
-  "handbook",
-  "syllabus",
-  "contents",
-  "appendix",
-  "references",
-  "bibliography",
-]);
-
-/** Bigrams / phrases that are grammatical fragments, not course topics. */
-const TOPIC_PHRASE_STOP = new Set([
-  "for the",
-  "and the",
-  "of the",
-  "in the",
-  "to the",
-  "on the",
-  "at the",
-  "by the",
-  "such that",
-  "we have",
-  "note that",
-  "given that",
-  "assume that",
-  "suppose that",
-  "it follows",
-]);
-
-/** Short canonical topics from headings + repeated meaningful phrases (no fixed syllabus list). */
-function extractDetectedTopicsFromDocument(combined: string, headingTitles: string[]): string[] {
-  const topics = new Set<string>();
-
-  for (const raw of headingTitles) {
-    const t = raw.replace(/\s+/g, " ").replace(/^[\d.]+/g, "").trim();
-    if (t.length < 6 || t.length > 90) continue;
-    const words = t
-      .toLowerCase()
-      .split(/\s+/)
-      .filter((w) => w.length > 2 && !ADMIN_TOPIC_STOP.has(w));
-    if (words.length === 0) continue;
-    const phrase = words.slice(0, 5).join(" ");
-    if (phrase.length >= 5 && phrase.length <= 60) topics.add(phrase);
-  }
-
-  const slice = combined.slice(0, 220_000).toLowerCase();
-  const bigramRe = /\b([a-z][a-z-]{2,})\s+([a-z][a-z-]{2,})\b/g;
-  const counts = new Map<string, number>();
-  let m: RegExpExecArray | null;
-  while ((m = bigramRe.exec(slice)) !== null) {
-    const a = m[1]!;
-    const b = m[2]!;
-    if (ADMIN_TOPIC_STOP.has(a) || ADMIN_TOPIC_STOP.has(b)) continue;
-    const key = `${a} ${b}`;
-    counts.set(key, (counts.get(key) ?? 0) + 1);
-  }
-  const frequent = [...counts.entries()]
-    .filter(([, c]) => c >= 4)
-    .sort((x, y) => y[1] - x[1])
-    .slice(0, 40)
-    .map(([k]) => k);
-  for (const f of frequent) {
-    if (TOPIC_PHRASE_STOP.has(f.toLowerCase())) continue;
-    if (/^(for|and|or|the|of|in|to)\s+(the|a|an)\b/i.test(f)) continue;
-    topics.add(f);
-  }
-
-  return [...topics].slice(0, 90);
 }
 
 /** Generic subject line from title / early headings only (no fixed course templates). */
@@ -501,125 +376,30 @@ function dedupeNotationCounts(combined: string): NotationEntry[] {
 const NOISE_WORD_RE =
   /\b(T\s+is\s+z|Dopulation|fii+i+n\.?to|antititin|poputation|varience|covarance)\b/i;
 
-function scorePageNoise(pageText: string): { score: number; examples: string[] } {
-  const lines = pageText.split("\n").map((l) => l.trim()).filter(Boolean);
-  let score = 0;
-  const examples: string[] = [];
-
-  for (const ln of lines) {
-    const pushExample = (s: string) => {
-      const frag = s.trim();
-      if (!frag) return;
-      const excerpt = frag.length <= 72 ? frag : `${frag.slice(0, 68)}…`;
-      if (examples.length < 4) examples.push(excerpt);
-    };
-
-    if (NOISE_WORD_RE.test(ln)) {
-      score += 4;
-      pushExample(ln);
-      continue;
-    }
-    if (/^[a-z]{1,3}\.{3,}/i.test(ln)) {
-      score += 3;
-      pushExample(ln);
-      continue;
-    }
-    const words = ln.split(/\s+/).filter((w) => /^[a-z]{5,}$/i.test(w));
-    let weird = 0;
-    for (const w of words) {
-      if (!/[aeiou]/i.test(w)) weird += 1;
-    }
-    if (words.length >= 2 && weird / words.length > 0.45) {
-      score += 2;
-      if (ln.length <= 85 || weird / words.length > 0.55) pushExample(ln);
-    }
-    if (ln.length <= 4 && /^[A-Za-z]$/.test(ln)) score += 1;
-  }
-
-  const symDensity =
-    (pageText.match(/[=∑∫∇μσερφθΣ∏√]/g) ?? []).length / Math.max(1, pageText.length / 80);
-  if (symDensity > 2.2 && lines.length < 6) score += 2;
-
-  return { score, examples };
-}
-
-function computeHandwritingNoisePages(cleanedPages: Array<{ pageNumber: number; text: string }>): HandwritingNoisePage[] {
+function computeHandwritingNoisePagesLineLevel(cleanedPages: Array<{ pageNumber: number; text: string }>): HandwritingNoisePage[] {
+  const records = buildPageRecordsFromParsedPages(cleanedPages);
   const out: HandwritingNoisePage[] = [];
-  for (const p of cleanedPages) {
-    const { score, examples } = scorePageNoise(p.text);
-    if (score >= 4 && examples.length) out.push({ page: p.pageNumber, noiseScore: score, examples });
+  for (const p of records) {
+    const noiseLines = p.lineRecords.filter((r) => r.sourceLayer === "ocr_noise" || r.sourceLayer === "handwritten");
+    if (!noiseLines.length) continue;
+    const ocrHeavy = noiseLines.filter((r) => r.sourceLayer === "ocr_noise");
+    const use = ocrHeavy.length ? ocrHeavy : noiseLines;
+    const examples = use
+      .map((r) => r.text.trim().replace(/\s+/g, " "))
+      .filter((t) => {
+        if (t.length < 5 || t.length > 90) return false;
+        if (NOISE_WORD_RE.test(t)) return true;
+        const alnum = (t.match(/[A-Za-z0-9]/g) ?? []).length;
+        const ratio = alnum / Math.max(1, t.length);
+        if (ratio >= 0.58 && t.split(/\s+/).length >= 6) return false;
+        return ratio < 0.48 || t.length <= 16 || /\S{22,}/.test(t) || /[!?.]{3,}/.test(t);
+      })
+      .slice(0, 4);
+    if (!examples.length) continue;
+    const noiseScore = Math.min(28, use.length * 4 + (NOISE_WORD_RE.test(examples.join(" ")) ? 6 : 0));
+    if (noiseScore >= 5) out.push({ page: p.pageNumber, noiseScore, examples });
   }
   return out.slice(0, 120);
-}
-
-/** Technical tokens for contamination checks (multi-word phrases and symbols). */
-export function buildSourceKeywordSet(sourceLower: string): Set<string> {
-  const set = new Set<string>();
-  const addPhrase = (s: string) => {
-    const t = s.trim().toLowerCase();
-    if (t.length >= 4) set.add(t);
-  };
-
-  for (const m of sourceLower.matchAll(/\b[a-z][a-z\-]{2,}(?:\s+[a-z][a-z\-]{2,}){0,4}\b/g)) {
-    addPhrase(m[0] ?? "");
-  }
-  for (const m of sourceLower.matchAll(/\b(?:AR|MA|ARMA|ARIMA|SARIMA|ARCH|VAR|ACF|ACVF)\([^)]*\)/gi)) {
-    addPhrase(m[0] ?? "");
-  }
-  return set;
-}
-
-/**
- * Flag generated phrases that introduce prominent topic terms absent from source.
- */
-/** Multi-word or symbol-heavy phrases that indicate one course template leaking into another upload. */
-export function detectSourceContamination(generatedBlobLower: string, sourceLower: string): string[] {
-  const issues: string[] = [];
-  const absent = findProminentTermsAbsentFromSource(generatedBlobLower, sourceLower);
-  for (const term of absent.slice(0, 16)) {
-    issues.push(`Generated text uses “${term}”, which does not appear in the uploaded source — possible stale template or hallucination.`);
-  }
-  const phrases = generatedBlobLower.match(/\b[a-z]{5,}\s+[a-z]{5,}\s+[a-z]{5,}\b/g) ?? [];
-  for (const p of [...new Set(phrases)].slice(0, 12)) {
-    if (!sourceLower.includes(p) && p.length >= 18) {
-      issues.push(`Generated phrase not grounded in source: “${p.slice(0, 80)}”.`);
-    }
-  }
-  return issues.slice(0, 24);
-}
-
-const GENERIC_STOPWORDS = new Set([
-  "definition",
-  "theorem",
-  "proposition",
-  "therefore",
-  "following",
-  "condition",
-  "understanding",
-  "introduction",
-  "techniques",
-  "significant",
-  "probability",
-  "distribution",
-  "expectation",
-  "variance",
-  "function",
-  "random",
-  "variable",
-  "continuous",
-]);
-
-/**
- * Long alphabetic tokens in generated text that never occur in the source (possible hallucination).
- */
-export function findProminentTermsAbsentFromSource(generatedTextLower: string, sourceLower: string): string[] {
-  const hits = generatedTextLower.match(/\b[a-z]{10,}\b/g) ?? [];
-  const out: string[] = [];
-  for (const w of hits) {
-    if (GENERIC_STOPWORDS.has(w)) continue;
-    if (!sourceLower.includes(w)) out.push(w);
-  }
-  return [...new Set(out)].slice(0, 12);
 }
 
 export type ProfileDocumentInput = {
@@ -648,19 +428,40 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
     /\bexample\s*\(\s*\w+/i.test(combined);
   const hasExercises =
     /\b(exercise|problem)\s+\d/i.test(combined) || /(?:^|\n)\s*(question|problem)\s*\d/im.test(combined);
-  const proofLikeMarkersInSource = /(?:^|\n)\s*proof\s*[.:]/im.test(combined) || /\bshow\s+that\b/i.test(combined);
+  const proofLikeMarkersInSource =
+    /(?:^|\n)\s*proof\s*[.:]/im.test(combined) ||
+    /\bshow\s+that\b/i.test(combined) ||
+    /\b(lemma|theorem|proposition|corollary)\s+\d/i.test(combined);
   const hasAlgorithms = /\balgorithm\s+\d/i.test(combined) || /\bpseudocode\b/i.test(combined);
 
   const layers = splitDocumentTextLayers(combined);
   const hwRatio =
     layers.handwrittenText.length / Math.max(1, layers.printedText.length + layers.handwrittenText.length);
+
+  const cleanedPagesArg =
+    input.cleanedPages.length ?
+      input.cleanedPages.map((p) => ({ pageNumber: p.pageNumber, text: sanitiseExtractedText(p.text.replace(/\r\n/g, "\n")) }))
+    : [{ pageNumber: 1, text: combined.slice(0, 120_000) }];
+
   const cleanedPagesForNoise =
     input.cleanedPages.length ? input.cleanedPages.map((p) => ({ pageNumber: p.pageNumber, text: sanitiseExtractedText(p.text) })) : [{ pageNumber: 1, text: combined }];
-  const handwritingNoisePages = computeHandwritingNoisePages(cleanedPagesForNoise);
+  const handwritingNoisePages = computeHandwritingNoisePagesLineLevel(cleanedPagesForNoise);
   const hasHandwrittenAnnotations = handwritingNoisePages.length > 0 || hwRatio > 0.02 || layers.handwrittenText.length > 400;
 
+  const pageRecordsForHeadings = buildPageRecordsFromParsedPages(cleanedPagesArg);
+  const headingPageScan = detectHeadingsByPage(pageRecordsForHeadings);
+
   const headingTopics = sections.map((s) => `${s.title}`.trim()).filter((t) => t.length >= 4);
-  const detectedTopics = extractDetectedTopicsFromDocument(combined, headingTopics);
+  const headingSignals = [
+    ...headingPageScan.map((h) => ({ text: h.text, pageNumber: h.pageNumber, weight: 2 as const })),
+    ...headingTopics.map((t) => ({ text: t, pageNumber: 1 as const, weight: 1 as const })),
+  ];
+  const detectedTopics = canonicalTopicsFromDocument(
+    combined,
+    headingTopics,
+    headingPageScan.map((h) => h.text),
+  );
+  const canonicalTopicEntries = canonicalTopicEntriesFromDocument(combined, headingSignals);
 
   const notationSource =
     layers.printedText.replace(/\s+/g, " ").trim().length > 400 ? layers.printedText : combined;
@@ -674,12 +475,10 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
       }))
     : [{ pageNumber: 1, text: combined.slice(0, 80_000) }],
   );
-  const title = earlyTitle.title ?? inferTitleFromFirstPages(combined);
-
-  const cleanedPagesArg =
-    input.cleanedPages.length ?
-      input.cleanedPages.map((p) => ({ pageNumber: p.pageNumber, text: sanitiseExtractedText(p.text.replace(/\r\n/g, "\n")) }))
-    : [{ pageNumber: 1, text: combined.slice(0, 120_000) }];
+  const frontMatter = extractFrontMatter(cleanedPagesArg);
+  const titleFromFm = frontMatter.title ? frontMatter.title.replace(/\s+/g, " ").trim().slice(0, 120) : null;
+  const title = titleFromFm ?? earlyTitle.title ?? inferTitleFromFirstPages(combined);
+  const titleCapped = title ? title.replace(/\s+/g, " ").trim().slice(0, 120) : null;
 
   const tocParseResult = parseTableOfContents(cleanedPagesArg, pageCount);
   const structuralOrFallback = chapterMapStructural.length >= 2 ? chapterMapStructural : chapterMapFallback;
@@ -705,10 +504,25 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
     }));
   }
 
+  let chapterMapSource: ChapterMapSourceKind = "none";
+  if (chapterMap.length >= 2) {
+    chapterMapSource = useToc ? "toc" : "heading_scan";
+  }
+
   const chapterHeadingTitles = chapterMap.map((c) => c.chapterTitle).filter(Boolean);
-  const subjectArea = inferSubjectArea(title, chapterHeadingTitles.length ? chapterHeadingTitles : headingTopics, combined);
-  const courseName = earlyTitle.courseName ?? title ?? subjectArea;
-  const finalTitle = title ?? courseName ?? subjectArea ?? null;
+  const shortCourseLabel =
+    (frontMatter.courseName ?? frontMatter.title ?? titleCapped ?? "").replace(/\s+/g, " ").trim().slice(0, 100) || null;
+  const subjectArea = inferSubjectArea(
+    shortCourseLabel ?? titleCapped ?? "",
+    chapterHeadingTitles.length ? chapterHeadingTitles : headingTopics,
+    combined,
+  );
+  const courseNameRaw = (frontMatter.courseName ?? frontMatter.title ?? earlyTitle.courseName ?? titleCapped ?? subjectArea ?? "")
+    .replace(/\s+/g, " ")
+    .trim()
+    .slice(0, 120);
+  const courseName = courseNameRaw.length >= 2 ? courseNameRaw : null;
+  const finalTitle = titleCapped ?? courseName ?? subjectArea ?? null;
 
   const hasLemmaLabels = /\blemma\s+\d/i.test(combined);
   const hasPropLabels = /\bproposition\s+\d/i.test(combined);
@@ -753,14 +567,17 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
     subjectArea,
     documentType: classifyDocumentType(cleanedPagesArg, combined),
     pageCount,
+    chapterMapSource,
+    frontMatter,
     structureDiagnostics: {
-      titleConfidence: earlyTitle.confidence,
+      titleConfidence: Math.max(earlyTitle.confidence, frontMatter.confidence),
       titleSourcePage: earlyTitle.sourcePage,
-      pageHeadingCandidateCount: 0,
+      pageHeadingCandidateCount: headingPageScan.length,
     },
     criticalTocParseFailure,
     chapterMap,
     detectedTopics,
+    canonicalTopicEntries,
     detectedNotation,
     proofLikeMarkersInSource,
     handwritingNoisePages,

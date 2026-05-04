@@ -11,18 +11,17 @@
  */
 
 import {
-  detectSourceContamination,
-  findProminentTermsAbsentFromSource,
   profileDocument,
   sanitiseExtractedText,
   splitDocumentTextLayers,
   type DocumentProfile,
 } from "@/lib/document-profile";
+import { countProofLikeLineMarkers, extractRawExamPackCandidates } from "@/lib/exam-pack-candidates";
 import { mathStatusFromValidation, validateLatexSnippet } from "@/lib/latex-validate";
 import { applyMathNormalisation } from "@/lib/math-normalisation";
 import { cleanUploadedStudySourceText } from "@/lib/source-text-cleanup";
 import { convertCommonMathToLatex } from "@/lib/revision-item-utils";
-import { buildChapterMap } from "@/lib/chapter-map-builder";
+import { buildChapterMap, validateChapterMap } from "@/lib/chapter-map-builder";
 import { detectHeadingsByPage } from "@/lib/heading-detection";
 import {
   buildPageRecordsFromParsedPages,
@@ -32,6 +31,7 @@ import {
 import {
   buildSectionBlocks,
   buildSectionBlocksFromChapterMap,
+  buildSectionBlocksFromHeadingGraph,
   buildSectionBlocksPageAware,
   ensureMinimumSectionBlocksForLongNotes,
   type SectionBlock,
@@ -65,6 +65,13 @@ import type {
   StudyPackEntryKind,
   TopicImportance,
 } from "@/lib/student-revision-schema";
+import {
+  APP_SYSTEM_WORD_WHITELIST,
+  excerptGroundedInSource,
+  findProminentTermsAbsentFromSource,
+  isStaleVersusSource,
+  stripUiAndPackLabelsForGrounding,
+} from "@/lib/source-grounding";
 import type { StudyFileRole } from "@/lib/types";
 import { createId } from "@/lib/utils";
 
@@ -295,21 +302,8 @@ function inferDisplayTitle(
   courseContext: string,
 ): string {
   if (parenTitle?.trim()) return parenTitle.trim().replace(/\s+/g, " ");
-  const blob = `${algorithmHeadLine ?? ""}\n${body}`;
-  const lower = blob.toLowerCase();
 
-  if (kind === "definition") {
-    if (lower.includes("conditionally independent")) return "Conditional independence";
-    if (/pseudo[-\s]?random/.test(lower)) return "Pseudo-random numbers";
-  }
-  if (kind === "theorem") {
-    if (lower.includes("fundamental theorem of simulation")) return "Fundamental Theorem of Simulation";
-    if (/(probability integral|f_x\s*\^\{-1\}|inverse transform cdf|\bcdf\b.*f_x)/i.test(blob)) return "Probability integral transform";
-    if (lower.includes("box") && lower.includes("müller")) return "Box-Müller transform";
-  }
-  if (kind === "proposition") {
-    if (lower.includes("chain rule for sampling")) return "Chain Rule for Sampling";
-    if (lower.includes("conditional bayes") || lower.includes("conditional bayes rule")) return "Conditional Bayes rule";
+  if (kind === "proposition" || kind === "theorem" || kind === "lemma") {
     const inferred = inferTitleFromStatement(kind, body, formalNumber, courseContext);
     if (inferred) return inferred;
   }
@@ -520,10 +514,10 @@ export function normalizeMathText(text: string): string {
 // ---------------------------------------------------------------------------
 
 const FORMULA_LIKE =
-  /[=∑∫∇∂κτφγ′″√⟨〉]|\\sum|\\int|\\propto|∝|\\\(|\$|\\frac|\\mathbb\{P\}|\\mathbb\{E\}|\\partial|\\nabla|\\times|\\langle|M\^\{|M\^|p\^\*|p_n|p\?\(|K\(|\bsum\b|\bmin\b|\balpha\b|q\(|\bmod\b|\bPhi\b|\bN\(|\bGamma\b|\bExp\b|\bUnif\b|\bPois\b|\bint\b|\bE\[|\bVar\b|\bdet\b|\\mathrm\{tr\}|\\operatorname\{tr\}|d\s*\/\s*d\s*t|\/\s*d\s*t/i;
+  /[=∑∫∇∂κτφγ′″√⟨〉→⇒⇔≤≥×]|\\sum|\\int|\\propto|∝|\\\(|\$|\\frac|\\mathbb\{P\}|\\mathbb\{E\}|\\partial|\\nabla|\\times|\\langle|\\argmin|\\sup|\\inf|M\^\{|M\^|p\^\*|p_n|p\?\(|K\(|\bsum\b|\bmin\b|\blog\b|\bexp\b|\balpha\b|q\(|\bmod\b|\bPhi\b|\bN\(|\bGamma\b|\bExp\b|\bUnif\b|\bPois\b|\bint\b|\bE\{|\bE\[|\bVar\b|\bcov\b|\bdet\b|\\mathrm\{tr\}|\\operatorname\{tr\}|d\s*\/\s*d\s*t|\/\s*d\s*t/i;
 
 const FORMULA_SECONDARY =
-  /[=]|\\sum|\\int|∑|∫|∝|∇|∂|κ|τ|φ|\\\\propto|conditional|\\mathbb\{P\}|\\mathbb\{E\}|M_\{|M\^|p_n|p\^\*|p\?\(|K\(|q\(|\bP\(|\br\(x|\bMij\b|\bx_\{|u_n|F_X|lambda|Sigma|sqrt|∏|prop(?:ortional)?|Bayes|det|tr|⟨|〉|\|\s*\|/i;
+  /[=]|\\sum|\\int|∑|∫|∝|∇|∂|κ|τ|φ|→|⇒|⇔|≤|≥|×|\\\\propto|conditional|\\mathbb\{P\}|\\mathbb\{E\}|M_\{|M\^|p_n|p\^\*|p\?\(|K\(|q\(|\bP\(|\br\(x|\bMij\b|\bx_\{|u_n|F_X|lambda|Sigma|sqrt|∏|prop(?:ortional)?|Bayes|det|tr|⟨|〉|\|\s*\|/i;
 
 function looksLikeFormula(line: string, relaxed = false): boolean {
   if (relaxed) {
@@ -2055,10 +2049,6 @@ function harvestWorkedExampleCards(text: string, primaryFile: string, sections: 
   return out;
 }
 
-function isStaleVersusSource(blobLower: string, sourceLower: string): boolean {
-  return findProminentTermsAbsentFromSource(blobLower, sourceLower).length >= 5;
-}
-
 function filterStaleFormulas(formulas: GeneratedFormulaItem[], sourceLower: string): GeneratedFormulaItem[] {
   return formulas.filter((f) => !isStaleVersusSource(`${f.name}\n${f.latex}\n${f.whenToUse}`.toLowerCase(), sourceLower));
 }
@@ -2111,8 +2101,12 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     : [];
 
   const pagesForModel = normalizedFlat.length ? normalizedFlat : syntheticSingle.length ? syntheticSingle : [{ pageNumber: 1, text: cleanedPrintedFallback }];
-  const pageRecords = buildPageRecordsFromParsedPages(pagesForModel);
+  const pageRecords = buildPageRecordsFromParsedPages(pagesForModel, {
+    fileId: lectureFiles[0]?.id ?? "local",
+    fileName: primaryStem,
+  });
   const cleanedPrinted = pageRecordsToMarkedFullText(primaryStem, pageRecords);
+  const rawExamBuckets = extractRawExamPackCandidates(primaryStem, pageRecords);
 
   let documentProfile = profileDocument({
     cleanedPages: pagesForModel,
@@ -2165,10 +2159,27 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   if (!sectionBlocks.length) {
     sectionBlocks = buildSectionBlocks(cleanedPrinted, primaryStem);
   }
+  if (pageCountForBlocks > 28 && sectionBlocks.length < 10 && headingCandidates.length >= 4) {
+    const fromGraph = buildSectionBlocksFromHeadingGraph(
+      pageRecords,
+      headingCandidates,
+      primaryStem,
+      documentProfile.chapterMap,
+    );
+    if (fromGraph.length > sectionBlocks.length) sectionBlocks = fromGraph;
+  }
   sectionBlocks = ensureMinimumSectionBlocksForLongNotes(sectionBlocks, cleanedPrinted, primaryStem, pageCountForBlocks);
+
+  const resolvedChapterMapSource =
+    documentProfile.chapterMap.length >= 2 ?
+      chapterMapSource !== "none" ?
+        chapterMapSource
+      : documentProfile.chapterMapSource ?? "heading_scan"
+    : "none";
 
   documentProfile = {
     ...documentProfile,
+    chapterMapSource: resolvedChapterMapSource === "none" && documentProfile.chapterMap.length >= 2 ? "heading_scan" : resolvedChapterMapSource,
     structureDiagnostics: {
       ...documentProfile.structureDiagnostics,
       titleConfidence: documentProfile.structureDiagnostics?.titleConfidence ?? 0,
@@ -2176,10 +2187,6 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
       pageHeadingCandidateCount: headingCandidates.length,
       sectionBlockCountHint: sectionBlocks.length,
     },
-    chapterMapSource:
-      documentProfile.chapterMap.length >= 2 ?
-        (documentProfile.chapterMapSource ?? (chapterMapSource !== "none" ? chapterMapSource : undefined))
-      : "none",
   };
 
   const sectionsMerged = mergeSectionHeadingsForPack(lectureFiles, cleanedPrinted);
@@ -2220,10 +2227,11 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const canonicalFormulas = extractCanonicalFormulas(cleanText, primaryName, sections);
   const blockFormulas = extractFormulasFromBlocks(blocks, primaryName);
   const cueFormulas = extractCueAdjacentFormulaLines(cleanText, primaryName, sections, whenHint);
-  const heuristicLineCandidates = countFormulaLikeLines(cleanText);
+  const heuristicLineCandidates = Math.max(countFormulaLikeLines(cleanText), rawExamBuckets.formulaLineScanCount);
   const formulaCandidatesPreDedupe = Math.max(
     heuristicLineCandidates,
     canonicalFormulas.length + blockFormulas.length + lineFormulas.length + cueFormulas.length,
+    rawExamBuckets.formulaCandidates.length,
   );
   const pageCount = documentProfile.pageCount;
   const maxFormulas = pageCount < 15 ? 90 : pageCount <= 50 ? 150 : 220;
@@ -2367,27 +2375,48 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     topActionableIssues.push("Section blocks share the same opening text — page-aware slicing may be misaligned.");
   }
 
+  const chapterRangeValidationFinal = validateChapterMap(documentProfile.chapterMap, pageCountForBlocks);
+
   const extractionPipelineDiagnostics: ExtractionPipelineDiagnostics = {
+    rawHeadingCandidates: headingCandidates.slice(0, 200).map((h) => ({
+      text: h.text.slice(0, 200),
+      pageNumber: h.pageNumber,
+      lineIndex: h.lineIndex,
+      headingType: h.headingType,
+    })),
     formulaCandidateCount: formulaCandidatesPreDedupe,
     formulaExtractedCount: formulas.length,
     formulaRejectedCount: Math.max(0, formulaCandidatesPreDedupe - formulas.length),
     formulaRejectionReasons: [...new Set(extractionRejected.filter((r) => r.kind === "formula").map((r) => r.reason))],
     conceptCandidateCount:
-      blocks.filter((b) => b.kind === "definition").length + sectionsMerged.length + (documentProfile.chapterMap?.length ?? 0),
+      blocks.filter((b) => b.kind === "definition").length +
+      sectionsMerged.length +
+      (documentProfile.chapterMap?.length ?? 0) +
+      rawExamBuckets.exerciseCandidates.length,
     headingCandidateCount: Math.max(sectionsMerged.length, headingCandidates.length),
     pageHeadingCandidateCount: headingCandidates.length,
     sectionBlockCount: sectionBlocks.length,
     chapterCandidateCount: documentProfile.chapterMap.length,
-    chapterMapSource,
+    chapterMapSource: documentProfile.chapterMapSource ?? resolvedChapterMapSource,
     chapterRangeValidation: {
-      ok: chapterRangeValidation.ok,
-      errors: chapterRangeValidation.errors,
-      warnings: chapterRangeValidation.warnings,
+      ok: chapterRangeValidationFinal.ok,
+      errors: chapterRangeValidationFinal.errors,
+      warnings: chapterRangeValidationFinal.warnings,
     },
     sectionBlocksSummary: { count: sectionBlocks.length, duplicateOpeningSlices },
-    workedExampleCandidateCount: workedExamplesHarvest.length + derivations.filter((d) => d.type === "worked_example").length,
-    proofCandidateCount: proofBlocks.length,
+    workedExampleCandidateCount:
+      workedExamplesHarvest.length +
+      derivations.filter((d) => d.type === "worked_example").length +
+      rawExamBuckets.workedExampleCandidates.length,
+    proofLikeMarkerLineCount: countProofLikeLineMarkers(pageRecords),
+    rawExerciseCandidateCount: rawExamBuckets.exerciseCandidates.length,
+    proofCandidateCount: rawExamBuckets.proofCandidates.length + rawExamBuckets.workedExampleCandidates.length,
     exampleCandidateCount,
+    rawCandidateSnippets: {
+      formulas: rawExamBuckets.formulaCandidates.slice(0, 24).map((c) => c.rawText.replace(/\s+/g, " ").trim().slice(0, 220)),
+      proofs: rawExamBuckets.proofCandidates.slice(0, 14).map((c) => c.rawText.replace(/\s+/g, " ").trim().slice(0, 280)),
+      workedExamples: rawExamBuckets.workedExampleCandidates.slice(0, 10).map((c) => c.rawText.replace(/\s+/g, " ").trim().slice(0, 280)),
+    },
     rejectedItems: extractionRejected.slice(0, 400),
     extractionPipelineTrace: [
       "flatten_multi_file_pages → PageRecord",
@@ -2500,15 +2529,29 @@ function dedupeProofs(items: GeneratedProofItem[]): GeneratedProofItem[] {
   return out.slice(0, 96);
 }
 
-function packItemGroundingBlob(item: {
-  name?: string;
-  term?: string;
-  statement?: string;
-  definition?: string;
-  latex?: string;
-  whenToUse?: string;
-}): string {
-  return [item.name, item.term, item.statement, item.definition, item.latex, item.whenToUse].filter(Boolean).join("\n").toLowerCase();
+/** Stale-template check: ignore pedagogy / UI phrasing; focus on technical tokens from core fields. */
+function packItemStaleCheckBlob(
+  item: { name?: string; term?: string; statement?: string; definition?: string; latex?: string; whenToUse?: string },
+  kind: string,
+): string {
+  const latex = (item.latex ?? "").toLowerCase();
+  const when = (item.whenToUse ?? "").toLowerCase();
+  if (kind === "formula") {
+    return [item.name, latex, (item as { formulaPlain?: string }).formulaPlain, (item as { rawFormula?: string }).rawFormula]
+      .filter(Boolean)
+      .join("\n")
+      .toLowerCase();
+  }
+  if (kind === "proof") {
+    return [item.name, item.statement, (item as { proofSkeleton?: string }).proofSkeleton?.slice(0, 1200)]
+      .filter(Boolean)
+      .join("\n")
+      .toLowerCase();
+  }
+  if (kind === "definition") {
+    return [item.term, item.definition?.slice(0, 2000)].filter(Boolean).join("\n").toLowerCase();
+  }
+  return [item.name, item.term, item.statement, item.definition, latex].filter(Boolean).join("\n").toLowerCase();
 }
 
 function stripPackItemsFailingGrounding<T extends { sourceExcerpt?: string; grounding?: SourceGrounding }>(
@@ -2529,15 +2572,25 @@ function stripPackItemsFailingGrounding<T extends { sourceExcerpt?: string; grou
       });
       continue;
     }
-    const blob = packItemGroundingBlob(item as unknown as Parameters<typeof packItemGroundingBlob>[0]);
-    if (detectSourceContamination(blob, sourceLower).length) {
-      extractionRejected.push({ kind, reason: "source_contamination", detail: blob.slice(0, 140) });
+    if (!excerptGroundedInSource(excerpt, sourceLower)) {
+      extractionRejected.push({ kind, reason: "weak_grounding", detail: excerpt.slice(0, 120) });
       continue;
     }
-    const absent = findProminentTermsAbsentFromSource(blob, sourceLower);
-    if (absent.length >= 3) {
-      extractionRejected.push({ kind, reason: "terms_absent_from_source", detail: absent.slice(0, 5).join(", ") });
+    const staleBlob = stripUiAndPackLabelsForGrounding(
+      packItemStaleCheckBlob(item as unknown as Parameters<typeof packItemStaleCheckBlob>[0], kind),
+    );
+    const absent = findProminentTermsAbsentFromSource(staleBlob, sourceLower);
+    const technicalAbsent = absent.filter((w) => !APP_SYSTEM_WORD_WHITELIST.has(w.toLowerCase()));
+    if (technicalAbsent.length >= 8) {
+      extractionRejected.push({
+        kind,
+        reason: "stale_template_technical_term",
+        detail: technicalAbsent.slice(0, 5).join(", "),
+      });
       continue;
+    }
+    if (absent.length >= 6 && technicalAbsent.length <= 2) {
+      extractionRejected.push({ kind, reason: "ui_word_false_positive", detail: absent.slice(0, 8).join(", ") });
     }
     out.push(item);
   }

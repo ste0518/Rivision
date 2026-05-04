@@ -32,13 +32,15 @@ export type HeadingCandidate = {
   headingType: HeadingKind;
   level: number;
   confidence: number;
+  /** When a line was skipped as heading, short machine reason for debug. */
+  stopReason?: string;
 };
 
 const FOOTER_HEADER_HINT =
   /\b(page\s+\d+\s+of\s+\d+|^\s*\d+\s*$|copyright|©|all\s+rights\s+reserved)\b/i;
 
 const STRONG_HEADING_FOR_NOISE =
-  /^Chapter\s*\d+|^\d+\.\d+\.\d+\s+\S|^\d+\.\d+\s+\S|^Definition\s*\d*|^Lemma\s+\d+|^Theorem\s+\d+|^Proposition\s+\d+|^Corollary\s+\d+|^Proof\.?$|^Worked\s+example|^Example\s*\d*|^Exercise\s*\d*|^Question\s*\d*|^Problem\s*\d*|^Solution\s*\d*/i;
+  /^Chapter\s*\d+|^\d+\.\d+\.\d+\s+\S|^\d+\.\d+\s+\S|^Definition\s*\d*|^Lemma\s+\d+|^Theorem\s+\d+|^Proposition\s+\d+|^Corollary\s+\d+|^Proof[.:]?\s*|^Worked\s+example|^Example\s*\d*|^Exercise\s*\d*|^Question\s*\d*|^Problem\s*\d*|^Solution\s*\d*|^Remark\s*\d*|^Algorithm\s*\d*/i;
 
 /** Lines that are unlikely to be real headings (OCR noise, diagrams). */
 export function rejectLineAsHeadingNoise(line: string): boolean {
@@ -66,6 +68,8 @@ export function isProbableChapterSubtitleLine(line: string): boolean {
   if ((t.match(/\./g) ?? []).length >= 2 && t.length > 55) return false;
   if (t.split(/\s+/).length > 14) return false;
   if (/^[a-z]/.test(t) && t.length > 40) return false;
+  if (/^[-*•◦]\s/.test(t)) return false;
+  if (/^\d+\s*\)\s/.test(t)) return false;
   return true;
 }
 
@@ -100,7 +104,8 @@ function classifyLine(trimmed: string): { kind: HeadingKind; level: number } | n
   if (/^Proposition\s+\d+/i.test(t)) return { kind: "proposition", level: 3 };
   if (/^Theorem\s+\d+/i.test(t)) return { kind: "theorem", level: 3 };
   if (/^Corollary\s+\d+/i.test(t)) return { kind: "corollary", level: 3 };
-  if (/^Proof\.?$/i.test(t)) return { kind: "proof", level: 4 };
+  if (/^Proof[.:]?\s*$/i.test(t)) return { kind: "proof", level: 4 };
+  if (/^Proof[.:]\s+\S/i.test(t) && t.length < 160) return { kind: "proof", level: 4 };
   if (/^Worked\s+example:?/i.test(t)) return { kind: "worked_example", level: 4 };
   if (/^Example\s*\d*/i.test(t)) return { kind: "example", level: 4 };
   if (/^Exercise\s*\d*/i.test(t)) return { kind: "exercise", level: 4 };
@@ -135,8 +140,9 @@ export function detectHeadingsByPage(pages: PageRecord[]): HeadingCandidate[] {
   for (const lr of flat) {
     const trimmed = lr.text.trim();
     if (!trimmed) continue;
-    const allowNoise = lr.source === "noise" && STRONG_HEADING_FOR_NOISE.test(trimmed) && !rejectLineAsHeadingNoise(trimmed);
-    if (lr.source === "noise" && !allowNoise) continue;
+    const allowNoise =
+      lr.sourceLayer === "ocr_noise" && STRONG_HEADING_FOR_NOISE.test(trimmed) && !rejectLineAsHeadingNoise(trimmed);
+    if (lr.sourceLayer === "ocr_noise" && !allowNoise) continue;
     if (!allowNoise && rejectLineAsHeadingNoise(trimmed)) continue;
 
     const cls = classifyLine(trimmed);

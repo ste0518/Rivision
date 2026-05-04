@@ -188,8 +188,12 @@ export type PipelineHealth = {
 export type SafeFallbackStudyPack = {
   documentProfile?: DocumentProfile;
   rawDetectedHeadings?: string[];
+  /** Structured heading rows when available (preferred over strings-only). */
+  rawHeadingCandidates?: Array<{ text: string; pageNumber: number; lineIndex: number; headingType: string }>;
   topConceptCandidates?: string[];
   topFormulaCandidates?: string[];
+  topProofCandidates?: string[];
+  topWorkedExampleCandidates?: string[];
   topProofOrExampleCandidates?: string[];
   failureExplanation: string;
   topActionableIssues: string[];
@@ -208,12 +212,19 @@ export type ExtractionPipelineDiagnostics = {
   pageHeadingCandidateCount?: number;
   sectionBlockCount: number;
   chapterCandidateCount: number;
-  chapterMapSource?: "toc" | "heading_scan" | "none";
+  chapterMapSource?: "toc" | "heading_scan" | "manual_fallback" | "none";
+  /** Heading scan snapshot for debug (page + line grounded). */
+  rawHeadingCandidates?: Array<{ text: string; pageNumber: number; lineIndex: number; headingType: string }>;
   chapterRangeValidation?: ChapterRangeValidationSummary;
   sectionBlocksSummary?: { count: number; duplicateOpeningSlices: boolean };
   workedExampleCandidateCount: number;
   proofCandidateCount: number;
+  /** Lines matching proof/theorem-like markers (diagnostic; distinct from {@link proofCandidateCount}). */
+  proofLikeMarkerLineCount?: number;
+  rawExerciseCandidateCount?: number;
   exampleCandidateCount?: number;
+  /** Pre-LLM candidate text for safe fallback / debug when final items are gated off. */
+  rawCandidateSnippets?: { formulas: string[]; proofs: string[]; workedExamples: string[] };
   rejectedItems: Array<{ kind: string; reason: string; detail?: string }>;
   extractionPipelineTrace: string[];
   /** Mirrors generic QA priority list for Debug JSON / UI. */

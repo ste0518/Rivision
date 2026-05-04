@@ -374,7 +374,7 @@ export function ensureMinimumSectionBlocksForLongNotes(
   primarySourceLabel: string,
   pageCount: number,
 ): SectionBlock[] {
-  if (pageCount <= 30 || blocks.length >= 5) return blocks;
+  if (pageCount <= 30 || blocks.length >= 10) return blocks;
   const target = Math.max(5, Math.min(30, Math.ceil(pageCount / 7)));
   const maxPages = Math.max(4, Math.ceil(pageCount / target));
   const split = buildSectionBlocksByPageWindows(fullText, primarySourceLabel, maxPages);
@@ -632,4 +632,78 @@ export function buildSectionBlocksPageAware(
   }
 
   return dedupeBlocks(blocks).slice(0, 500);
+}
+
+function lastPrintedLineIndexOnPage(pages: PageRecord[], pageNum: number): number {
+  const pg = pages.find((p) => p.pageNumber === pageNum);
+  return pg ? pg.printedText.split("\n").length : 0;
+}
+
+/**
+ * One section block per heading candidate (page/line bounded). Use when chapter map is coarse
+ * but academic headings are dense — keeps long notes from collapsing to a handful of slabs.
+ */
+export function buildSectionBlocksFromHeadingGraph(
+  pages: PageRecord[],
+  headings: HeadingCandidate[],
+  primarySourceLabel: string,
+  chapterMap: ChapterMapEntry[],
+): SectionBlock[] {
+  if (!pages.length || headings.length < 2) return [];
+  const sorted = [...headings].sort((a, b) => a.pageNumber - b.pageNumber || a.lineIndex - b.lineIndex);
+  const uniq: HeadingCandidate[] = [];
+  let prevKey = "";
+  for (const h of sorted) {
+    const k = `${h.pageNumber}|${h.lineIndex}|${h.normalizedText}`;
+    if (k === prevKey) continue;
+    prevKey = k;
+    uniq.push(h);
+  }
+
+  const ctxForPage = (pg: number) => {
+    const ch = chapterMap.find((c) => pg >= c.startPage && pg <= c.endPage);
+    return ch ? { chapterLabel: ch.chapterLabel, chapterTitle: ch.chapterTitle } : { chapterLabel: "", chapterTitle: "" };
+  };
+
+  const blocks: SectionBlock[] = [];
+  const lastPg = pages[pages.length - 1]?.pageNumber ?? 1;
+
+  for (let i = 0; i < uniq.length; i += 1) {
+    const cur = uniq[i]!;
+    const next = uniq[i + 1];
+    const start = { pageNumber: cur.pageNumber, lineIndex: cur.lineIndex };
+    const end = next ?
+      { pageNumber: next.pageNumber, lineIndex: next.lineIndex }
+    : { pageNumber: lastPg, lineIndex: lastPrintedLineIndexOnPage(pages, lastPg) };
+    const body = slicePrintedLinesRange(pages, start, end);
+    if (body.length < 10) continue;
+    const inline = extractInlineArrays(body);
+    const ctx = ctxForPage(cur.pageNumber);
+    const headingShort = cur.text.replace(/\s+/g, " ").trim().slice(0, 180);
+    blocks.push({
+      sectionId: `${primarySourceLabel}-hg-${i}-${cur.pageNumber}`,
+      chapterLabel: ctx.chapterLabel,
+      chapterTitle: ctx.chapterTitle,
+      heading: headingShort,
+      level: cur.level,
+      startPage: cur.pageNumber,
+      endPage: next ? (next.pageNumber > cur.pageNumber ? next.pageNumber - 1 : cur.pageNumber) : lastPg,
+      startLineIndex: cur.lineIndex,
+      endLineIndex: next?.lineIndex,
+      text: body.slice(0, 120_000),
+      formulas: inline.formulas,
+      definitions: inline.definitions,
+      workedExamples: inline.workedExamples,
+      proofsAndDerivations: inline.proofsAndDerivations,
+      proofs: inline.proofsAndDerivations.filter((p) => /^Proof\b/i.test(p)),
+      exercises: [],
+      formulaCandidates: inline.formulas,
+      definitionCandidates: inline.definitions,
+      theoremCandidates: inline.theoremCandidates,
+      proofCandidates: inline.proofCandidates,
+      exampleCandidates: inline.exampleCandidates,
+      exerciseCandidates: inline.exerciseCandidates,
+    });
+  }
+  return dedupeBlocks(blocks);
 }
