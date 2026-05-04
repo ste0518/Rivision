@@ -18,7 +18,15 @@ export type SectionBlock = {
   chapterLabel: string;
   chapterTitle: string;
   heading: string;
+  /** From page-aware heading detection when available. */
+  headingType?: string;
   level: number;
+  /** Nearest enclosing structural heading text (section / subsection / chapter). */
+  parentSection?: string;
+  /** Immediate nested heading lines until the next boundary (diagnostic). */
+  childHeadings?: string[];
+  /** Counts from {@link extractInlineArrays} for QA. */
+  candidateCounts?: Record<string, number>;
   startPage: number;
   endPage: number;
   /** Inclusive line index on startPage when derived from PageRecord lines (optional). */
@@ -373,7 +381,17 @@ export function ensureMinimumSectionBlocksForLongNotes(
   fullText: string,
   primarySourceLabel: string,
   pageCount: number,
+  headingCandidateCount?: number,
 ): SectionBlock[] {
+  const pageChunkNamed = blocks.length > 0 && blocks.every((b) => /^Pages\s+\d+/i.test(b.heading) || (b.level ?? 0) >= 9);
+  if (
+    headingCandidateCount != null &&
+    headingCandidateCount >= 4 &&
+    blocks.length >= 3 &&
+    !pageChunkNamed
+  ) {
+    return blocks;
+  }
   if (pageCount <= 30 || blocks.length >= 10) return blocks;
   const target = Math.max(5, Math.min(30, Math.ceil(pageCount / 7)));
   const maxPages = Math.max(4, Math.ceil(pageCount / target));
@@ -642,6 +660,94 @@ export function buildSectionBlocksPageAware(
 function lastPrintedLineIndexOnPage(pages: PageRecord[], pageNum: number): number {
   const pg = pages.find((p) => p.pageNumber === pageNum);
   return pg ? pg.printedText.split("\n").length : 0;
+}
+
+/**
+ * Primary path: {@link HeadingCandidate} list → blocks end at the next heading of equal or higher priority
+ * (same or lower numeric {@link HeadingCandidate.level}). Uses {@link slicePrintedLinesRange} only (no blind offsets).
+ */
+export function buildSemanticSectionBlocksFromHeadingCandidates(
+  pages: PageRecord[],
+  headings: HeadingCandidate[],
+  chapterMap: ChapterMapEntry[],
+  primarySourceLabel: string,
+): SectionBlock[] {
+  if (!pages.length || headings.length < 1) return [];
+  const sorted = [...headings].sort((a, b) => a.pageNumber - b.pageNumber || a.lineIndex - b.lineIndex || a.text.localeCompare(b.text));
+  const lastPg = pages[pages.length - 1]!.pageNumber;
+
+  const ctxChapter = (pg: number) => {
+    const ch = chapterMap.find((c) => pg >= c.startPage && pg <= c.endPage);
+    return ch ? { chapterLabel: ch.chapterLabel, chapterTitle: ch.chapterTitle } : { chapterLabel: "", chapterTitle: "" };
+  };
+
+  const blocks: SectionBlock[] = [];
+  for (let i = 0; i < sorted.length; i += 1) {
+    const cur = sorted[i]!;
+    let nextIdx = i + 1;
+    while (nextIdx < sorted.length && sorted[nextIdx]!.level > cur.level) nextIdx += 1;
+    const next = sorted[nextIdx];
+    const start = { pageNumber: cur.pageNumber, lineIndex: cur.lineIndex };
+    const end = next ?
+      { pageNumber: next.pageNumber, lineIndex: next.lineIndex }
+    : { pageNumber: lastPg, lineIndex: lastPrintedLineIndexOnPage(pages, lastPg) };
+    const body = slicePrintedLinesRange(pages, start, end);
+    if (body.length < 8) continue;
+
+    let parentSection: string | undefined;
+    for (let k = i - 1; k >= 0; k -= 1) {
+      const h = sorted[k]!;
+      if (h.level < cur.level && ["chapter", "section", "subsection", "subsubsection"].includes(h.headingType)) {
+        parentSection = h.text.replace(/\s+/g, " ").trim().slice(0, 180);
+        break;
+      }
+    }
+
+    const childHeadings: string[] = [];
+    for (let k = i + 1; k < nextIdx; k += 1) {
+      const h = sorted[k]!;
+      if (h.level > cur.level) childHeadings.push(h.text.replace(/\s+/g, " ").trim().slice(0, 120));
+    }
+
+    const inline = extractInlineArrays(body);
+    const ctx = ctxChapter(cur.pageNumber);
+    const sectionId = `${primarySourceLabel}-sem-${i}-${cur.pageNumber}-${cur.lineIndex}`;
+
+    blocks.push({
+      sectionId,
+      chapterLabel: ctx.chapterLabel,
+      chapterTitle: ctx.chapterTitle,
+      heading: cur.text.replace(/\s+/g, " ").trim().slice(0, 220),
+      headingType: cur.headingType,
+      level: cur.level,
+      parentSection,
+      childHeadings: childHeadings.slice(0, 32),
+      candidateCounts: {
+        formulas: inline.formulas.length,
+        definitions: inline.definitions.length,
+        proofs: inline.proofCandidates.length,
+        examples: inline.exampleCandidates.length,
+      },
+      startPage: cur.pageNumber,
+      endPage: next ? (next.pageNumber > cur.pageNumber ? next.pageNumber - 1 : cur.pageNumber) : lastPg,
+      startLineIndex: cur.lineIndex,
+      endLineIndex: next?.lineIndex,
+      text: body.slice(0, 120_000),
+      formulas: inline.formulas,
+      definitions: inline.definitions,
+      workedExamples: inline.workedExamples,
+      proofsAndDerivations: inline.proofsAndDerivations,
+      proofs: inline.proofsAndDerivations.filter((p) => /^Proof\b/i.test(p)),
+      exercises: [],
+      formulaCandidates: inline.formulas,
+      definitionCandidates: inline.definitions,
+      theoremCandidates: inline.theoremCandidates,
+      proofCandidates: inline.proofCandidates,
+      exampleCandidates: inline.exampleCandidates,
+      exerciseCandidates: inline.exerciseCandidates,
+    });
+  }
+  return dedupeBlocks(blocks);
 }
 
 /**

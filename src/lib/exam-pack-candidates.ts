@@ -16,6 +16,8 @@ export type RawExamCandidateType =
 
 export type RawCandidateCleanupStatus = "ok" | "needs_review" | "failed";
 
+export type FormulaCandidateKind = "raw_equation" | "formula_name" | "concept_formula" | "broken_math";
+
 export type RawExamPackCandidate = {
   candidateType: RawExamCandidateType;
   rawText: string;
@@ -28,6 +30,8 @@ export type RawExamPackCandidate = {
   confidence: number;
   extractionReason: string;
   cleanupStatus?: RawCandidateCleanupStatus;
+  /** When {@link candidateType} is formula — how to use downstream (formula sheet vs method templates). */
+  formulaKind?: FormulaCandidateKind;
 };
 
 const FORMULA_TRIGGERS =
@@ -50,10 +54,25 @@ function isProofBoundary(u: string): boolean {
     /^Proof[.:]?\b/i.test(u) ||
     /^Chapter\s*\d/i.test(u) ||
     /^Section\s+\d/i.test(u) ||
+    /** Major numbered section banner "3 Introduction" (top-level, not 3.1). */
+    (/^\d{1,2}\s+[A-Za-z\u00C0-\u024F(]/.test(u) && !/^\d+\.\d/.test(u) && u.length < 140) ||
     /^\d+\.\d+\.\d+\.\d+\s+\S/.test(u) ||
     /^\d+\.\d+\.\d+\s+\S/.test(u) ||
     /^\d+\.\d+\s+\S/.test(u)
   );
+}
+
+function classifyFormulaLineKind(t: string): FormulaCandidateKind {
+  const s = t.trim();
+  if (/\b(therfore|varience|poputation|fii+i+n|Dopulation)\b/i.test(s)) return "broken_math";
+  const letters = (s.match(/[A-Za-z]/g) ?? []).length;
+  const digits = (s.match(/\d/g) ?? []).length;
+  if (s.length > 12 && digits / Math.max(1, s.length) > 0.42 && letters < 4) return "broken_math";
+  const eqHeavy = /[=∫∑∂∇√]/.test(s) || /\\frac|\\sum|\\int|\\partial|\\nabla|\\mathbb|\\mathrm|\\hat|\\bar/.test(s);
+  const words = (s.match(/[A-Za-z]{4,}/g) ?? []).length;
+  if (eqHeavy && s.length < 520) return "raw_equation";
+  if (words >= 1 && words <= 8 && s.length < 110 && !eqHeavy) return "formula_name";
+  return "concept_formula";
 }
 
 function printedLines(p: PageRecord): string[] {
@@ -83,13 +102,13 @@ function collectProofBlocks(pages: PageRecord[], sourceFile: string): RawExamPac
       if (!PROOF_START.test(t)) continue;
       const buf: string[] = [t];
       let j = i + 1;
-      while (j < lines.length && j < i + 80) {
+      while (j < lines.length && j < i + 120) {
         const u = lines[j]!.trim();
         if (!u) {
           j += 1;
           continue;
         }
-        if (buf.length > 1 && isProofBoundary(u)) break;
+        if (j > i && isProofBoundary(u)) break;
         buf.push(lines[j]!);
         if (buf.join("\n").length > 3500) break;
         j += 1;
@@ -132,7 +151,7 @@ function collectTheoremLedReasoningBlocks(pages: PageRecord[], sourceFile: strin
           j += 1;
           continue;
         }
-        if (buf.length > 1 && /^(theorem|lemma|proposition|corollary|definition)\s+[\d.]+/i.test(u)) break;
+        if (buf.length > 1 && /^(theorem|lemma|proposition|corollary|definition|remark|example|exercise|question|algorithm)\s+[\d.]+/i.test(u)) break;
         if (/^Chapter\s*\d/i.test(u)) break;
         if (/^Remark[.:]?\b/i.test(u) && buf.length > 3) break;
         if (/^Example\s*\d/i.test(u) && buf.length > 4) break;
@@ -375,6 +394,7 @@ function collectFormulaLineCandidates(pages: PageRecord[], sourceFile: string): 
         end += 1;
       }
       const rawText = buf.join("\n").trim();
+      const formulaKind = classifyFormulaLineKind(rawText);
       out.push({
         candidateType: "formula",
         rawText,
@@ -385,7 +405,8 @@ function collectFormulaLineCandidates(pages: PageRecord[], sourceFile: string): 
         sourceExcerpt: rawText.slice(0, 400),
         confidence: FORMULA_CONTEXT.test(rawText) ? 0.78 : 0.55,
         extractionReason: "formula_like_printed_line",
-        cleanupStatus: rawText.length > 200 ? "needs_review" : "ok",
+        cleanupStatus: rawText.length > 200 || formulaKind === "broken_math" ? "needs_review" : "ok",
+        formulaKind,
       });
       lineIndex = end;
     }
@@ -444,6 +465,8 @@ export type RawExamPackCandidateBuckets = {
   exerciseCandidates: RawExamPackCandidate[];
   methodTemplateCandidates: RawExamPackCandidate[];
   formulaLineScanCount: number;
+  /** Count of formula rows classified as display/equation-like (not names-only). */
+  formulaRawEquationCount: number;
 };
 
 export function extractRawExamPackCandidates(sourceFile: string, pages: PageRecord[]): RawExamPackCandidateBuckets {
@@ -461,6 +484,8 @@ export function extractRawExamPackCandidates(sourceFile: string, pages: PageReco
 
   const conceptCandidates = collectInformalConceptLines(pages, sourceFile);
 
+  const formulaRawEquationCount = formulaLines.filter((f) => f.formulaKind === "raw_equation").length;
+
   return {
     conceptCandidates,
     definitionCandidates: definitions,
@@ -471,6 +496,7 @@ export function extractRawExamPackCandidates(sourceFile: string, pages: PageReco
     exerciseCandidates: exercises,
     methodTemplateCandidates: methods,
     formulaLineScanCount,
+    formulaRawEquationCount,
   };
 }
 

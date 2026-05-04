@@ -34,6 +34,7 @@ import {
   buildSectionBlocksFromChapterMap,
   buildSectionBlocksFromHeadingGraph,
   buildSectionBlocksPageAware,
+  buildSemanticSectionBlocksFromHeadingCandidates,
   ensureMinimumSectionBlocksForLongNotes,
   type SectionBlock,
 } from "@/lib/section-blocks";
@@ -2112,6 +2113,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   let documentProfile = profileDocument({
     cleanedPages: pagesForModel,
     combinedPrintedText: cleanedPrinted,
+    sourceFileStem: primaryStem,
   });
 
   const { accepted: headingCandidates, rejected: rejectedHeadingCandidates } = detectHeadingsByPageWithRejections(pageRecords);
@@ -2148,28 +2150,35 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
 
   const pageCountForBlocks = documentProfile.pageCount;
   let sectionBlocks: SectionBlock[] = [];
-  if (documentProfile.chapterMap.length >= 2) {
+
+  const semanticBlocks = buildSemanticSectionBlocksFromHeadingCandidates(
+    pageRecords,
+    headingCandidates,
+    documentProfile.chapterMap,
+    primaryStem,
+  );
+  if (semanticBlocks.length >= 2) {
+    sectionBlocks = semanticBlocks;
+  } else if (documentProfile.chapterMap.length >= 2) {
     sectionBlocks = buildSectionBlocksPageAware(documentProfile.chapterMap, headingCandidates, pageRecords, primaryStem);
   }
-  if (!sectionBlocks.length || sectionBlocks.length < Math.min(documentProfile.chapterMap.length, 3)) {
-    if (documentProfile.chapterMap.length >= 2) {
-      const fromMap = buildSectionBlocksFromChapterMap(
-        cleanedPrinted,
-        documentProfile.chapterMap,
-        primaryStem,
-        pageCountForBlocks,
-      );
-      if (fromMap.length > sectionBlocks.length) sectionBlocks = fromMap;
-    }
+  if ((!sectionBlocks.length || sectionBlocks.length < 3) && documentProfile.chapterMap.length >= 2) {
+    const fromMap = buildSectionBlocksFromChapterMap(
+      cleanedPrinted,
+      documentProfile.chapterMap,
+      primaryStem,
+      pageCountForBlocks,
+    );
+    if (fromMap.length > sectionBlocks.length) sectionBlocks = fromMap;
   }
-  if (!sectionBlocks.length || sectionBlocks.length < Math.min(documentProfile.chapterMap.length, 5)) {
-    const fromHeadings = buildSectionBlocks(cleanedPrinted, primaryStem);
-    if (fromHeadings.length > sectionBlocks.length) sectionBlocks = fromHeadings;
+  if ((!sectionBlocks.length || sectionBlocks.length < 3) && headingCandidates.length < 4) {
+    const fromStructural = buildSectionBlocks(cleanedPrinted, primaryStem);
+    if (fromStructural.length > sectionBlocks.length) sectionBlocks = fromStructural;
   }
   if (!sectionBlocks.length) {
     sectionBlocks = buildSectionBlocks(cleanedPrinted, primaryStem);
   }
-  if (pageCountForBlocks > 28 && sectionBlocks.length < 10 && headingCandidates.length >= 4) {
+  if (pageCountForBlocks > 28 && sectionBlocks.length < 10 && headingCandidates.length >= 4 && semanticBlocks.length < 2) {
     const fromGraph = buildSectionBlocksFromHeadingGraph(
       pageRecords,
       headingCandidates,
@@ -2178,7 +2187,13 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     );
     if (fromGraph.length > sectionBlocks.length) sectionBlocks = fromGraph;
   }
-  sectionBlocks = ensureMinimumSectionBlocksForLongNotes(sectionBlocks, cleanedPrinted, primaryStem, pageCountForBlocks);
+  sectionBlocks = ensureMinimumSectionBlocksForLongNotes(
+    sectionBlocks,
+    cleanedPrinted,
+    primaryStem,
+    pageCountForBlocks,
+    headingCandidates.length,
+  );
 
   const resolvedChapterMapSource =
     documentProfile.chapterMap.length >= 2 ?
@@ -2406,9 +2421,13 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     frontMatter: documentProfile.frontMatter,
     rawHeadingCandidates: headingCandidates.slice(0, 200).map((h) => ({
       text: h.text.slice(0, 200),
+      normalizedText: h.normalizedText,
       pageNumber: h.pageNumber,
       lineIndex: h.lineIndex,
       headingType: h.headingType,
+      level: h.level,
+      confidence: h.confidence,
+      ...(h.rejectionReason ? { rejectionReason: h.rejectionReason } : {}),
     })),
     rejectedHeadingCandidates: rejectedHeadingCandidates.slice(0, 400).map((r) => ({
       text: r.text.slice(0, 200),
@@ -2418,6 +2437,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     })),
     headingHierarchySummary,
     formulaCandidateCount: formulaCandidatesPreDedupe,
+    formulaRawEquationCount: rawExamBuckets.formulaRawEquationCount,
     formulaExtractedCount: formulas.length,
     formulaRejectedCount: Math.max(0, formulaCandidatesPreDedupe - formulas.length),
     formulaRejectionReasons: [...new Set(extractionRejected.filter((r) => r.kind === "formula").map((r) => r.reason))],
@@ -2462,10 +2482,26 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
           .map((f) => (f.rawFormula ?? f.formulaPlain ?? f.latex ?? "").replace(/\s+/g, " ").trim().slice(0, 220))
           .filter(Boolean);
       })(),
-      proofs: rawExamBuckets.proofCandidates.slice(0, 14).map((c) => c.rawText.replace(/\s+/g, " ").trim().slice(0, 280)),
-      workedExamples: rawExamBuckets.workedExampleCandidates.slice(0, 10).map((c) => c.rawText.replace(/\s+/g, " ").trim().slice(0, 280)),
-      definitions: rawExamBuckets.definitionCandidates.slice(0, 12).map((c) => c.rawText.replace(/\s+/g, " ").trim().slice(0, 220)),
-      concepts: rawExamBuckets.conceptCandidates.slice(0, 12).map((c) => c.rawText.replace(/\s+/g, " ").trim().slice(0, 220)),
+      proofs: (() => {
+        const rows = rawExamBuckets.proofCandidates;
+        if (!rows.length) return [];
+        return rows.slice(0, 14).map((c) => c.rawText.replace(/\s+/g, " ").trim().slice(0, 280));
+      })(),
+      workedExamples: (() => {
+        const rows = rawExamBuckets.workedExampleCandidates;
+        if (!rows.length) return [];
+        return rows.slice(0, 10).map((c) => c.rawText.replace(/\s+/g, " ").trim().slice(0, 280));
+      })(),
+      definitions: (() => {
+        const rows = rawExamBuckets.definitionCandidates;
+        if (!rows.length) return [];
+        return rows.slice(0, 12).map((c) => c.rawText.replace(/\s+/g, " ").trim().slice(0, 220));
+      })(),
+      concepts: (() => {
+        const rows = rawExamBuckets.conceptCandidates;
+        if (!rows.length) return [];
+        return rows.slice(0, 12).map((c) => c.rawText.replace(/\s+/g, " ").trim().slice(0, 220));
+      })(),
     },
     rejectedItems: extractionRejected.slice(0, 400),
     rejectionReasons: [...new Set(extractionRejected.map((r) => r.reason))],

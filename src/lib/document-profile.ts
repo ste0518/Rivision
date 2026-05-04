@@ -3,9 +3,11 @@
  * All signals are derived from the uploaded file text only.
  */
 
+import { buildChapterMap } from "@/lib/chapter-map-builder";
 import { extractFrontMatter } from "@/lib/front-matter";
 import { detectHeadingsByPage } from "@/lib/heading-detection";
 import { inferTitleAndCourseFromEarlyPages } from "@/lib/document-title";
+import { selectUniversalDocumentTitle } from "@/lib/universal-title-selection";
 import { collectStructuralHeadings, type StructuralHeading } from "@/lib/lecture-segmentation";
 import { buildPageRecordsFromParsedPages } from "@/lib/page-records";
 import { extractSectionHeadingsFromText, mergeExtractedSectionHeadings, type ExtractedSectionHeading } from "@/lib/section-headings";
@@ -66,6 +68,9 @@ export type DocumentProfile = {
     titleSourcePage: number | null;
     pageHeadingCandidateCount: number;
     sectionBlockCountHint?: number;
+    titleSelectionReason?: string;
+    suppressedLaterHeadingForTitle?: boolean;
+    chapterMapValidationFingerprint?: string;
   };
   /** True when a contents/table-of-contents region was detected but no usable chapter rows could be parsed (critical quality gate). */
   criticalTocParseFailure?: boolean;
@@ -406,6 +411,8 @@ export type ProfileDocumentInput = {
   cleanedPages: Array<{ pageNumber: number; text: string }>;
   /** Full sanitised text (e.g. printed layer); used when page array is empty. */
   combinedPrintedText?: string;
+  /** Optional stem for title fallback (e.g. uploaded file name without extension). */
+  sourceFileStem?: string | null;
 };
 
 /**
@@ -452,10 +459,8 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
   const headingPageScan = detectHeadingsByPage(pageRecordsForHeadings);
 
   const headingTopics = sections.map((s) => `${s.title}`.trim()).filter((t) => t.length >= 4);
-  const headingSignals = [
-    ...headingPageScan.map((h) => ({ text: h.text, pageNumber: h.pageNumber, weight: 2 as const })),
-    ...headingTopics.map((t) => ({ text: t, pageNumber: 1 as const, weight: 1 as const })),
-  ];
+  /** Page-grounded only — avoids fake page-1 anchors from flattened full-text section scans. */
+  const headingSignals = headingPageScan.map((h) => ({ text: h.text, pageNumber: h.pageNumber, weight: 2 as const }));
   const detectedTopics = canonicalTopicsFromDocument(
     combined,
     headingTopics,
@@ -476,53 +481,85 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
     : [{ pageNumber: 1, text: combined.slice(0, 80_000) }],
   );
   const frontMatter = extractFrontMatter(cleanedPagesArg);
-  const titleFromFm = frontMatter.title ? frontMatter.title.replace(/\s+/g, " ").trim().slice(0, 120) : null;
-  const title = titleFromFm ?? earlyTitle.title ?? inferTitleFromFirstPages(combined);
-  const titleCapped = title ? title.replace(/\s+/g, " ").trim().slice(0, 120) : null;
-
   const tocParseResult = parseTableOfContents(cleanedPagesArg, pageCount);
+
   const structuralOrFallback = chapterMapStructural.length >= 2 ? chapterMapStructural : chapterMapFallback;
-  let chapterMap = structuralOrFallback;
 
   const dottedSubsections = (rows: ChapterMapEntry[]) =>
     rows.filter((c) => /\d+\.\d+/.test(c.chapterLabel) || /\d+\.\d+/.test(c.chapterTitle)).length;
-  const dottedFromHeadings = dottedSubsections(structuralOrFallback);
+  const dottedFromStructural = dottedSubsections(structuralOrFallback);
+  const dottedFromHeadingScan = headingPageScan.filter((h) => /^\d+\.\d+/.test(h.text.trim())).length;
   const dottedFromToc = dottedSubsections(tocParseResult.chapterMap);
 
-  /** Prefer TOC when it is long enough; but do not drop fine-grained x.y headings for a coarse TOC with fewer dotted sections. */
-  const tocCoarserThanHeadings = dottedFromHeadings > 2 && dottedFromToc < dottedFromHeadings - 1;
+  const tocCoarserThanHeadings =
+    dottedFromHeadingScan > 2 ?
+      dottedFromToc < dottedFromHeadingScan - 1
+    : dottedFromStructural > 2 && dottedFromToc < dottedFromStructural - 1;
+
   const useToc =
     tocParseResult.found &&
     tocParseResult.chapterMap.length >= 3 &&
     tocParseResult.chapterMap.length >= structuralOrFallback.length &&
     !tocCoarserThanHeadings;
 
-  if (useToc) {
+  const unifiedChapter = buildChapterMap({
+    tocEntries: tocParseResult.entries ?? [],
+    tocFound: tocParseResult.found,
+    headingCandidates: headingPageScan,
+    pageCount,
+    preferToc: useToc,
+  });
+
+  let chapterMap: ChapterMapEntry[] = [];
+  let chapterMapSource: ChapterMapSourceKind = "none";
+
+  if (unifiedChapter.chapterMap.length >= 2) {
+    chapterMap = unifiedChapter.chapterMap;
+    chapterMapSource = unifiedChapter.source;
+  } else if (useToc && tocParseResult.chapterMap.length >= 2) {
     chapterMap = tocParseResult.chapterMap.map((ch) => ({
       ...ch,
       sectionHeadings: ch.sectionHeadings ?? [],
     }));
+    chapterMapSource = "toc";
+  } else if (structuralOrFallback.length >= 2) {
+    chapterMap = structuralOrFallback;
+    chapterMapSource = "manual_fallback";
   }
 
-  let chapterMapSource: ChapterMapSourceKind = "none";
-  if (chapterMap.length >= 2) {
-    chapterMapSource = useToc ? "toc" : "heading_scan";
-  }
+  const universalTitle = selectUniversalDocumentTitle({
+    frontMatter,
+    earlyTitle: {
+      title: earlyTitle.title,
+      courseName: earlyTitle.courseName,
+      confidence: earlyTitle.confidence,
+      sourcePage: earlyTitle.sourcePage,
+    },
+    headingCandidates: headingPageScan,
+    fileNameStem: input.sourceFileStem ?? null,
+  });
+  const titleCapped = universalTitle.documentTitle ?? inferTitleFromFirstPages(combined);
+  const titleCappedTrim = titleCapped ? titleCapped.replace(/\s+/g, " ").trim().slice(0, 120) : null;
 
   const chapterHeadingTitles = chapterMap.map((c) => c.chapterTitle).filter(Boolean);
   const shortCourseLabel =
-    (frontMatter.courseName ?? frontMatter.title ?? titleCapped ?? "").replace(/\s+/g, " ").trim().slice(0, 100) || null;
+    (universalTitle.courseName ?? frontMatter.courseName ?? frontMatter.title ?? titleCappedTrim ?? "")
+      .replace(/\s+/g, " ")
+      .trim()
+      .slice(0, 100) || null;
   const subjectArea = inferSubjectArea(
-    shortCourseLabel ?? titleCapped ?? "",
+    shortCourseLabel ?? titleCappedTrim ?? "",
     chapterHeadingTitles.length ? chapterHeadingTitles : headingTopics,
     combined,
   );
-  const courseNameRaw = (frontMatter.courseName ?? frontMatter.title ?? earlyTitle.courseName ?? titleCapped ?? subjectArea ?? "")
+  const courseNameRaw = (universalTitle.courseName ?? frontMatter.courseName ?? frontMatter.title ?? earlyTitle.courseName ?? titleCappedTrim ?? subjectArea ?? "")
     .replace(/\s+/g, " ")
     .trim()
     .slice(0, 120);
   const courseName = courseNameRaw.length >= 2 ? courseNameRaw : null;
-  const finalTitle = titleCapped ?? courseName ?? subjectArea ?? null;
+  const finalTitle = titleCappedTrim ?? courseName ?? subjectArea ?? null;
+
+  const chapterMapValidationFingerprint = `${chapterMap.length}|${chapterMap.map((c) => `${c.startPage}-${c.endPage}`).join(";")}`;
 
   const hasLemmaLabels = /\blemma\s+\d/i.test(combined);
   const hasPropLabels = /\bproposition\s+\d/i.test(combined);
@@ -570,9 +607,12 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
     chapterMapSource,
     frontMatter,
     structureDiagnostics: {
-      titleConfidence: Math.max(earlyTitle.confidence, frontMatter.titleConfidence ?? 0, frontMatter.confidence),
-      titleSourcePage: frontMatter.titleSourcePage ?? earlyTitle.sourcePage ?? null,
+      titleConfidence: universalTitle.titleConfidence,
+      titleSourcePage: universalTitle.titleSourcePage,
       pageHeadingCandidateCount: headingPageScan.length,
+      titleSelectionReason: universalTitle.titleSelectionReason,
+      suppressedLaterHeadingForTitle: universalTitle.suppressedLaterHeadingForTitle,
+      chapterMapValidationFingerprint,
     },
     criticalTocParseFailure,
     chapterMap,

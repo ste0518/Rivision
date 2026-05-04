@@ -4,7 +4,13 @@
 
 import type { DocumentProfile } from "@/lib/document-profile";
 import { detectSourceContamination } from "@/lib/source-grounding";
-import type { GeneratedPracticeQuestion, GeneratedRevisionPack, PipelineHealth, PipelineHealthStage } from "@/lib/student-revision-schema";
+import type {
+  GeneratedPracticeQuestion,
+  GeneratedRevisionPack,
+  PipelineHealth,
+  PipelineHealthStage,
+  RawHeadingCandidateDebug,
+} from "@/lib/student-revision-schema";
 
 export type GenericAcceptanceTests = {
   hasDocumentProfile: boolean;
@@ -213,6 +219,20 @@ export function computeTopActionableFailures(
     out.push("chapterMapSource claims heading_scan but pageHeadingCandidateCount is 0 — inconsistent pipeline state.");
   }
 
+  if (profile?.structureDiagnostics?.suppressedLaterHeadingForTitle) {
+    out.push("Title pipeline suppressed a late heading in favour of early-page title — verify documentTitle is correct.");
+  }
+
+  const hc = diag?.pageHeadingCandidateCount ?? 0;
+  if (
+    pageCount > 40 &&
+    hc >= 8 &&
+    (pack.sectionBlocks ?? []).length >= 2 &&
+    (pack.sectionBlocks ?? []).every((b) => /^Pages\s+\d+[–-]\d+/i.test(b.heading.trim()) || /^Document$/i.test(b.heading.trim()))
+  ) {
+    out.push("Semantic headings exist in source but section blocks are page-window chunks only — segmentation bug.");
+  }
+
   if (blocks.length === 1 && /whole$/i.test(blocks[0]?.sectionId ?? "") && pageCount > 35) {
     out.push("Only one section block covering the full PDF span — segmentation fallback.");
   }
@@ -396,7 +416,7 @@ export function validateGenericStudyPack(
   pack: GeneratedRevisionPack,
   documentProfile: DocumentProfile | null,
   sourceText: string,
-  options?: { rawHeadingCandidates?: Array<{ text: string; pageNumber: number; lineIndex: number; headingType: string }> },
+  options?: { rawHeadingCandidates?: RawHeadingCandidateDebug[] },
 ): GenericStudyPackValidation {
   const sourceLower = sourceText.toLowerCase();
   const blob = collectPackBlob(pack);
@@ -489,10 +509,28 @@ export function validateGenericStudyPack(
   const topicNoiseFail = (() => {
     const topics = documentProfile?.detectedTopics ?? [];
     const junk = topics.filter((t) =>
-      /\b(the same|called the|for all|all the|that the)\b/i.test(t),
+      /\b(the same|called the|for all|all the|that the|this estimator|recall that|lecture notes|this section|show that|sample from)\b/i.test(t),
     );
     return topics.length >= 10 && junk.length >= 5 && junk.length / topics.length > 0.4;
   })();
+
+  const pageChunkSemanticFail =
+    pageCount > 40 &&
+    headingCand >= 8 &&
+    (pack.sectionBlocks ?? []).length >= 2 &&
+    (pack.sectionBlocks ?? []).every(
+      (b) => /^Pages\s+\d+[–-]\d+/i.test(b.heading.trim()) || /^Document$/i.test(b.heading.trim()),
+    );
+
+  const titleLaterSectionFail = Boolean(documentProfile?.structureDiagnostics?.suppressedLaterHeadingForTitle);
+
+  const formulaRawEq = diag?.formulaRawEquationCount ?? 0;
+  const formulaHeavyRawEquationFail =
+    pageCount > 50 &&
+    Boolean(documentProfile?.hasFormulas) &&
+    (sourceLower.match(/=/g)?.length ?? 0) > pageCount * 2 &&
+    (diag?.formulaCandidateCount ?? 0) >= 25 &&
+    formulaRawEq < 8;
 
   const criticalQualityFailure =
     contamination.length > 0 ||
@@ -509,6 +547,9 @@ export function validateGenericStudyPack(
     proofMarkerGateFail ||
     workedGateFail ||
     topicNoiseFail ||
+    pageChunkSemanticFail ||
+    titleLaterSectionFail ||
+    formulaHeavyRawEquationFail ||
     !acceptanceTests.noBadMathTokensInStudyPack;
 
   const ok =

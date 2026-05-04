@@ -99,6 +99,10 @@ export function generateStudentRevisionPack(input: {
         documentProfile: pack.documentProfile,
         frontMatter: pack.documentProfile?.frontMatter,
         rawHeadingCandidates: pack.extractionPipelineDiagnostics?.rawHeadingCandidates,
+        rejectedHeadingCandidates: pack.extractionPipelineDiagnostics?.rejectedHeadingCandidates,
+        headingHierarchySummary: pack.extractionPipelineDiagnostics?.headingHierarchySummary,
+        sectionBlocksSummary: pack.extractionPipelineDiagnostics?.sectionBlocksSummaryHeadings?.slice(0, 80),
+        sourceGroundingSummary: pack.extractionPipelineDiagnostics?.sourceGroundingSummary,
         rawDetectedHeadings: pack.sectionBlocks?.map((s) => s.heading).slice(0, 60),
         topConceptCandidates: pack.definitions.map((d) => d.term).slice(0, 28),
         topFormulaCandidates: (() => {

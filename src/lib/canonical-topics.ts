@@ -26,6 +26,25 @@ const STOP_PHRASES = new Set([
   "such that",
   "suppose that",
   "assume that",
+  "this estimator",
+  "that minimises",
+  "that minimizes",
+  "sampling from",
+  "this integral",
+  "lecture notes",
+  "this section",
+  "samples from",
+  "other words",
+  "recall that",
+  "have access",
+  "sample from",
+  "would like",
+  "true value",
+  "this means",
+  "this case",
+  "have seen",
+  "seen from",
+  "show that",
 ]);
 
 const ADMIN_PHRASE = /\b(blackboard|assessment|department|room\s+[a-z]?\d|@\w+\.\w+|use\s+blackboard|course\s+materials|postal|address)\b/i;
@@ -51,6 +70,7 @@ function isGarbageTopic(t: string): boolean {
   const n = normalisePhrase(t);
   if (n.length < 5 || n.length > 72) return true;
   if (STOP_PHRASES.has(n)) return true;
+  if (/\b(this|that|other)\s+\w+\s+(estimator|integral|section|case|value)\b/.test(n)) return true;
   if (ADMIN_PHRASE.test(n)) return true;
   if (/\b(the|a|an)\s+(the|same|form|following)\b/.test(n)) return true;
   if ((n.match(/\s+/g) ?? []).length >= 5 && !/[=∫∑^_]/.test(n)) return true;
@@ -126,7 +146,11 @@ export function canonicalTopicEntriesFromDocument(
     const pageArr = [...pages].sort((a, b) => a - b);
     const w = headingSignals.filter((h) => normalisePhrase(h.text).includes(label.slice(0, Math.min(16, label.length))));
     const confidence = Math.min(0.95, 0.42 + 0.07 * Math.min(5, w.length) + (pageArr.length > 1 ? 0.06 : 0));
-    out.push({ label, sourcePages: pageArr.length ? pageArr : [1], confidence });
+    out.push({
+      label,
+      sourcePages: pageArr,
+      confidence: pageArr.length ? confidence : Math.min(confidence, 0.36),
+    });
   }
   return dedupeTopicEntries(out).slice(0, 80);
 }

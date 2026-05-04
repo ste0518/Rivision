@@ -48,6 +48,8 @@ export const APP_SYSTEM_WORD_WHITELIST = new Set(
     "worked",
     "candidates",
     "candidate",
+    "checklist",
+    "packs",
   ].map((w) => w.toLowerCase()),
 );
 
@@ -96,10 +98,12 @@ function stripWhitelistPhrases(blob: string): string {
 export function findProminentTermsAbsentFromSource(generatedTextLower: string, sourceLower: string): string[] {
   const cleaned = stripWhitelistPhrases(generatedTextLower.toLowerCase());
   const hits = cleaned.match(/\b[a-z]{14,}\b/g) ?? [];
+  const srcN = normalizeForTechnicalGrounding(sourceLower);
   const out: string[] = [];
   for (const w of hits) {
     if (GENERIC_STOPWORDS.has(w)) continue;
-    if (!sourceLower.includes(w)) out.push(w);
+    const wn = normalizeForTechnicalGrounding(w);
+    if (!sourceLower.includes(w) && !srcN.includes(wn)) out.push(w);
   }
   return [...new Set(out)].slice(0, 12);
 }
@@ -133,9 +137,11 @@ export function detectSourceContamination(generatedBlobLower: string, sourceLowe
   }
   const strippedBlob = stripWhitelistPhrases(generatedBlobLower);
   const phrases = strippedBlob.match(/\b[a-z]{6,}\s+[a-z]{6,}\s+[a-z]{6,}\s+[a-z]{6,}\b/g) ?? [];
+  const srcN = normalizeForTechnicalGrounding(sourceLower);
   for (const p of [...new Set(phrases)].slice(0, 8)) {
     if (p.length < 22) continue;
-    if (!sourceLower.includes(p)) {
+    const pN = normalizeForTechnicalGrounding(p);
+    if (!sourceLower.includes(p) && !srcN.includes(pN)) {
       const words = p.split(/\s+/).filter((x) => !APP_SYSTEM_WORD_WHITELIST.has(x));
       if (words.length < 3) continue;
       issues.push(`Generated phrase not grounded in source: “${p.slice(0, 80)}”.`);
@@ -152,13 +158,14 @@ export function isStaleVersusSource(blobLower: string, sourceLower: string): boo
 /** Fold common abbreviation / spelling variants for technical grounding checks. */
 export function normalizeForTechnicalGrounding(text: string): string {
   let t = text.toLowerCase().replace(/\s+/g, " ").trim();
+  t = t.replace(/\bself[-\s]?normali[sz]ed\s+importance\s+sampling\b/g, "snis");
   t = t.replace(/\bself[-\s]?normali[sz]ed\b/g, "snis");
   t = t.replace(/\bimportance\s+sampling\b/g, "is");
   t = t.replace(/\bmonte\s+carlo\b/g, "mc");
+  t = t.replace(/\bnormali[sz]ed\b/g, "normalised");
   t = t.replace(/\bvariance\b/g, "var");
   t = t.replace(/\bexpectation\b/g, "e");
   t = t.replace(/\bprobability\b/g, "p");
-  t = t.replace(/\bnormali[sz]ed\b/g, "normalised");
   return t;
 }
 

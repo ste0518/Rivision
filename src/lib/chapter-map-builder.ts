@@ -143,17 +143,12 @@ function enrichChapterTitlesFromToc(map: ChapterMapEntry[], tocEntries: TocEntry
   });
 }
 
+/**
+ * Only true document-top chapters belong in chapterMap — not 1.1 / 2.3 subsection rows
+ * (those stay in sectionBlocks / heading tree). Prevents flat “every numeric line is a chapter”.
+ */
 function headingsToChapterMap(headings: HeadingCandidate[], pageCount: number): ChapterMapEntry[] {
-  let use = headings.filter((h) => h.headingType === "chapter");
-  if (use.length < 2) {
-    const sections = headings.filter(
-      (h) =>
-        h.headingType === "section" ||
-        h.headingType === "subsection" ||
-        h.headingType === "subsubsection",
-    );
-    if (sections.length >= 3) use = sections;
-  }
+  const use = headings.filter((h) => h.headingType === "chapter");
   if (use.length < 2) return [];
 
   const sorted = [...new Map(use.map((h) => [`${h.pageNumber}|${h.lineIndex}|${h.text}`, h])).values()].sort(
@@ -262,6 +257,10 @@ export function buildChapterMap(input: BuildChapterMapInput): {
   }
 
   if (chapterMap.length >= 2 && source === "heading_scan" && explicitChapterKeywordHeadings(headingCandidates).length === 0 && !tocFound) {
+    source = "manual_fallback";
+  }
+
+  if (chapterMap.length >= 2 && source === "heading_scan" && headingCandidates.length === 0) {
     source = "manual_fallback";
   }
 

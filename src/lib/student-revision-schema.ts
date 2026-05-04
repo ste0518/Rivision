@@ -184,22 +184,16 @@ export type PipelineHealth = {
   overallPass: boolean;
 };
 
-/** Minimal safe output when segmentation/extraction critically fails (no misleading exam-ready labelling). */
-export type SafeFallbackStudyPack = {
-  documentProfile?: DocumentProfile;
-  /** Structured cover metadata when available. */
-  frontMatter?: import("@/lib/front-matter").FrontMatter;
-  rawDetectedHeadings?: string[];
-  /** Structured heading rows when available (preferred over strings-only). */
-  rawHeadingCandidates?: Array<{ text: string; pageNumber: number; lineIndex: number; headingType: string }>;
-  topConceptCandidates?: string[];
-  topFormulaCandidates?: string[];
-  topProofCandidates?: string[];
-  topWorkedExampleCandidates?: string[];
-  topProofOrExampleCandidates?: string[];
-  failureExplanation: string;
-  topActionableIssues: string[];
-  debugJsonAvailable: boolean;
+/** Page/line grounded heading row aligned with {@link HeadingCandidate} (debug / safe fallback). */
+export type RawHeadingCandidateDebug = {
+  text: string;
+  normalizedText?: string;
+  pageNumber: number;
+  lineIndex: number;
+  headingType: string;
+  level?: number;
+  confidence?: number;
+  rejectionReason?: string;
 };
 
 /** Counts for debugging segmentation / extraction quality (local pipeline). */
@@ -209,8 +203,38 @@ export type SourceGroundingSummary = {
   contaminationFlags: number;
 };
 
+/** Minimal safe output when segmentation/extraction critically fails (no misleading exam-ready labelling). */
+export type SafeFallbackStudyPack = {
+  documentProfile?: DocumentProfile;
+  /** Structured cover metadata when available. */
+  frontMatter?: import("@/lib/front-matter").FrontMatter;
+  rawDetectedHeadings?: string[];
+  /** Structured heading rows when available (preferred over strings-only). */
+  rawHeadingCandidates?: RawHeadingCandidateDebug[];
+  rejectedHeadingCandidates?: Array<{ text: string; pageNumber: number; lineIndex: number; rejectionReason: string }>;
+  headingHierarchySummary?: {
+    rootCount: number;
+    totalNodes: number;
+    maxDepth: number;
+    proofWithFormalAnchor: number;
+    samplePath: string[];
+  };
+  sectionBlocksSummary?: string[];
+  topConceptCandidates?: string[];
+  topFormulaCandidates?: string[];
+  topProofCandidates?: string[];
+  topWorkedExampleCandidates?: string[];
+  topProofOrExampleCandidates?: string[];
+  failureExplanation: string;
+  topActionableIssues: string[];
+  sourceGroundingSummary?: SourceGroundingSummary;
+  debugJsonAvailable: boolean;
+};
+
 export type ExtractionPipelineDiagnostics = {
   formulaCandidateCount: number;
+  /** Pre-LLM formula rows classified as true equations (see {@link FormulaCandidateKind}). */
+  formulaRawEquationCount?: number;
   formulaExtractedCount: number;
   formulaRejectedCount: number;
   formulaRejectionReasons: string[];
@@ -232,7 +256,7 @@ export type ExtractionPipelineDiagnostics = {
   chapterCandidateCount: number;
   chapterMapSource?: "toc" | "heading_scan" | "manual_fallback" | "none";
   /** Heading scan snapshot for debug (page + line grounded). */
-  rawHeadingCandidates?: Array<{ text: string; pageNumber: number; lineIndex: number; headingType: string }>;
+  rawHeadingCandidates?: RawHeadingCandidateDebug[];
   /** Human-readable section block headings for QA. */
   sectionBlocksSummaryHeadings?: string[];
   chapterRangeValidation?: ChapterRangeValidationSummary;
