@@ -34,8 +34,21 @@ export function validateLatexSnippet(raw: string): LatexValidationResult {
 
   if (/_{4,}|\^{4,}/.test(text)) issues.push("Deep or repeated sub/superscripts — verify");
 
+  /** PDF / vector math extraction artefacts — not strict TeX errors but unreliable for “math ok”. */
+  if (/[\u25A1\u25A0\uFFFD\u25FB\u25FC]/.test(text)) issues.push("Missing glyph placeholders (□) — notation may be incomplete.");
+  if (/\.{6,}/.test(text)) issues.push("Long dotted leaders — likely PDF matrix/layout junk.");
+  if (/\[missing glyphs\]/i.test(text)) issues.push("Marked missing glyphs from PDF extraction.");
+  if (/∫\s*['′′′]+\s*/.test(text) || /∫\s*'\s*'\s*/.test(text)) issues.push("Malformed integral / prime marks — verify against source.");
+  if (/(?:\?\([^)]*\)){2,}/.test(text) || /\bp\?\(/.test(text)) issues.push("Suspicious ?(…) tokens — possible OCR or star-notation noise.");
+
   if (issues.length === 0) return { status: "ok", issues: [] };
-  const severe = issues.some((i) => i.includes("Unbalanced") || i.includes("Empty"));
+  const severe = issues.some(
+    (i) =>
+      i.includes("Unbalanced") ||
+      i.includes("Empty") ||
+      i.includes("Missing glyph") ||
+      i.includes("missing glyphs"),
+  );
   return { status: severe ? "broken" : "needs_check", issues };
 }
 

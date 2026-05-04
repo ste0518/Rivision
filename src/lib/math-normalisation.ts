@@ -47,6 +47,14 @@ export function applyMathNormalisation(text: string): string {
 
   t = replaceIsolatedPQuestion(t);
 
+  /** Discrete-time Markov chains / kernels — common PDF merges primes and brackets. */
+  t = t.replace(/\bK\s*\(\s*x\s*\|\s*x\s*['′]\s*\)/gi, "K(x|x')");
+  t = t.replace(/\bp\s*\*\s*\(\s*x\s*\)\s*=\s*∫\s*K\s*\(\s*x\s*\|\s*x\s*['′]\s*\)\s*p\s*\?\s*\(\s*x\s*['′]\s*\)/gi, "p^*(x)=\\int K(x|x')p^*(x')\\,dx'");
+  t = t.replace(/\bp\?\(\s*x\s*\)/g, "p^*(x)");
+  t = t.replace(/\bp\?\(\s*x\s*['′]\s*\)/g, "p^*(x')");
+  t = t.replace(/∫\s*'\s*'\s*'\s*p/gi, "\\int p");
+  t = t.replace(/\bM\s*=\s*\[\s*m\s*ij\s*\]/gi, "M=[m_{ij}]");
+
   return t;
 }
 

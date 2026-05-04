@@ -285,6 +285,9 @@ function repairObviousTextExtractionIssues(text: string) {
     .replace(/\uFB01/g, "fi")
     .replace(/\uFB02/g, "fl")
     .replace(/\uFFFE/g, "")
+    .replace(/\uFFFD/g, "")
+    /** Missing-glyph tiles common in vector-PDF math rows — replace so downstream can flag low math quality. */
+    .replace(/[\u25A1\u25A0\u25FB\u25FC\u2610\u25AA\u25AB]{2,}/g, " [missing glyphs] ")
     .replace(/\u2010|\u2011|\u2012|\u2013|\u2014/g, "-")
     .replace(/([A-Za-z])-\n([a-z])/g, "$1$2")
     .replace(/[ \t]+\n/g, "\n")

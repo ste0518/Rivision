@@ -505,9 +505,12 @@ export function normalizeMathText(text: string): string {
     /\b(monte\s*carlo|importance\s*sampling|self[-\s]?normali|snis|proposal\s+distribution|empirical\s+measure|mc\s+estimator|is\s+estimator|effective\s+sample|ess\b|test\s+function)\b/.test(
       profileHint,
     );
+  /** MCMC-only — do not match plain discrete-time Markov chains / transition matrices (those need generic math fixes). */
   const mcmcKernelContext =
     !tsContext &&
-    /\b(\bmcmc\b|markov\s+chain\s+monte|metropolis-hastings|\bmetropolis\b|\bgibbs\b|detailed\s+balance|transition\s+matrix\s+for\s+a\s+chain)\b/i.test(profileHint);
+    /\b(mcmc|markov\s+chain\s+monte\s*carlo|metropolis-hastings|metropolis-hastings|\bmetropolis\b|\bgibbs\s+sampling)\b/i.test(
+      profileHint,
+    );
   const profile = tsContext ? "time_series" : mcContext ? "monte_carlo_sampling" : mcmcKernelContext ? "monte_carlo_sampling" : "generic";
   return convertCommonMathToLatex(t, profile, t);
 }
@@ -1419,6 +1422,25 @@ function buildExamStructureFromProfile(profile: DocumentProfile, hasPastEvidence
 // Definitions, proofs, methods
 // ---------------------------------------------------------------------------
 
+/**
+ * Long PDF blocks become unreadable on revision cards — trim at sentence boundaries while keeping early content.
+ * Style caps approximate length; detailed_guide keeps more prose for non-exam narrative notes.
+ */
+function compactDefinitionForExamPack(raw: string, revisionStyle: PackGeneratorSettings["revisionStyle"]): string {
+  const normalized = raw.replace(/\s+/g, " ").trim();
+  const maxChars =
+    revisionStyle === "detailed_guide" ? 1650
+    : revisionStyle === "flashcard_heavy" ? 520
+    : revisionStyle === "problem_heavy" ? 1040
+    : 860;
+  if (normalized.length <= maxChars) return normalized;
+  const slice = normalized.slice(0, maxChars + 120);
+  const indices = [slice.lastIndexOf(". "), slice.lastIndexOf("? "), slice.lastIndexOf("! "), slice.lastIndexOf("; ")]
+    .filter((i) => i >= Math.floor(maxChars * 0.42));
+  const cut = indices.length ? Math.max(...indices) + 1 : maxChars;
+  return `${normalized.slice(0, cut).trim()}…`;
+}
+
 function clipEssDefinitionBody(body: string, formalLabel?: string, term?: string): string {
   const head = `${formalLabel ?? ""} ${term ?? ""}`.toLowerCase();
   const blob = body.toLowerCase();
@@ -1435,12 +1457,12 @@ function clipEssDefinitionBody(body: string, formalLabel?: string, term?: string
   return truncateBodyBeforeInteriorSectionHeading(body);
 }
 
-function blocksToDefinitions(blocks: LabelledBlock[]): GeneratedDefinitionItem[] {
+function blocksToDefinitions(blocks: LabelledBlock[], revisionStyle: PackGeneratorSettings["revisionStyle"]): GeneratedDefinitionItem[] {
   return blocks
     .filter((b) => b.kind === "definition")
     .map((b) => {
       const clipped = clipEssDefinitionBody(truncateBodyBeforeInteriorSectionHeading(b.body).slice(0, 3500), b.formalLabel, b.displayTitle);
-      const defText = normalizeMathText(clipped);
+      const defText = compactDefinitionForExamPack(normalizeMathText(clipped), revisionStyle);
       const snippet = defText.slice(0, 700);
       const v = validateLatexSnippet(snippet);
       const excerpt = b.rawBlock.slice(0, 900);
@@ -1472,6 +1494,7 @@ function harvestConceptualDefinitions(
   formalDefs: GeneratedDefinitionItem[],
   profile: DocumentProfile,
   extraHeadingTerms: string[] = [],
+  revisionStyle: PackGeneratorSettings["revisionStyle"] = "concise_exam",
 ): GeneratedDefinitionItem[] {
   const used = new Set(formalDefs.map((d) => d.term.toLowerCase()));
   const out: GeneratedDefinitionItem[] = [];
@@ -1499,7 +1522,7 @@ function harvestConceptualDefinitions(
     const excerptStart = Math.max(0, hit.index - 60);
     const excerptEnd = Math.min(lectureText.length, hit.index + 420);
     const window = lectureText.slice(excerptStart, excerptEnd).replace(/\s+/g, " ").trim();
-    const def = normalizeMathText(window);
+    const def = compactDefinitionForExamPack(normalizeMathText(window), revisionStyle);
     if (def.length < 32) continue;
     const sourceExcerpt = lectureText.slice(hit.index, Math.min(lectureText.length, hit.index + 160));
     const v = validateLatexSnippet(def.slice(0, 600));
@@ -1532,7 +1555,7 @@ function harvestConceptualDefinitions(
     out.push({
       id: createId("def"),
       term: termGuess.slice(0, 120),
-      definition: normalizeMathText(block),
+      definition: compactDefinitionForExamPack(normalizeMathText(block), revisionStyle),
       source: primaryFile,
       sourceFile: primaryFile,
       sourcePage: pageAtOffset(lectureText, idx),
@@ -1560,7 +1583,7 @@ function harvestConceptualDefinitions(
     out.push({
       id: createId("def"),
       term: phrase,
-      definition: normalizeMathText(block),
+      definition: compactDefinitionForExamPack(normalizeMathText(block), revisionStyle),
       source: primaryFile,
       sourceFile: primaryFile,
       sourcePage: pageAtOffset(lectureText, idx),
@@ -2234,7 +2257,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   blocks = filterExampleExerciseByChapterPrefix(blocks, inferChapterMajorPrefixFromFilename(primaryName));
   const proofBlocks = dedupeLabelledBlocks(allProofBlocks);
 
-  const formalDefs = blocksToDefinitions(blocks);
+  const formalDefs = blocksToDefinitions(blocks, settings.revisionStyle);
   const tocHeadingHints = [
     ...(documentProfile.tocParseResult?.headingCandidates ?? []),
     ...documentProfile.chapterMap.map((c) => c.chapterTitle).filter((t) => t.length > 4),
@@ -2243,7 +2266,7 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const extractionRejected: Array<{ kind: string; reason: string; detail?: string }> = [];
   let definitions = dedupeDefinitions([
     ...formalDefs,
-    ...harvestConceptualDefinitions(cleanedPrinted, primaryName, sections, formalDefs, documentProfile, tocHeadingHints),
+    ...harvestConceptualDefinitions(cleanedPrinted, primaryName, sections, formalDefs, documentProfile, tocHeadingHints, settings.revisionStyle),
   ]);
   definitions = stripPackItemsFailingGrounding(definitions, sourceBlobLower, "definition", extractionRejected);
 

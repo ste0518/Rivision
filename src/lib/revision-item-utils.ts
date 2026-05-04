@@ -399,6 +399,7 @@ function detectBrokenMathIssues(target: string): string[] {
   if (/\\operatorname\{varp\?\}|\\mathrm\{MC\?/.test(target)) issues.push("Contains unresolved estimator notation.");
   if (/[\u0001\u0002\u0003]/.test(target)) issues.push("Contains C0 control characters (STX/ETX/ETX).");
   if (/\bBIBLIOGRAPHY\b/i.test(target)) issues.push("Possible bibliography leakage.");
+  if (/\[missing glyphs\]|\u25A1|\uFFFD/.test(target)) issues.push("Contains PDF missing-glyph placeholders.");
   return issues;
 }
 
@@ -406,7 +407,7 @@ function resolveMathProfile(profile: MathNormalizationProfile, hint: string): Ex
   if (profile !== "auto") return profile;
   const lower = hint.toLowerCase();
   if (
-    /\b(monte carlo|markov chain|mcmc|metropolis|gibbs|detailed balance|transition matrix|importance sampling|self[-\s]?normalised|self[-\s]?normalized|proposal distribution|importance weights?|snis|mc estimator|is estimator|estimator)\b/.test(
+    /\b(monte carlo|mcmc|markov chain monte|metropolis|gibbs|importance sampling|self[-\s]?normalised|self[-\s]?normalized|proposal distribution|importance weights?|snis|mc estimator|is estimator)\b/.test(
       lower,
     )
   )

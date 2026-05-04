@@ -40,6 +40,11 @@ Keep core definitions from labelled blocks and high-signal conceptual passages.
 Make cardFront the concept name, not an instruction sentence.
 Important items may appear as headings, examples, model equations, conditions, procedures, or summary tables — not only as explicit Definition/Theorem labels.
 
+EXAM-PACK READABILITY (cards must be revisable, not PDF dumps):
+- statement / answer should read like concise exam revision notes: short paragraphs or tightly edited bullets, faithful to the source excerpt.
+- When PDF extraction garbles notation (missing glyphs, stray primes, “p?(x)”, dotted leaders), rewrite into clean inline \\\( \\\) math or plain words that match the excerpt’s meaning; set latexQuality "low" or needs_review if anything remains ambiguous.
+- Never paste unreadable placeholder runs; paraphrase the idea or mark uncertainty instead.
+
 Card front wording:
 - cardFront should be the concept name, not "State Definition 2.3..."
 - taskPrompt should be a small instruction.
