@@ -65,6 +65,24 @@ for (const lbl of ["Proposition 3.1", "Proposition 3.2", "Proposition 3.3", "Pro
 assert.ok(pack.definitions.length >= 9, `expected ≥9 definitions after filtering noisy labels, got ${pack.definitions.length}`);
 assert.ok(pack.formulas.length >= 15, `expected ≥15 formulas, got ${pack.formulas.length}`);
 
+const damagedMonteCarloProofText = `[Source file: damaged-chapter-3.pdf]
+[Page 3]
+3 MONTE CARLO INTEGRATION
+3.1 Introduction to Monte Carlo integration
+Proposition 3.1 (I.d samples from p?). Let X_1,...,X_n be i.i.d samples from p?. Then, the Monte Carlo estimator ΣN 1 N ϕ^MC = ϕ(X_i) ∑^N_i=1 is unbiased, i.e., N E_p*[ϕMC] = bar ϕ.
+Proof. We have [] ΣN 1 N E_p*[ϕMC] = E_p* ϕ(X_i) ∑^N_i=1 ΣN 1 = E_p*[ϕ(X_i)] ∑^N_i=1 N ∫ 1 Σ = ϕ(x)p^(x)dx ∑^N_i=1 ∫ = ϕ(x)p^(x)dx = bar ϕ, which proves the result.`;
+const damagedPack = buildHeuristicStudentRevisionPack({
+  files: [{ id: "damaged", name: "damaged-chapter-3.pdf", role: "lecture_notes" as const, parsedText: damagedMonteCarloProofText }],
+  settings: { revisionStyle: "concise_exam", aiStrictness: "balanced" },
+  combinedLectureText: damagedMonteCarloProofText,
+  hasPastEvidence: false,
+});
+const damagedProof = damagedPack.proofs.find((p) => /Proposition\s+3\.1/i.test(p.sourceLabel ?? p.name));
+assert.ok(damagedProof, "damaged Monte Carlo proof should still be extracted");
+const damagedProofDisplay = `${damagedProof.statement}\n${damagedProof.proofSkeleton}\n${damagedProof.proofSteps.join("\n")}`;
+assert.doesNotMatch(damagedProofDisplay, /\bp\?\b|ΣN 1 N|\\X_i/);
+assert.match(damagedProofDisplay, /\\hat\\phi\^N_\{\\mathrm\{MC\}\}/);
+
 const lists = extractExampleAndExerciseItemsForDebug([fixtureFile]);
 const ex38 = lists.exercises.find((e) => /^Exercise\s+3\.8\b/i.test(e.formalLabel));
 if (ex38?.highPriority) {

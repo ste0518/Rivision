@@ -1645,7 +1645,10 @@ function isInvalidConceptualDefinitionTerm(term: string): boolean {
 }
 
 function proofSkeletonFromBody(title: string, body: string): { skeleton: string; mistake: string } {
-  const steps = proofStepsFromBody(body);
+  const canonical = canonicalProofSkeleton(title, body);
+  if (canonical) return canonical;
+
+  const steps = proofStepsFromBody(body).filter((step) => !hasSevereMathExtractionDamage(normalizeMathText(step)));
   const highSignal = steps.filter((step) =>
     /\b(assume|suppose|let|then|hence|therefore|thus|since|because|so|conclude|it follows|we have|we get|we obtain|show|prove)\b/i.test(step) ||
     /[=∫∑∂≤≥⇒⇔]/.test(step),
@@ -1663,20 +1666,56 @@ function proofSkeletonFromBody(title: string, body: string): { skeleton: string;
   };
 }
 
+function canonicalProofSkeleton(title: string, body: string): { skeleton: string; mistake: string } | null {
+  const firstLine = body.split(/\n+/)[0] ?? "";
+  const statementBlob = `${title}\n${firstLine}`;
+  const lower = statementBlob.toLowerCase();
+  const mentionsMonteCarlo = /\bmonte\s*carlo\b|\bmc\s+estimator\b|[φϕ]\s*\^?\s*(?:mc|\\mathrm\{mc\})/i.test(statementBlob);
+  if (!mentionsMonteCarlo) return null;
+
+  if (/\bunbiased\b/.test(lower)) {
+    return {
+      skeleton: [
+        "1. Start from \\(\\hat\\phi^N_{\\mathrm{MC}}=\\frac{1}{N}\\sum_{i=1}^N\\phi(X_i)\\).",
+        "2. Take expectation and use linearity of expectation.",
+        "3. Since \\(X_i\\sim p^\\star\\), each term satisfies \\(\\mathbb{E}_{p^\\star}[\\phi(X_i)]=\\bar\\phi\\).",
+        "4. Therefore \\(\\mathbb{E}_{p^\\star}[\\hat\\phi^N_{\\mathrm{MC}}]=\\bar\\phi\\), so the estimator is unbiased.",
+      ].join("\n"),
+      mistake: "Do not skip the linearity step: the unbiasedness comes from averaging identical expectations under the target distribution.",
+    };
+  }
+
+  if (/\bvariance\b|\bvar\b/.test(lower)) {
+    return {
+      skeleton: [
+        "1. Write \\(\\hat\\phi^N_{\\mathrm{MC}}\\) as an average of independent terms \\(\\phi(X_i)\\).",
+        "2. Use independence to remove covariance terms.",
+        "3. Apply \\(\\operatorname{Var}(N^{-1}\\sum_i Y_i)=N^{-2}\\sum_i\\operatorname{Var}(Y_i)\\).",
+        "4. Conclude \\(\\operatorname{Var}(\\hat\\phi^N_{\\mathrm{MC}})=\\operatorname{Var}_{p^\\star}(\\phi(X))/N\\).",
+      ].join("\n"),
+      mistake: "Do not forget the independence assumption; without it the covariance terms do not vanish.",
+    };
+  }
+
+  return null;
+}
+
 function repairMonteCarloProofStatement(title: string, statement: string, proofBody: string): string {
   const blob = `${title}\n${statement}\n${proofBody}`;
-  const lower = blob.toLowerCase();
+  const statementBlob = `${title}\n${statement}`;
+  const lower = statementBlob.toLowerCase();
+  const mentionsMonteCarloEstimator = /\bmonte\s*carlo\b|\bmc\s+estimator\b|[φϕ]\s*\^?\s*(?:mc|\\mathrm\{mc\})|hat\s*phi|\\hat\{\\phi\}/i.test(statementBlob);
   if (
-    /\bmonte\s*carlo\b/.test(lower) &&
+    mentionsMonteCarloEstimator &&
     /\bunbiased\b/.test(lower) &&
-    /(mc\s+estimator|φ\s*mc|φmc|phimc|hat\s*phi|\\hat\{\\phi\}|\\mathrm\{MC\})/i.test(blob)
+    /(sample|iid|i\.i\.d|estimator|expectation|[φϕ]\s*\^?\s*(?:mc|\\mathrm\{mc\})|\\mathrm\{MC\})/i.test(blob)
   ) {
     return "Let \\(X_1,\\ldots,X_N\\) be i.i.d. samples from \\(p^\\star\\). Then the Monte Carlo estimator \\(\\hat\\phi^N_{\\mathrm{MC}}=\\frac{1}{N}\\sum_{i=1}^N\\phi(X_i)\\) is unbiased, i.e. \\(\\mathbb{E}_{p^\\star}[\\hat\\phi^N_{\\mathrm{MC}}]=\\bar\\phi\\).";
   }
   if (
-    /\bmonte\s*carlo\b/.test(lower) &&
+    mentionsMonteCarloEstimator &&
     /\bvariance\b/.test(lower) &&
-    /(mc\s+estimator|φ\s*mc|φmc|phimc|hat\s*phi|\\hat\{\\phi\}|\\mathrm\{MC\})/i.test(blob)
+    /(sample|iid|i\.i\.d|estimator|[φϕ]\s*\^?\s*(?:mc|\\mathrm\{mc\})|\\mathrm\{MC\})/i.test(blob)
   ) {
     return "For i.i.d. samples, the Monte Carlo estimator has variance \\(\\operatorname{Var}_{p^\\star}(\\hat\\phi^N_{\\mathrm{MC}})=\\operatorname{Var}_{p^\\star}(\\phi(X))/N\\).";
   }
@@ -1689,12 +1728,26 @@ function proofStepsFromBody(body: string): string[] {
     .split(/(?<=[.!?])\s+(?=[A-Z(\\[{])/)
     .map((s) => s.trim())
     .filter((s) => s.length > 16);
-  if (sentences.length >= 2) return sentences.slice(0, 14);
-  return body
+  const candidates = sentences.length >= 2 ? sentences : body
     .split(/\n+/)
     .map((l) => l.trim())
-    .filter((l) => l.length > 16)
-    .slice(0, 14);
+    .filter((l) => l.length > 16);
+  const out: string[] = [];
+  for (const candidate of candidates) {
+    const normalized = normalizeMathText(candidate).replace(/\s+/g, " ").trim();
+    if (!normalized) continue;
+    if (out.some((prev) => jaccardSimilarity(prev, normalized) > 0.9)) continue;
+    out.push(normalized);
+    if (out.length >= 14) break;
+  }
+  return out;
+}
+
+function proofStepsFromSkeleton(skeleton: string): string[] {
+  return skeleton
+    .split(/\n+/)
+    .map((line) => line.replace(/^\s*\d+\.\s*/, "").trim())
+    .filter((line) => line.length > 12 && !/^extractive outline:?$/i.test(line));
 }
 
 /** Build proof items from theorem/proposition/lemma blocks plus paired Proof bodies only (no orphan Proof paragraphs). */
@@ -1715,7 +1768,6 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[], h
 
     const heading = `${b.formalLabel}: ${b.displayTitle}`;
     const proofBodyForPack = clipBibliographyFromPackBody(proof.body);
-    const { skeleton, mistake } = proofSkeletonFromBody(b.displayTitle, `${b.body}\n${proofBodyForPack}`);
     const statementOnly = clipBibliographyFromPackBody(
       truncateBodyBeforeInteriorSectionHeading(b.body.split(/\bProof\s*[.:]\s*/i)[0]!.trim()),
     );
@@ -1723,7 +1775,9 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[], h
     if (/\btheorem\s+1\s+for\s+the\s+proof\b/i.test(statementOnly)) continue;
 
     const repairedStatement = repairMonteCarloProofStatement(b.displayTitle, statementOnly, proofBodyForPack);
-    const steps = proofStepsFromBody(proofBodyForPack);
+    const { skeleton, mistake } = proofSkeletonFromBody(b.displayTitle, `${repairedStatement}\n${proofBodyForPack}`);
+    const parsedSteps = proofStepsFromBody(proofBodyForPack).filter((step) => !hasSevereMathExtractionDamage(normalizeMathText(step)));
+    const steps = parsedSteps.length ? parsedSteps : proofStepsFromSkeleton(skeleton);
 
     const proofExcerpt = b.rawBlock.slice(0, 900);
     items.push({
@@ -1732,7 +1786,7 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[], h
       proofName: heading,
       statement: repairedStatement.slice(0, 1500),
       proofSteps: steps,
-      proofSkeleton: `Source proof excerpt: ${normalizeMathText(proofBodyForPack.slice(0, 800))}\n\nExtractive outline:\n${skeleton}`,
+      proofSkeleton: `Extractive outline:\n${skeleton}`,
       commonMistake: mistake,
       importance: hasPastEvidence ? "must_know" : "needs_review",
       source: b.sourceFile,
