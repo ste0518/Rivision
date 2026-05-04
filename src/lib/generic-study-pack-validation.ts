@@ -205,6 +205,14 @@ export function computeTopActionableFailures(
     out.push("chapterMap empty — no chapter rows inferred from headings.");
   }
 
+  if (
+    (profile?.chapterMap?.length ?? 0) >= 2 &&
+    profile?.chapterMapSource === "heading_scan" &&
+    (diag?.pageHeadingCandidateCount ?? 0) === 0
+  ) {
+    out.push("chapterMapSource claims heading_scan but pageHeadingCandidateCount is 0 — inconsistent pipeline state.");
+  }
+
   if (blocks.length === 1 && /whole$/i.test(blocks[0]?.sectionId ?? "") && pageCount > 35) {
     out.push("Only one section block covering the full PDF span — segmentation fallback.");
   }
@@ -450,6 +458,11 @@ export function validateGenericStudyPack(
   const chapterSourceGateFail =
     Boolean(documentProfile?.chapterMap?.length) && documentProfile?.chapterMapSource === "none";
 
+  const headingSourceContradiction =
+    (documentProfile?.chapterMap?.length ?? 0) >= 2 &&
+    documentProfile?.chapterMapSource === "heading_scan" &&
+    headingCand === 0;
+
   const sectionDensityFail =
     pageCount > 50 &&
     headingCand >= 8 &&
@@ -490,6 +503,7 @@ export function validateGenericStudyPack(
     candidateFormulaGap ||
     headingGateFail ||
     chapterSourceGateFail ||
+    headingSourceContradiction ||
     sectionDensityFail ||
     formulaDensityFail ||
     proofMarkerGateFail ||

@@ -10,6 +10,7 @@ export type FixtureCase = {
   expectSectionBlocksMin?: number;
   expectFormulaCandidatesMin?: number;
   expectProofCandidatesMin?: number;
+  expectWorkedExampleCandidatesMin?: number;
 };
 
 export const FIXTURE_LECTURE_CHAPTER_HEADINGS: FixtureCase = {
@@ -117,15 +118,17 @@ export const FIXTURE_WORKED_EXAMPLES: FixtureCase = {
 
 Let X_i ~ N(mu,1). Then E{bar X} = mu.
 
-Example 1.1
+Example 2.1. Compute Var(bar X).
 
-Compute Var(bar X) = 1/n.
+Solution.
+Using independence, Var(bar X) = 1/n.
 `,
     },
   ],
   expectHeadingCountMin: 1,
   expectChapterMapSourceNotNoneWhenMap: false,
   expectProofCandidatesMin: 0,
+  expectWorkedExampleCandidatesMin: 1,
 };
 
 export const FIXTURE_PROBLEM_SHEET: FixtureCase = {

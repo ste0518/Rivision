@@ -187,6 +187,8 @@ export type PipelineHealth = {
 /** Minimal safe output when segmentation/extraction critically fails (no misleading exam-ready labelling). */
 export type SafeFallbackStudyPack = {
   documentProfile?: DocumentProfile;
+  /** Structured cover metadata when available. */
+  frontMatter?: import("@/lib/front-matter").FrontMatter;
   rawDetectedHeadings?: string[];
   /** Structured heading rows when available (preferred over strings-only). */
   rawHeadingCandidates?: Array<{ text: string; pageNumber: number; lineIndex: number; headingType: string }>;
@@ -201,6 +203,12 @@ export type SafeFallbackStudyPack = {
 };
 
 /** Counts for debugging segmentation / extraction quality (local pipeline). */
+export type SourceGroundingSummary = {
+  itemsWithExcerpt: number;
+  itemsMissingExcerpt: number;
+  contaminationFlags: number;
+};
+
 export type ExtractionPipelineDiagnostics = {
   formulaCandidateCount: number;
   formulaExtractedCount: number;
@@ -210,11 +218,23 @@ export type ExtractionPipelineDiagnostics = {
   headingCandidateCount: number;
   /** Page-aware heading detection count (preferred over legacy heading scan). */
   pageHeadingCandidateCount?: number;
+  /** Lines scanned as headings but rejected (noise, captions, duplicates). */
+  rejectedHeadingCandidates?: Array<{ text: string; pageNumber: number; lineIndex: number; rejectionReason: string }>;
+  /** Compact tree summary from {@link buildHeadingHierarchy}. */
+  headingHierarchySummary?: {
+    rootCount: number;
+    totalNodes: number;
+    maxDepth: number;
+    proofWithFormalAnchor: number;
+    samplePath: string[];
+  };
   sectionBlockCount: number;
   chapterCandidateCount: number;
   chapterMapSource?: "toc" | "heading_scan" | "manual_fallback" | "none";
   /** Heading scan snapshot for debug (page + line grounded). */
   rawHeadingCandidates?: Array<{ text: string; pageNumber: number; lineIndex: number; headingType: string }>;
+  /** Human-readable section block headings for QA. */
+  sectionBlocksSummaryHeadings?: string[];
   chapterRangeValidation?: ChapterRangeValidationSummary;
   sectionBlocksSummary?: { count: number; duplicateOpeningSlices: boolean };
   workedExampleCandidateCount: number;
@@ -222,14 +242,30 @@ export type ExtractionPipelineDiagnostics = {
   /** Lines matching proof/theorem-like markers (diagnostic; distinct from {@link proofCandidateCount}). */
   proofLikeMarkerLineCount?: number;
   rawExerciseCandidateCount?: number;
+  /** Same as {@link rawExerciseCandidateCount} for debug JSON contract. */
+  exerciseCandidateCount?: number;
+  definitionCandidateCount?: number;
+  theoremCandidateCount?: number;
   exampleCandidateCount?: number;
   /** Pre-LLM candidate text for safe fallback / debug when final items are gated off. */
-  rawCandidateSnippets?: { formulas: string[]; proofs: string[]; workedExamples: string[] };
+  rawCandidateSnippets?: {
+    formulas: string[];
+    proofs: string[];
+    workedExamples: string[];
+    definitions?: string[];
+    concepts?: string[];
+  };
   rejectedItems: Array<{ kind: string; reason: string; detail?: string }>;
+  /** Aggregated rejection reason strings from {@link rejectedItems}. */
+  rejectionReasons?: string[];
   extractionPipelineTrace: string[];
   /** Mirrors generic QA priority list for Debug JSON / UI. */
   topActionableIssues?: string[];
   criticalQualityFailure?: boolean;
+  /** Structured early-page metadata snapshot. */
+  frontMatter?: import("@/lib/front-matter").FrontMatter;
+  sourceGroundingSummary?: SourceGroundingSummary;
+  generatedItemStatsBySection?: Record<string, { definitions: number; formulas: number; proofs: number }>;
 };
 
 export interface GeneratedMethodTemplate {

@@ -570,8 +570,8 @@ export function profileDocument(input: ProfileDocumentInput): DocumentProfile {
     chapterMapSource,
     frontMatter,
     structureDiagnostics: {
-      titleConfidence: Math.max(earlyTitle.confidence, frontMatter.confidence),
-      titleSourcePage: earlyTitle.sourcePage,
+      titleConfidence: Math.max(earlyTitle.confidence, frontMatter.titleConfidence ?? 0, frontMatter.confidence),
+      titleSourcePage: frontMatter.titleSourcePage ?? earlyTitle.sourcePage ?? null,
       pageHeadingCandidateCount: headingPageScan.length,
     },
     criticalTocParseFailure,

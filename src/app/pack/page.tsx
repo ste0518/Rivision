@@ -297,9 +297,9 @@ export default function PackPage() {
 
       {packQuality?.criticalQualityFailure ? (
         <div className="rounded-lg border-2 border-red-300 bg-red-50 px-4 py-4 text-sm text-red-950 shadow-sm">
-          <p className="text-base font-semibold">Generated with critical quality failures. Do not rely on this pack yet.</p>
+          <p className="text-base font-semibold">Generated with critical quality failures. This pack is not exam-ready.</p>
           <p className="mt-2 text-red-900">
-            This pack should not be treated as exam-ready until you confirm extraction issues below. Everything here is derived only from your files — no cloud generation.
+            Review the issues below before relying on this material. Everything here is derived only from your files — no cloud generation.
           </p>
           <ul className="mt-3 list-inside list-decimal space-y-1.5 text-red-900">
             {(packQuality.topActionableFailures.length ? packQuality.topActionableFailures : packQuality.recommendations).slice(0, 12).map((line, i) => (

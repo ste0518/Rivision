@@ -15,7 +15,7 @@ import {
   resolvePageLineAtOffset,
 } from "../src/lib/page-records";
 import { profileDocument } from "../src/lib/document-profile";
-import { excerptGroundedInSource } from "../src/lib/source-grounding";
+import { excerptGroundedInSource, normalizeForTechnicalGrounding } from "../src/lib/source-grounding";
 import {
   ALL_UNIVERSAL_FIXTURES,
   FIXTURE_LECTURE_CHAPTER_HEADINGS,
@@ -70,6 +70,12 @@ function main() {
         `${fx.id}: raw proof candidates ${raw.proofCandidates.length}`,
       );
     }
+    if (fx.expectWorkedExampleCandidatesMin != null && fx.expectWorkedExampleCandidatesMin > 0) {
+      assert.ok(
+        raw.workedExampleCandidates.length >= fx.expectWorkedExampleCandidatesMin,
+        `${fx.id}: worked-example raw candidates ${raw.workedExampleCandidates.length}`,
+      );
+    }
     if (built.chapterMap.length >= 2) {
       const v = validateChapterMap(built.chapterMap, profile.pageCount);
       assert.ok(!v.errors.some((e) => /zero rows|chapterMap is empty/i.test(e)), `${fx.id}: validation should not claim empty map`);
@@ -84,6 +90,9 @@ function main() {
   const theoremSrc = FIXTURE_THEOREM_PROOF.pages.map((p) => p.text).join("\n").toLowerCase();
   assert.ok(excerptGroundedInSource("let x be fixed", theoremSrc));
   assert.ok(!excerptGroundedInSource("completely alien token xyzabc123notinsource", "short"), "weak excerpt not grounded");
+  const mcSrc = "we study monte carlo integration and importance sampling estimators.";
+  assert.ok(excerptGroundedInSource("MC integration", mcSrc), "technical synonym normalization for grounding");
+  assert.ok(normalizeForTechnicalGrounding("Monte Carlo").includes("mc"));
 
   const pack = runPackInvariant("lecture_chapter_headings", FIXTURE_LECTURE_CHAPTER_HEADINGS.pages);
   const diag = pack.extractionPipelineDiagnostics;

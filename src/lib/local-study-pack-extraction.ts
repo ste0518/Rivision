@@ -22,7 +22,8 @@ import { applyMathNormalisation } from "@/lib/math-normalisation";
 import { cleanUploadedStudySourceText } from "@/lib/source-text-cleanup";
 import { convertCommonMathToLatex } from "@/lib/revision-item-utils";
 import { buildChapterMap, validateChapterMap } from "@/lib/chapter-map-builder";
-import { detectHeadingsByPage } from "@/lib/heading-detection";
+import { detectHeadingsByPageWithRejections } from "@/lib/heading-detection";
+import { buildHeadingHierarchy, summarizeHeadingHierarchy } from "@/lib/heading-hierarchy";
 import {
   buildPageRecordsFromParsedPages,
   flattenLectureFilesToFlatPages,
@@ -2113,16 +2114,25 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     combinedPrintedText: cleanedPrinted,
   });
 
-  const headingCandidates = detectHeadingsByPage(pageRecords);
+  const { accepted: headingCandidates, rejected: rejectedHeadingCandidates } = detectHeadingsByPageWithRejections(pageRecords);
+  const headingTree = buildHeadingHierarchy(headingCandidates);
+  const headingHierarchySummary = summarizeHeadingHierarchy(headingTree);
   const tocResult = documentProfile.tocParseResult;
   const preferToc = (tocResult?.entries?.filter((e) => e.startPage != null).length ?? 0) >= 3;
-  const { chapterMap: unifiedChapterMap, validation: chapterRangeValidation, source: chapterMapSource } = buildChapterMap({
+  let { chapterMap: unifiedChapterMap, validation: chapterRangeValidation, source: chapterMapSource } = buildChapterMap({
     tocEntries: tocResult?.entries ?? [],
     tocFound: tocResult?.found ?? false,
     headingCandidates,
     pageCount: documentProfile.pageCount,
     preferToc,
   });
+  if (
+    unifiedChapterMap.length >= 2 &&
+    chapterMapSource === "heading_scan" &&
+    headingCandidates.length === 0
+  ) {
+    chapterMapSource = tocResult?.found ? "toc" : "manual_fallback";
+  }
 
   if (
     unifiedChapterMap.length >= 2 &&
@@ -2323,6 +2333,21 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
     sectionBlocks.reduce((n, b) => n + (b.exampleCandidates?.length ?? 0) + (b.exerciseCandidates?.length ?? 0), 0) +
     workedExamplesHarvest.length;
 
+  const generatedItemStatsBySection: Record<string, { definitions: number; formulas: number; proofs: number }> = {};
+  for (const b of sectionBlocks) {
+    const k = b.heading.replace(/\s+/g, " ").slice(0, 80) || b.sectionId;
+    generatedItemStatsBySection[k] = {
+      definitions: b.definitionCandidates?.length ?? 0,
+      formulas: b.formulaCandidates?.length ?? 0,
+      proofs: b.proofCandidates?.length ?? 0,
+    };
+  }
+
+  const excerptMissing =
+    definitions.filter((d) => !String(d.sourceExcerpt ?? d.grounding?.sourceExcerpt ?? "").trim()).length +
+    formulas.filter((f) => !String(f.sourceExcerpt ?? f.grounding?.sourceExcerpt ?? "").trim()).length +
+    proofs.filter((p) => !String(p.sourceExcerpt ?? p.grounding?.sourceExcerpt ?? "").trim()).length;
+
   const commonExamQuestionTypes = inferExamQuestionTypesFromSource(cleanedPrinted);
 
   const examPack: ExamPackBundle = {
@@ -2378,21 +2403,34 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
   const chapterRangeValidationFinal = validateChapterMap(documentProfile.chapterMap, pageCountForBlocks);
 
   const extractionPipelineDiagnostics: ExtractionPipelineDiagnostics = {
+    frontMatter: documentProfile.frontMatter,
     rawHeadingCandidates: headingCandidates.slice(0, 200).map((h) => ({
       text: h.text.slice(0, 200),
       pageNumber: h.pageNumber,
       lineIndex: h.lineIndex,
       headingType: h.headingType,
     })),
+    rejectedHeadingCandidates: rejectedHeadingCandidates.slice(0, 400).map((r) => ({
+      text: r.text.slice(0, 200),
+      pageNumber: r.pageNumber,
+      lineIndex: r.lineIndex,
+      rejectionReason: r.rejectionReason,
+    })),
+    headingHierarchySummary,
     formulaCandidateCount: formulaCandidatesPreDedupe,
     formulaExtractedCount: formulas.length,
     formulaRejectedCount: Math.max(0, formulaCandidatesPreDedupe - formulas.length),
     formulaRejectionReasons: [...new Set(extractionRejected.filter((r) => r.kind === "formula").map((r) => r.reason))],
     conceptCandidateCount:
+      rawExamBuckets.conceptCandidates.length +
+      rawExamBuckets.definitionCandidates.length +
+      rawExamBuckets.theoremCandidates.length +
       blocks.filter((b) => b.kind === "definition").length +
       sectionsMerged.length +
       (documentProfile.chapterMap?.length ?? 0) +
       rawExamBuckets.exerciseCandidates.length,
+    definitionCandidateCount: rawExamBuckets.definitionCandidates.length,
+    theoremCandidateCount: rawExamBuckets.theoremCandidates.length,
     headingCandidateCount: Math.max(sectionsMerged.length, headingCandidates.length),
     pageHeadingCandidateCount: headingCandidates.length,
     sectionBlockCount: sectionBlocks.length,
@@ -2404,20 +2442,39 @@ export function buildHeuristicStudentRevisionPack(ctx: HeuristicPackContext): Ge
       warnings: chapterRangeValidationFinal.warnings,
     },
     sectionBlocksSummary: { count: sectionBlocks.length, duplicateOpeningSlices },
+    sectionBlocksSummaryHeadings: sectionBlocks.map((b) => b.heading.replace(/\s+/g, " ").trim().slice(0, 120)).slice(0, 120),
     workedExampleCandidateCount:
       workedExamplesHarvest.length +
       derivations.filter((d) => d.type === "worked_example").length +
       rawExamBuckets.workedExampleCandidates.length,
     proofLikeMarkerLineCount: countProofLikeLineMarkers(pageRecords),
     rawExerciseCandidateCount: rawExamBuckets.exerciseCandidates.length,
-    proofCandidateCount: rawExamBuckets.proofCandidates.length + rawExamBuckets.workedExampleCandidates.length,
+    exerciseCandidateCount: rawExamBuckets.exerciseCandidates.length,
+    proofCandidateCount: rawExamBuckets.proofCandidates.length,
     exampleCandidateCount,
     rawCandidateSnippets: {
-      formulas: rawExamBuckets.formulaCandidates.slice(0, 24).map((c) => c.rawText.replace(/\s+/g, " ").trim().slice(0, 220)),
+      formulas: (() => {
+        const rows = rawExamBuckets.formulaCandidates;
+        if (rows.length) return rows.slice(0, 24).map((c) => c.rawText.replace(/\s+/g, " ").trim().slice(0, 220));
+        if (formulaCandidatesPreDedupe === 0) return [];
+        return mergedFormulas
+          .slice(0, 24)
+          .map((f) => (f.rawFormula ?? f.formulaPlain ?? f.latex ?? "").replace(/\s+/g, " ").trim().slice(0, 220))
+          .filter(Boolean);
+      })(),
       proofs: rawExamBuckets.proofCandidates.slice(0, 14).map((c) => c.rawText.replace(/\s+/g, " ").trim().slice(0, 280)),
       workedExamples: rawExamBuckets.workedExampleCandidates.slice(0, 10).map((c) => c.rawText.replace(/\s+/g, " ").trim().slice(0, 280)),
+      definitions: rawExamBuckets.definitionCandidates.slice(0, 12).map((c) => c.rawText.replace(/\s+/g, " ").trim().slice(0, 220)),
+      concepts: rawExamBuckets.conceptCandidates.slice(0, 12).map((c) => c.rawText.replace(/\s+/g, " ").trim().slice(0, 220)),
     },
     rejectedItems: extractionRejected.slice(0, 400),
+    rejectionReasons: [...new Set(extractionRejected.map((r) => r.reason))],
+    sourceGroundingSummary: {
+      itemsWithExcerpt: definitions.length + formulas.length + proofs.length - excerptMissing,
+      itemsMissingExcerpt: excerptMissing,
+      contaminationFlags: 0,
+    },
+    generatedItemStatsBySection,
     extractionPipelineTrace: [
       "flatten_multi_file_pages → PageRecord",
       "profileDocument + TOC.entries",

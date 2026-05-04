@@ -97,6 +97,7 @@ export function generateStudentRevisionPack(input: {
     validation.criticalQualityFailure ?
       {
         documentProfile: pack.documentProfile,
+        frontMatter: pack.documentProfile?.frontMatter,
         rawHeadingCandidates: pack.extractionPipelineDiagnostics?.rawHeadingCandidates,
         rawDetectedHeadings: pack.sectionBlocks?.map((s) => s.heading).slice(0, 60),
         topConceptCandidates: pack.definitions.map((d) => d.term).slice(0, 28),
@@ -133,8 +134,16 @@ export function generateStudentRevisionPack(input: {
         ...baseDiag,
         criticalQualityFailure: validation.criticalQualityFailure,
         topActionableIssues: [...(baseDiag.topActionableIssues ?? []), ...validation.topActionableFailures],
+        sourceGroundingSummary: {
+          itemsWithExcerpt: baseDiag.sourceGroundingSummary?.itemsWithExcerpt ?? 0,
+          itemsMissingExcerpt: baseDiag.sourceGroundingSummary?.itemsMissingExcerpt ?? 0,
+          contaminationFlags: validation.sourceContamination.length,
+        },
+        generatedItemStatsBySection: baseDiag.generatedItemStatsBySection ?? validation.generatedItemStatsByChapter,
       }
     : undefined;
+
+  const criticalWarning = "Generated with critical quality failures. This pack is not exam-ready.";
 
   return {
     ...pack,
@@ -150,6 +159,7 @@ export function generateStudentRevisionPack(input: {
     examOverview: {
       ...pack.examOverview,
       summary: [pack.examOverview.summary, keywordSummary].filter(Boolean).join(" "),
+      reviewCardsWarning: validation.criticalQualityFailure ? criticalWarning : pack.examOverview.reviewCardsWarning,
     },
   };
 }

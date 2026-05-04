@@ -5,42 +5,73 @@
 
 import type { LineRecord, PageRecord } from "@/lib/page-records";
 
-export type HeadingKind =
+export type HeadingCandidateKind =
+  | "document_title"
   | "chapter"
   | "section"
   | "subsection"
+  | "subsubsection"
   | "definition"
   | "lemma"
   | "proposition"
   | "theorem"
   | "corollary"
   | "proof"
-  | "worked_example"
+  | "remark"
   | "example"
+  | "worked_example"
   | "exercise"
   | "question"
   | "solution"
-  | "remark"
   | "algorithm"
-  | "other";
+  | "figure_caption"
+  | "table_caption"
+  | "unknown";
+
+export type HeadingRejectionReason =
+  | "figure_axis_noise"
+  | "too_many_numbers"
+  | "too_many_symbols"
+  | "body_sentence"
+  | "footer_or_header"
+  | "page_number"
+  | "figure_caption_context"
+  | "table_caption_context"
+  | "ocr_noise"
+  | "duplicate_heading";
 
 export type HeadingCandidate = {
   text: string;
   normalizedText: string;
   pageNumber: number;
   lineIndex: number;
-  headingType: HeadingKind;
+  headingType: HeadingCandidateKind;
   level: number;
   confidence: number;
   /** When a line was skipped as heading, short machine reason for debug. */
-  stopReason?: string;
+  rejectionReason?: HeadingRejectionReason;
+};
+
+export type RejectedHeadingCandidate = {
+  text: string;
+  normalizedText: string;
+  pageNumber: number;
+  lineIndex: number;
+  rejectionReason: HeadingRejectionReason;
 };
 
 const FOOTER_HEADER_HINT =
-  /\b(page\s+\d+\s+of\s+\d+|^\s*\d+\s*$|copyright|©|all\s+rights\s+reserved)\b/i;
+  /\b(page\s+\d+\s+of\s+\d+|copyright|©|all\s+rights\s+reserved|lecture\s+notes\s+only)\b/i;
+
+const PAGE_NUMBER_ONLY = /^\s*\d{1,4}\s*$/;
+
+const AXIS_TICK_LIKE =
+  /^[\d.,\s\-–—]{6,}$|^(?:0\.\d|1\.\d|-?\d+\.\d)\s+(?:0\.\d|1\.\d|-?\d+\.\d)(\s+(?:0\.\d|1\.\d|-?\d+\.\d)){2,}/;
+
+const FIGURE_TABLE_CAPTION = /^(figure|fig\.|table)\s+\d+/i;
 
 const STRONG_HEADING_FOR_NOISE =
-  /^Chapter\s*\d+|^\d+\.\d+\.\d+\s+\S|^\d+\.\d+\s+\S|^Definition\s*\d*|^Lemma\s+\d+|^Theorem\s+\d+|^Proposition\s+\d+|^Corollary\s+\d+|^Proof[.:]?\s*|^Worked\s+example|^Example\s*\d*|^Exercise\s*\d*|^Question\s*\d*|^Problem\s*\d*|^Solution\s*\d*|^Remark\s*\d*|^Algorithm\s*\d*/i;
+  /^Chapter\s*\d+|^\d+\.\d+\.\d+\.\d+\s+\S|^\d+\.\d+\.\d+\s+\S|^\d+\.\d+\s+\S|^Definition\s*\d*|^Lemma\s+\d+|^Theorem\s+\d+|^Proposition\s+\d+|^Corollary\s+\d+|^Proof[.:]?\s*|^Worked\s+example|^Example\s*\d*|^Exercise\s*\d*|^Question\s*\d*|^Problem\s+\d+|^Solution\s*\d*|^Remark\s*\d*|^Algorithm\s*\d*/i;
 
 /** Lines that are unlikely to be real headings (OCR noise, diagrams). */
 export function rejectLineAsHeadingNoise(line: string): boolean {
@@ -80,37 +111,72 @@ function normaliseLineText(s: string): string {
     .toLowerCase();
 }
 
-function scoreHeading(kind: HeadingKind, line: string): number {
+function scoreHeading(kind: HeadingCandidateKind, line: string): number {
   let c = 0.72;
-  if (kind === "chapter") c = 0.88;
-  else if (kind === "section" || kind === "subsection") c = 0.82;
+  if (kind === "chapter" || kind === "document_title") c = 0.9;
+  else if (kind === "section" || kind === "subsection" || kind === "subsubsection") c = 0.84;
   else if (kind === "proof" || kind === "theorem" || kind === "definition") c = 0.8;
   if (line.length > 120) c -= 0.12;
   return Math.min(0.96, Math.max(0.35, c));
 }
 
-function classifyLine(trimmed: string): { kind: HeadingKind; level: number } | null {
+function tooManyNumbers(t: string): boolean {
+  const nums = (t.match(/\d/g) ?? []).length;
+  return nums >= 14 && nums / Math.max(1, t.length) > 0.35;
+}
+
+function tooManySymbols(t: string): boolean {
+  const sym = (t.match(/[^A-Za-z0-9\s.,;:()\-]/g) ?? []).length;
+  return sym / Math.max(1, t.length) > 0.28 && t.split(/\s+/).filter((w) => /[A-Za-z]{3,}/.test(w)).length < 4;
+}
+
+function looksLikeBodySentence(t: string): boolean {
+  if (t.length < 70) return false;
+  if (/^(theorem|lemma|definition|proposition|chapter)\b/i.test(t)) return false;
+  const words = t.split(/\s+/).length;
+  if (words > 22 && /[.;:]\s/.test(t)) return true;
+  if (t.length > 110 && /^[a-z]/.test(t) && (t.match(/,\s/g) ?? []).length >= 2) return true;
+  return false;
+}
+
+function rejectionForLine(trimmed: string, lr: LineRecord): HeadingRejectionReason | null {
+  if (PAGE_NUMBER_ONLY.test(trimmed)) return "page_number";
+  if (lr.sourceLayer === "ocr_noise" && !STRONG_HEADING_FOR_NOISE.test(trimmed)) return "ocr_noise";
+  if (AXIS_TICK_LIKE.test(trimmed.trim())) return "figure_axis_noise";
+  if (FIGURE_TABLE_CAPTION.test(trimmed)) {
+    return /^table\b/i.test(trimmed) ? "table_caption_context" : "figure_caption_context";
+  }
+  if (tooManyNumbers(trimmed)) return "too_many_numbers";
+  if (tooManySymbols(trimmed)) return "too_many_symbols";
+  if (FOOTER_HEADER_HINT.test(trimmed) && trimmed.length < 100) return "footer_or_header";
+  if (rejectLineAsHeadingNoise(trimmed)) return "figure_axis_noise";
+  if (looksLikeBodySentence(trimmed)) return "body_sentence";
+  return null;
+}
+
+function classifyLine(trimmed: string): { kind: HeadingCandidateKind; level: number } | null {
   const t = trimmed;
   if (/^Chapter\s*\d+(?:\.\d+)?\s*$/i.test(t)) return { kind: "chapter", level: 1 };
   if (/^Chapter\s*\d+(?:\.\d+)?\s*[.:]?\s+\S/.test(t)) return { kind: "chapter", level: 1 };
+  if (/^\d+\.\d+\.\d+\.\d+\s+\S/.test(t)) return { kind: "subsubsection", level: 4 };
   if (/^\d+\.\d+\.\d+\s+\S/.test(t)) return { kind: "subsection", level: 3 };
   if (/^\d+\.\d+\s+\S/.test(t)) return { kind: "section", level: 2 };
-  /** Major numbered banner "3 Introduction" — section-level, not a PDF chapter. */
+  /** Major numbered banner "3 Introduction" — top-level chapter-like. */
   if (/^\d{1,2}\s+[A-Za-z\u00C0-\u024F(][^\n]{3,}/.test(t) && !/^\d+\.\d/.test(t) && t.length < 130) {
-    return { kind: "section", level: 2 };
+    return { kind: "chapter", level: 1 };
   }
-  if (/^Definition\s*\d*/i.test(t)) return { kind: "definition", level: 3 };
-  if (/^Lemma\s+\d+/i.test(t)) return { kind: "lemma", level: 3 };
-  if (/^Proposition\s+\d+/i.test(t)) return { kind: "proposition", level: 3 };
-  if (/^Theorem\s+\d+/i.test(t)) return { kind: "theorem", level: 3 };
-  if (/^Corollary\s+\d+/i.test(t)) return { kind: "corollary", level: 3 };
-  if (/^Proof[.:]?\s*$/i.test(t)) return { kind: "proof", level: 4 };
-  if (/^Proof[.:]\s+\S/i.test(t) && t.length < 160) return { kind: "proof", level: 4 };
+  if (/^Definition\s*\d*/i.test(t)) return { kind: "definition", level: 4 };
+  if (/^Lemma\s+\d+/i.test(t)) return { kind: "lemma", level: 4 };
+  if (/^Proposition\s+\d+/i.test(t)) return { kind: "proposition", level: 4 };
+  if (/^Theorem\s+\d+/i.test(t)) return { kind: "theorem", level: 4 };
+  if (/^Corollary\s+\d+/i.test(t)) return { kind: "corollary", level: 4 };
+  if (/^Proof[.:]?\s*$/i.test(t)) return { kind: "proof", level: 5 };
+  if (/^Proof[.:]\s+\S/i.test(t) && t.length < 160) return { kind: "proof", level: 5 };
   if (/^Worked\s+example:?/i.test(t)) return { kind: "worked_example", level: 4 };
   if (/^Example\s*\d*/i.test(t)) return { kind: "example", level: 4 };
   if (/^Exercise\s*\d*/i.test(t)) return { kind: "exercise", level: 4 };
   if (/^Question\s*\d*/i.test(t)) return { kind: "question", level: 4 };
-  if (/^Problem\s*\d*/i.test(t)) return { kind: "question", level: 4 };
+  if (/^Problem\s+\d+/i.test(t)) return { kind: "question", level: 4 };
   if (/^Solution\s*\d*/i.test(t)) return { kind: "solution", level: 4 };
   if (/^Algorithm\s*\d*/i.test(t)) return { kind: "algorithm", level: 4 };
   if (/^Remark\s*\d*/i.test(t)) return { kind: "remark", level: 4 };
@@ -130,33 +196,60 @@ function flatIndex(flat: LineRecord[], pageNumber: number, lineIndex: number): n
   return flat.findIndex((r) => r.pageNumber === pageNumber && r.lineIndex === lineIndex);
 }
 
+export type HeadingDetectionResult = {
+  accepted: HeadingCandidate[];
+  rejected: RejectedHeadingCandidate[];
+};
+
 /**
- * Scan pages for heading patterns. Uses printed lines; strong patterns may override a noise classification.
+ * Full scan with rejection audit trail for debug JSON.
  */
-export function detectHeadingsByPage(pages: PageRecord[]): HeadingCandidate[] {
+export function detectHeadingsByPageWithRejections(pages: PageRecord[]): HeadingDetectionResult {
   const flat = flattenLineRecords(pages);
   const raw: HeadingCandidate[] = [];
+  const rejected: RejectedHeadingCandidate[] = [];
 
   for (const lr of flat) {
     const trimmed = lr.text.trim();
     if (!trimmed) continue;
-    const allowNoise =
-      lr.sourceLayer === "ocr_noise" && STRONG_HEADING_FOR_NOISE.test(trimmed) && !rejectLineAsHeadingNoise(trimmed);
-    if (lr.sourceLayer === "ocr_noise" && !allowNoise) continue;
-    if (!allowNoise && rejectLineAsHeadingNoise(trimmed)) continue;
 
     const cls = classifyLine(trimmed);
-    if (!cls) continue;
+    const rej = rejectionForLine(trimmed, lr);
 
-    raw.push({
-      text: trimmed,
-      normalizedText: normaliseLineText(trimmed),
-      pageNumber: lr.pageNumber,
-      lineIndex: lr.lineIndex,
-      headingType: cls.kind,
-      level: cls.level,
-      confidence: scoreHeading(cls.kind, trimmed),
-    });
+    if (cls) {
+      if (rej && !(lr.sourceLayer === "ocr_noise" && STRONG_HEADING_FOR_NOISE.test(trimmed) && rej === "ocr_noise")) {
+        rejected.push({
+          text: trimmed.slice(0, 200),
+          normalizedText: normaliseLineText(trimmed),
+          pageNumber: lr.pageNumber,
+          lineIndex: lr.lineIndex,
+          rejectionReason: rej === "figure_axis_noise" && FIGURE_TABLE_CAPTION.test(trimmed) ?
+              /^table\b/i.test(trimmed) ? "table_caption_context"
+              : "figure_caption_context"
+          : rej,
+        });
+        continue;
+      }
+      if (lr.sourceLayer === "ocr_noise" && !STRONG_HEADING_FOR_NOISE.test(trimmed)) {
+        rejected.push({
+          text: trimmed.slice(0, 200),
+          normalizedText: normaliseLineText(trimmed),
+          pageNumber: lr.pageNumber,
+          lineIndex: lr.lineIndex,
+          rejectionReason: "ocr_noise",
+        });
+        continue;
+      }
+      raw.push({
+        text: trimmed,
+        normalizedText: normaliseLineText(trimmed),
+        pageNumber: lr.pageNumber,
+        lineIndex: lr.lineIndex,
+        headingType: cls.kind,
+        level: cls.level,
+        confidence: scoreHeading(cls.kind, trimmed),
+      });
+    }
   }
 
   /** Merge bare "Chapter k" with up to 3 following title-like lines (may span pages). */
@@ -200,7 +293,6 @@ export function detectHeadingsByPage(pages: PageRecord[]): HeadingCandidate[] {
       }
     }
 
-    /** Legacy same-page single-line merge when next raw candidate was separate. */
     const next = raw[i + 1];
     if (
       /^Chapter\s*\d+(?:\.\d+)?\s*$/i.test(cur.text) &&
@@ -229,7 +321,28 @@ export function detectHeadingsByPage(pages: PageRecord[]): HeadingCandidate[] {
   const dedup = new Map<string, HeadingCandidate>();
   for (const h of merged) {
     const k = `${h.pageNumber}|${h.lineIndex}|${h.headingType}|${h.text.slice(0, 80)}`;
-    if (!dedup.has(k)) dedup.set(k, h);
+    if (dedup.has(k)) {
+      rejected.push({
+        text: h.text.slice(0, 200),
+        normalizedText: h.normalizedText,
+        pageNumber: h.pageNumber,
+        lineIndex: h.lineIndex,
+        rejectionReason: "duplicate_heading",
+      });
+      continue;
+    }
+    dedup.set(k, h);
   }
-  return [...dedup.values()].sort((a, b) => a.pageNumber - b.pageNumber || a.lineIndex - b.lineIndex || a.text.localeCompare(b.text));
+
+  const accepted = [...dedup.values()].sort(
+    (a, b) => a.pageNumber - b.pageNumber || a.lineIndex - b.lineIndex || a.text.localeCompare(b.text),
+  );
+  return { accepted, rejected };
+}
+
+/**
+ * Scan pages for heading patterns. Uses printed lines; strong patterns may override a noise classification.
+ */
+export function detectHeadingsByPage(pages: PageRecord[]): HeadingCandidate[] {
+  return detectHeadingsByPageWithRejections(pages).accepted;
 }

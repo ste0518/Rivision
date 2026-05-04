@@ -149,6 +149,19 @@ export function isStaleVersusSource(blobLower: string, sourceLower: string): boo
   return findProminentTermsAbsentFromSource(blobLower, sourceLower).length >= 6;
 }
 
+/** Fold common abbreviation / spelling variants for technical grounding checks. */
+export function normalizeForTechnicalGrounding(text: string): string {
+  let t = text.toLowerCase().replace(/\s+/g, " ").trim();
+  t = t.replace(/\bself[-\s]?normali[sz]ed\b/g, "snis");
+  t = t.replace(/\bimportance\s+sampling\b/g, "is");
+  t = t.replace(/\bmonte\s+carlo\b/g, "mc");
+  t = t.replace(/\bvariance\b/g, "var");
+  t = t.replace(/\bexpectation\b/g, "e");
+  t = t.replace(/\bprobability\b/g, "p");
+  t = t.replace(/\bnormali[sz]ed\b/g, "normalised");
+  return t;
+}
+
 /** Excerpt from current file must appear in normalised source (substring grounding). */
 export function excerptGroundedInSource(excerpt: string, sourceNormalised: string): boolean {
   const ex = sanitiseExtractedText(excerpt)
@@ -158,5 +171,9 @@ export function excerptGroundedInSource(excerpt: string, sourceNormalised: strin
     .slice(0, 400);
   if (ex.length < 10) return false;
   const src = sourceNormalised.toLowerCase();
-  return src.includes(ex.slice(0, Math.min(120, ex.length)));
+  const prefix = ex.slice(0, Math.min(120, ex.length));
+  if (src.includes(prefix)) return true;
+  const exN = normalizeForTechnicalGrounding(excerpt);
+  const srcN = normalizeForTechnicalGrounding(sourceNormalised);
+  return exN.length >= 10 && srcN.includes(exN.slice(0, Math.min(120, exN.length)));
 }

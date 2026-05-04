@@ -146,7 +146,12 @@ function enrichChapterTitlesFromToc(map: ChapterMapEntry[], tocEntries: TocEntry
 function headingsToChapterMap(headings: HeadingCandidate[], pageCount: number): ChapterMapEntry[] {
   let use = headings.filter((h) => h.headingType === "chapter");
   if (use.length < 2) {
-    const sections = headings.filter((h) => h.headingType === "section" || h.headingType === "subsection");
+    const sections = headings.filter(
+      (h) =>
+        h.headingType === "section" ||
+        h.headingType === "subsection" ||
+        h.headingType === "subsubsection",
+    );
     if (sections.length >= 3) use = sections;
   }
   if (use.length < 2) return [];

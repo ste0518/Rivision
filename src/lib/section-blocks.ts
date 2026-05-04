@@ -542,9 +542,14 @@ export function buildSectionBlocksPageAware(
         (h) =>
           h.headingType === "section" ||
           h.headingType === "subsection" ||
+          h.headingType === "subsubsection" ||
           h.headingType === "theorem" ||
           h.headingType === "definition" ||
-          h.headingType === "lemma",
+          h.headingType === "lemma" ||
+          h.headingType === "proposition" ||
+          h.headingType === "corollary" ||
+          h.headingType === "example" ||
+          h.headingType === "worked_example",
       )
       .sort((a, b) => a.pageNumber - b.pageNumber || a.lineIndex - b.lineIndex);
 
@@ -670,7 +675,11 @@ export function buildSectionBlocksFromHeadingGraph(
 
   for (let i = 0; i < uniq.length; i += 1) {
     const cur = uniq[i]!;
-    const next = uniq[i + 1];
+    let nextIdx = i + 1;
+    while (nextIdx < uniq.length && uniq[nextIdx]!.level > cur.level) {
+      nextIdx += 1;
+    }
+    const next = uniq[nextIdx];
     const start = { pageNumber: cur.pageNumber, lineIndex: cur.lineIndex };
     const end = next ?
       { pageNumber: next.pageNumber, lineIndex: next.lineIndex }
