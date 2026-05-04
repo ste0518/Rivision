@@ -1461,6 +1461,13 @@ function truncatePackConceptTerm(raw: string, max = 76): string {
   return `${t.slice(0, cut > 36 ? cut : max).trim()}…`;
 }
 
+/** Cut definition/proof bodies before bibliography — PDF extractors often append refs after main text. */
+function clipBibliographyFromPackBody(body: string): string {
+  const bib = body.search(/\n\s*(?:BIBLIOGRAPHY|Bibliography|References|REFERENCES)\b/i);
+  if (bib === -1 || bib < 48) return body;
+  return body.slice(0, bib).trim();
+}
+
 function clipEssDefinitionBody(body: string, formalLabel?: string, term?: string): string {
   const head = `${formalLabel ?? ""} ${term ?? ""}`.toLowerCase();
   const blob = body.toLowerCase();
@@ -1481,7 +1488,8 @@ function blocksToDefinitions(blocks: LabelledBlock[], revisionStyle: PackGenerat
   return blocks
     .filter((b) => b.kind === "definition")
     .map((b) => {
-      const clipped = clipEssDefinitionBody(truncateBodyBeforeInteriorSectionHeading(b.body).slice(0, 3500), b.formalLabel, b.displayTitle);
+      const trimmed = clipBibliographyFromPackBody(truncateBodyBeforeInteriorSectionHeading(b.body).slice(0, 3500));
+      const clipped = clipEssDefinitionBody(trimmed, b.formalLabel, b.displayTitle);
       const defText = compactDefinitionForExamPack(normalizeMathText(clipped), revisionStyle);
       const snippet = defText.slice(0, 700);
       const v = validateLatexSnippet(snippet);
@@ -1735,12 +1743,15 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[], h
     if (!proof?.body?.trim() || proof.body.trim().length < 8) continue;
 
     const heading = `${b.formalLabel}: ${b.displayTitle}`;
-    const { skeleton, mistake } = proofSkeletonFromBody(b.displayTitle, `${b.body}\n${proof.body}`);
-    const statementOnly = truncateBodyBeforeInteriorSectionHeading(b.body.split(/\bProof\s*[.:]\s*/i)[0]!.trim());
+    const proofBodyForPack = clipBibliographyFromPackBody(proof.body);
+    const { skeleton, mistake } = proofSkeletonFromBody(b.displayTitle, `${b.body}\n${proofBodyForPack}`);
+    const statementOnly = clipBibliographyFromPackBody(
+      truncateBodyBeforeInteriorSectionHeading(b.body.split(/\bProof\s*[.:]\s*/i)[0]!.trim()),
+    );
     if (/^(example|sketch|remark)\b/i.test(statementOnly) || /^consider\s+the\s+following\s+example\b/i.test(statementOnly)) continue;
     if (/\btheorem\s+1\s+for\s+the\s+proof\b/i.test(statementOnly)) continue;
 
-    const steps = proofStepsFromBody(proof.body);
+    const steps = proofStepsFromBody(proofBodyForPack);
 
     const proofExcerpt = b.rawBlock.slice(0, 900);
     items.push({
@@ -1749,7 +1760,7 @@ function blocksToProofs(blocks: LabelledBlock[], proofBlocks: LabelledBlock[], h
       proofName: heading,
       statement: normalizeMathText(statementOnly.slice(0, 1500)),
       proofSteps: steps,
-      proofSkeleton: `Proof outline: ${normalizeMathText(proof.body.slice(0, 800))}\n\nKey idea: ${skeleton}`,
+      proofSkeleton: `Proof outline: ${normalizeMathText(proofBodyForPack.slice(0, 800))}\n\nKey idea: ${skeleton}`,
       commonMistake: mistake,
       importance: hasPastEvidence ? "must_know" : "needs_review",
       source: b.sourceFile,

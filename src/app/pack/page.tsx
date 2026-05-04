@@ -757,6 +757,10 @@ function FormulaSection({
   );
 }
 
+function textLikelyHasInlineMath(s: string): boolean {
+  return /\\\(|\\\[|\$\$|\$(?!\s)/.test(s);
+}
+
 function ProofSection({
   items,
   onMakeCard,
@@ -776,7 +780,11 @@ function ProofSection({
       {items.map((p) => (
         <Card key={p.id}>
           <CardHeader>
-            <CardTitle className="text-base">{p.proofName ?? p.name}</CardTitle>
+            {textLikelyHasInlineMath(p.proofName ?? p.name) ? (
+              <MathMarkdown content={p.proofName ?? p.name} className="!bg-transparent !p-0 text-base font-semibold text-slate-950" />
+            ) : (
+              <CardTitle className="text-base">{p.proofName ?? p.name}</CardTitle>
+            )}
           </CardHeader>
           <CardContent className="space-y-3 text-sm">
             <dl className="grid gap-1 text-xs text-slate-600 sm:grid-cols-2">
@@ -809,11 +817,15 @@ function ProofSection({
             </div>
             <div>
               <p className="font-medium text-slate-800">Skeleton</p>
-              <p className="mt-1 text-slate-700">{p.proofSkeleton}</p>
+              <MathMarkdown content={p.proofSkeleton} className="mt-1 !bg-transparent !p-2 text-slate-700" />
             </div>
             <div>
               <p className="font-medium text-slate-800">Common mistake</p>
-              <p className="mt-1 text-amber-900">{p.commonMistake}</p>
+              {textLikelyHasInlineMath(p.commonMistake) ? (
+                <MathMarkdown content={p.commonMistake} className="mt-1 !bg-transparent !p-2 text-amber-900" />
+              ) : (
+                <p className="mt-1 text-amber-900">{p.commonMistake}</p>
+              )}
             </div>
             {p.sourceExcerpt ? (
               <details className="text-sm">

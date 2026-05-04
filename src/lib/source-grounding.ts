@@ -95,6 +95,32 @@ function stripWhitelistPhrases(blob: string): string {
  * Long rare tokens in generated text that never occur in the source (stale template / hallucination).
  * Ignores short tokens and UI vocabulary.
  */
+/**
+ * True when a long rare token from generated text is plausibly grounded in the lecture source
+ * (US/UK spelling, hyphenation, and common reparameterisation vocabulary).
+ */
+export function tokenTechnicallyGrounded(w: string, sourceLower: string, srcN: string): boolean {
+  if (sourceLower.includes(w)) return true;
+  const wn = normalizeForTechnicalGrounding(w);
+  if (wn.length >= 6 && srcN.includes(wn)) return true;
+
+  const flip = w.includes("isation") ? w.replace(/isation/gi, "ization") : w.includes("ization") ? w.replace(/ization/gi, "isation") : w;
+  if (flip !== w) {
+    if (sourceLower.includes(flip)) return true;
+    const flippedN = normalizeForTechnicalGrounding(flip);
+    if (flippedN.length >= 6 && srcN.includes(flippedN)) return true;
+  }
+
+  const dehyph = w.replace(/-/g, "");
+  if (dehyph.length >= 12 && sourceLower.replace(/-/g, "").includes(dehyph)) return true;
+
+  if (/\bparametr/i.test(w) && /\b(re)?parametr/i.test(sourceLower)) return true;
+  if (/\bimportance\s*sampling\b/.test(w) && /\bimportance\s+sampling\b/i.test(sourceLower)) return true;
+  if (/\bnormali[sz]ed\s+importance\b/.test(w) && /\bnormali[sz]ed\s+importance\b/i.test(sourceLower)) return true;
+
+  return false;
+}
+
 export function findProminentTermsAbsentFromSource(generatedTextLower: string, sourceLower: string): string[] {
   const cleaned = stripWhitelistPhrases(generatedTextLower.toLowerCase());
   const hits = cleaned.match(/\b[a-z]{14,}\b/g) ?? [];
@@ -102,10 +128,8 @@ export function findProminentTermsAbsentFromSource(generatedTextLower: string, s
   const out: string[] = [];
   for (const w of hits) {
     if (GENERIC_STOPWORDS.has(w)) continue;
-    const wn = normalizeForTechnicalGrounding(w);
-    if (!sourceLower.includes(w) && !srcN.includes(wn) && !srcN.includes(normalizeForTechnicalGrounding(w.replace(/-/g, " ")))) {
-      out.push(w);
-    }
+    if (tokenTechnicallyGrounded(w, sourceLower, srcN)) continue;
+    out.push(w);
   }
   return [...new Set(out)].slice(0, 12);
 }
@@ -149,6 +173,9 @@ export function detectSourceContamination(generatedBlobLower: string, sourceLowe
       if (tokens.length >= 3 && tokens.every((tok) => srcN.includes(tok))) continue;
       const words = p.split(/\s+/).filter((x) => !APP_SYSTEM_WORD_WHITELIST.has(x));
       if (words.length < 3) continue;
+      const longWords = words.filter((x) => x.length >= 6);
+      const groundedLong = longWords.filter((tok) => tokenTechnicallyGrounded(tok, sourceLower, srcN));
+      if (longWords.length > 0 && groundedLong.length / longWords.length >= 0.75) continue;
       issues.push(`Generated phrase not grounded in source: “${p.slice(0, 80)}”.`);
     }
   }
@@ -184,6 +211,7 @@ export function normalizeForTechnicalGrounding(text: string): string {
   t = t.replace(/\bstatespacemodels?\b/g, "statespacemodel");
   t = t.replace(/\bhidden\s+markov\s+models?\b/g, "hmm");
   t = t.replace(/\bhmm\b/g, "hmm");
+  t = t.replace(/\bpseudo[-\s]?code\b/g, "pseudocode");
   return t;
 }
 
