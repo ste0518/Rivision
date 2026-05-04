@@ -204,9 +204,11 @@ export default function UploadPage() {
           <div className="flex flex-col gap-4 sm:flex-row sm:flex-wrap sm:items-center sm:justify-between">
             <div className="space-y-1">
               <CardTitle className="text-base">Upload behaviour</CardTitle>
-              <CardDescription>Controls whether new files replace your saved study pack and progress.</CardDescription>
+              <CardDescription>
+                Controls whether new files replace your saved study pack and progress. PDFs always run full-page OCR in your browser for extraction (large files can take a while).
+              </CardDescription>
             </div>
-            <label className="flex cursor-pointer items-center gap-2 text-sm">
+            <label className="flex cursor-pointer items-center gap-2 text-sm sm:self-end">
               <input
                 type="checkbox"
                 checked={replacePack}

@@ -181,6 +181,15 @@ function classifyLine(trimmed: string): { kind: HeadingCandidateKind; level: num
   if (/^Algorithm\s*\d*/i.test(t)) return { kind: "algorithm", level: 4 };
   if (/^Remark\s*\d*/i.test(t)) return { kind: "remark", level: 4 };
   if (/^(Show\s+that|Derive|Check\s+that|Determine\s+whether)\b/i.test(t)) return { kind: "exercise", level: 4 };
+  /** Slide-style ALL CAPS banners (short lines only). */
+  if (
+    /^[A-Z][A-Z0-9]+(?:\s+[A-Z0-9]+){1,9}$/.test(t) &&
+    t.length >= 8 &&
+    t.length <= 72 &&
+    !/\d{4,}/.test(t)
+  ) {
+    return { kind: "section", level: 2 };
+  }
   return null;
 }
 

@@ -3,6 +3,7 @@
  * All structure uses pageNumber + lineIndex — not blind combinedText offsets alone.
  */
 
+import { reflowPrintedTextForHeadingDetection } from "@/lib/pdf-line-reflow";
 import { sanitiseExtractedText, splitDocumentTextLayers } from "@/lib/text-layers";
 
 export type LineSourceLayer = "printed" | "handwritten" | "ocr_noise" | "unknown";
@@ -67,7 +68,7 @@ function normaliseLine(s: string): string {
 
 /** Classify each raw line into printed / handwritten / ocr_noise for downstream extractors. */
 function buildLineRecordsForPage(pageNumber: number, rawText: string): LineRecord[] {
-  const lines = rawText.replace(/\r\n/g, "\n").split("\n");
+  const lines = reflowPrintedTextForHeadingDetection(rawText).replace(/\r\n/g, "\n").split("\n");
   const out: LineRecord[] = [];
   lines.forEach((line, lineIndex) => {
     const text = line;

@@ -103,7 +103,9 @@ export function findProminentTermsAbsentFromSource(generatedTextLower: string, s
   for (const w of hits) {
     if (GENERIC_STOPWORDS.has(w)) continue;
     const wn = normalizeForTechnicalGrounding(w);
-    if (!sourceLower.includes(w) && !srcN.includes(wn)) out.push(w);
+    if (!sourceLower.includes(w) && !srcN.includes(wn) && !srcN.includes(normalizeForTechnicalGrounding(w.replace(/-/g, " ")))) {
+      out.push(w);
+    }
   }
   return [...new Set(out)].slice(0, 12);
 }
@@ -141,7 +143,8 @@ export function detectSourceContamination(generatedBlobLower: string, sourceLowe
   for (const p of [...new Set(phrases)].slice(0, 8)) {
     if (p.length < 22) continue;
     const pN = normalizeForTechnicalGrounding(p);
-    if (!sourceLower.includes(p) && !srcN.includes(pN)) {
+    const pSpaced = normalizeForTechnicalGrounding(p.replace(/-/g, " "));
+    if (!sourceLower.includes(p) && !srcN.includes(pN) && !srcN.includes(pSpaced)) {
       const tokens = pN.split(/\s+/).filter((x) => x.length >= 5 && !GENERIC_STOPWORDS.has(x));
       if (tokens.length >= 3 && tokens.every((tok) => srcN.includes(tok))) continue;
       const words = p.split(/\s+/).filter((x) => !APP_SYSTEM_WORD_WHITELIST.has(x));
@@ -172,6 +175,15 @@ export function normalizeForTechnicalGrounding(text: string): string {
   t = t.replace(/\bvariance\b/g, "var");
   t = t.replace(/\bexpectation\b/g, "e");
   t = t.replace(/\bprobability\b/g, "p");
+  /** US/UK spelling and spacing variants so contamination checks match real lecture PDFs. */
+  t = t.replace(/\bparametri[sz]ations?\b/g, "parametrization");
+  t = t.replace(/\bparameteri[sz]ations?\b/g, "parametrization");
+  t = t.replace(/\bnormali[sz]ations?\b/g, "normalization");
+  t = t.replace(/\bstate\s*space\s+models?\b/g, "statespacemodel");
+  t = t.replace(/\bstate-?space\s+models?\b/g, "statespacemodel");
+  t = t.replace(/\bstatespacemodels?\b/g, "statespacemodel");
+  t = t.replace(/\bhidden\s+markov\s+models?\b/g, "hmm");
+  t = t.replace(/\bhmm\b/g, "hmm");
   return t;
 }
 

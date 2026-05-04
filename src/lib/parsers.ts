@@ -39,7 +39,7 @@ export async function parsePdfFile(file: File): Promise<ParsedDocument> {
     }
 
     const pdf = await getDocument({ data: arrayBuffer }).promise;
-    const pages: ParsedPage[] = [];
+    let pages: ParsedPage[] = [];
 
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
       const page = await pdf.getPage(pageNumber);
@@ -59,6 +59,18 @@ export async function parsePdfFile(file: File): Promise<ParsedDocument> {
         textQuality: text.length < MIN_PDF_CHARS_PER_PAGE ? "low" : text.length < 300 ? "medium" : "high",
         warnings: visualHeavy ? ["This page contains diagrams/handwritten annotations; text extraction may miss content."] : [],
       });
+    }
+
+    if (typeof window !== "undefined") {
+      try {
+        const { augmentPdfPagesWithBrowserOcr } = await import("@/lib/pdf-ocr-client");
+        const aug = await augmentPdfPagesWithBrowserOcr(pdf, pages, warnings);
+        pages = aug.pages;
+      } catch (ocrError) {
+        warnings.push(
+          ocrError instanceof Error ? `PDF OCR failed (${ocrError.message}).` : "PDF OCR failed.",
+        );
+      }
     }
 
     const fullText = renderPages(file.name, pages);

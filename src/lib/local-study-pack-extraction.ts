@@ -290,6 +290,18 @@ function titleForBlock(kind: PackItemKind, parenTitle: string | undefined, body:
   if (parenTitle?.trim()) return parenTitle.trim().replace(/\s+/g, " ");
   const inferred = inferTitleFromStatement(kind, body, formalNumber, courseContext);
   if (inferred) return inferred;
+  if (kind === "definition") {
+    const raw = body.replace(/^\s+/, "").replace(/\s+/g, " ");
+    let s = (raw.split(/(?<=[.!?])\s+/)[0] ?? raw).trim();
+    if (s.length > 110) {
+      const comma = s.indexOf(",");
+      if (comma > 36 && comma < 100) s = s.slice(0, comma);
+      else s = s.slice(0, 96);
+    }
+    s = s.trim();
+    if (s.length > 84) s = `${s.slice(0, 81)}…`;
+    if (s.length >= 8) return s;
+  }
   const firstLine = body.replace(/^\s+/, "").split(/\n/)[0] ?? body;
   const cleaned = firstLine.replace(/\s+/g, " ").trim();
   if (cleaned.length >= 8 && cleaned.length < 160) return cleaned.length > 140 ? `${cleaned.slice(0, 137)}…` : cleaned;
@@ -1441,6 +1453,14 @@ function compactDefinitionForExamPack(raw: string, revisionStyle: PackGeneratorS
   return `${normalized.slice(0, cut).trim()}…`;
 }
 
+/** Section / topic titles from TOC can be full sentences — keep card headings short. */
+function truncatePackConceptTerm(raw: string, max = 76): string {
+  const t = raw.replace(/\s+/g, " ").trim();
+  if (t.length <= max) return t;
+  const cut = t.lastIndexOf(" ", max);
+  return `${t.slice(0, cut > 36 ? cut : max).trim()}…`;
+}
+
 function clipEssDefinitionBody(body: string, formalLabel?: string, term?: string): string {
   const head = `${formalLabel ?? ""} ${term ?? ""}`.toLowerCase();
   const blob = body.toLowerCase();
@@ -1513,7 +1533,7 @@ function harvestConceptualDefinitions(
   }
 
   for (const rawTerm of candidateTerms) {
-    const term = rawTerm.replace(/\s+/g, " ").trim();
+    const term = truncatePackConceptTerm(rawTerm.replace(/\s+/g, " ").trim());
     const key = term.toLowerCase();
     if (used.has(key)) continue;
     const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
@@ -1554,7 +1574,7 @@ function harvestConceptualDefinitions(
     const v = validateLatexSnippet(block.slice(0, 600));
     out.push({
       id: createId("def"),
-      term: termGuess.slice(0, 120),
+      term: truncatePackConceptTerm(termGuess.slice(0, 120)),
       definition: compactDefinitionForExamPack(normalizeMathText(block), revisionStyle),
       source: primaryFile,
       sourceFile: primaryFile,
@@ -1582,7 +1602,7 @@ function harvestConceptualDefinitions(
     const v = validateLatexSnippet(block.slice(0, 600));
     out.push({
       id: createId("def"),
-      term: phrase,
+      term: truncatePackConceptTerm(phrase),
       definition: compactDefinitionForExamPack(normalizeMathText(block), revisionStyle),
       source: primaryFile,
       sourceFile: primaryFile,
