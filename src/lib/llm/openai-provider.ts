@@ -8,6 +8,12 @@ import { attachProofsToPreviousTheorem, segmentRevisionCandidates } from "@/lib/
 import { excerptGroundedInSource } from "@/lib/source-grounding";
 import type { CandidateRevisionBlock, CuratedDeckResult, ExtractionPipelineMode, ExtractionVerificationReport, ParsedDocument, RejectedRevisionItem, RevisionItem } from "@/lib/types";
 
+const maxLlmCandidates = Number(process.env.RIVISION_MAX_LLM_CANDIDATES ?? 90);
+const maxCandidateChars = Number(process.env.RIVISION_MAX_LLM_CANDIDATE_CHARS ?? 1200);
+const maxProofChars = Number(process.env.RIVISION_MAX_LLM_PROOF_CHARS ?? 900);
+const maxAssessmentChars = Number(process.env.RIVISION_MAX_LLM_ASSESSMENT_CHARS ?? 16000);
+const maxPromptOutputTokens = Number(process.env.RIVISION_MAX_LLM_OUTPUT_TOKENS ?? 10000);
+
 type OpenAiProviderOptions = {
   model: string;
   apiKey?: string;
@@ -51,25 +57,27 @@ export class OpenAiResponsesProvider implements LLMProvider {
     const pastPaperDocuments = input.pastPaperDocuments ?? [];
     const problemSheetDocuments = input.problemSheetDocuments ?? [];
     const solutionDocuments = input.solutionDocuments ?? [];
-    const notesText = renderCandidateDocumentSet(input.notesDocuments, input.guidanceDocuments);
+    const selectedCandidates = selectLlmCandidates(candidates);
+    const notesText = renderCandidateDocumentSet(selectedCandidates, input.guidanceDocuments);
     const notesFullText = renderDocumentSet("NOTES", input.notesDocuments);
-    const guidanceText = renderDocumentSet("GUIDANCE", input.guidanceDocuments);
+    const guidanceText = renderCompactDocumentSet("GUIDANCE", input.guidanceDocuments, maxAssessmentChars);
     const assessmentText = [
-      renderDocumentSet("GUIDANCE", input.guidanceDocuments),
-      renderDocumentSet("PAST_PAPER", pastPaperDocuments),
-      renderDocumentSet("PROBLEM_SHEET", problemSheetDocuments),
-      renderDocumentSet("SOLUTION_OR_MARK_SCHEME", solutionDocuments),
+      renderCompactDocumentSet("GUIDANCE", input.guidanceDocuments, maxAssessmentChars),
+      renderCompactDocumentSet("PAST_PAPER", pastPaperDocuments, maxAssessmentChars),
+      renderCompactDocumentSet("PROBLEM_SHEET", problemSheetDocuments, maxAssessmentChars),
+      renderCompactDocumentSet("SOLUTION_OR_MARK_SCHEME", solutionDocuments, maxAssessmentChars),
     ].filter(Boolean).join("\n\n");
 
     const response = await this.client.responses.create({
       model: this.model,
       store: false,
+      max_output_tokens: maxPromptOutputTokens,
       ...reasoningRequestOptions(this.model, this.reasoningEffort),
       input: [
         { role: "system", content: extractionSystemPrompt },
         {
           role: "user",
-          content: `Pipeline mode: ${input.pipelineMode}\n\nGuidance and assessment evidence:\n${assessmentText || guidanceText || "(none)"}\n\nSegmented candidate blocks:\n${notesText}`,
+          content: `Pipeline mode: ${input.pipelineMode}\n\nCandidate selection: ${selectedCandidates.length} highest-signal blocks from ${candidates.length} detected blocks. Prefer exact source excerpts and avoid inventing omitted context.\n\nGuidance and assessment evidence:\n${assessmentText || guidanceText || "(none)"}\n\nSegmented candidate blocks:\n${notesText}`,
         },
       ],
       text: {
@@ -116,6 +124,7 @@ export class OpenAiResponsesProvider implements LLMProvider {
     const response = await this.client.responses.create({
       model: this.model,
       store: false,
+      max_output_tokens: Math.min(maxPromptOutputTokens, 6000),
       ...reasoningRequestOptions(this.model, this.reasoningEffort),
       input: [
         { role: "system", content: verificationSystemPrompt },
@@ -156,9 +165,88 @@ function supportsReasoningEffort(model: string) {
   return /^gpt-5(\.|-|$)/.test(model) || /^o\d/.test(model);
 }
 
-function renderCandidateDocumentSet(notesDocuments: ParsedDocument[], guidanceDocuments: ParsedDocument[]) {
-  const candidates = attachProofsToPreviousTheorem(segmentRevisionCandidates(notesDocuments));
-  return JSON.stringify({ candidates, guidanceDocuments }, null, 2);
+function renderCandidateDocumentSet(candidates: CandidateRevisionBlock[], guidanceDocuments: ParsedDocument[]) {
+  return JSON.stringify({
+    candidates: candidates.map(compactCandidateForLlm),
+    guidanceDocuments: guidanceDocuments.map((doc) => compactDocumentForLlm("GUIDANCE", doc, maxAssessmentChars)),
+  }, null, 2);
+}
+
+function selectLlmCandidates(candidates: CandidateRevisionBlock[]) {
+  const selected = [...candidates]
+    .sort((a, b) => candidatePriority(b) - candidatePriority(a))
+    .slice(0, Math.max(30, maxLlmCandidates));
+  return selected.sort((a, b) => (a.startOffset ?? 0) - (b.startOffset ?? 0));
+}
+
+function candidatePriority(candidate: CandidateRevisionBlock) {
+  const typeBoost: Partial<Record<CandidateRevisionBlock["type"], number>> = {
+    theorem: 18,
+    lemma: 17,
+    proposition: 17,
+    corollary: 15,
+    definition: 16,
+    formula: 14,
+    algorithm: 14,
+    proof: 10,
+    example: 6,
+    remark: 4,
+  };
+  const title = `${candidate.title ?? ""} ${candidate.rawText.slice(0, 160)}`.toLowerCase();
+  const keywordBoost =
+    /(important|exam|shown|therefore|estimator|algorithm|method|definition|theorem|proposition|formula|variance|likelihood|sampling|markov|monte carlo)/.test(title)
+      ? 8
+      : 0;
+  const lengthBoost = candidate.rawText.length > 80 && candidate.rawText.length < 2500 ? 4 : 0;
+  return (typeBoost[candidate.type] ?? 2) + keywordBoost + lengthBoost;
+}
+
+function compactCandidateForLlm(candidate: CandidateRevisionBlock) {
+  return {
+    id: candidate.id,
+    label: candidate.label,
+    type: candidate.type,
+    candidateKind: candidate.candidateKind,
+    conceptName: candidate.conceptName,
+    number: candidate.number,
+    title: candidate.title,
+    statement: truncateForLlm(candidate.statement ?? candidate.rawText, maxCandidateChars),
+    proof: candidate.proof ? truncateForLlm(candidate.proof, maxProofChars) : undefined,
+    rawText: truncateForLlm(candidate.rawText, maxCandidateChars),
+    sourceFile: candidate.sourceFile,
+    pageNumber: candidate.pageNumber,
+    sourceLocation: candidate.sourceLocation,
+    section: candidate.section,
+  };
+}
+
+function compactDocumentForLlm(kind: string, doc: ParsedDocument, maxChars: number) {
+  return {
+    kind,
+    sourceFile: doc.sourceFile,
+    pageCount: doc.pages?.length,
+    excerpt: truncateForLlm(renderDocumentTextForLlm(doc), maxChars),
+  };
+}
+
+function renderCompactDocumentSet(kind: "GUIDANCE" | "PAST_PAPER" | "PROBLEM_SHEET" | "SOLUTION_OR_MARK_SCHEME", docs: ParsedDocument[], maxChars: number) {
+  return docs.map((doc) => {
+    const compact = compactDocumentForLlm(kind, doc, maxChars);
+    return `[${kind} SOURCE: ${compact.sourceFile}]\n${compact.excerpt}`;
+  }).join("\n\n");
+}
+
+function renderDocumentTextForLlm(doc: ParsedDocument) {
+  if (doc.pages?.length) {
+    return doc.pages.map((page) => `[Page ${page.pageNumber}]\n${page.text}`).join("\n\n");
+  }
+  return doc.fullText;
+}
+
+function truncateForLlm(value: string | undefined, maxChars: number) {
+  const text = (value ?? "").replace(/\s+/g, " ").trim();
+  if (text.length <= maxChars) return text;
+  return `${text.slice(0, maxChars)} ... [truncated]`;
 }
 
 function hydrateRejectedItems(rejectedItems: RejectedRevisionItem[], candidates: CandidateRevisionBlock[], guidanceText: string) {

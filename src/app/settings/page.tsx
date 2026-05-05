@@ -28,8 +28,8 @@ const cheapModelOptions = [
 
 const reasoningOptions: Array<{ value: NonNullable<LlmPipelineSettings["reasoningEffort"]>; label: string }> = [
   { value: "low", label: "Fast · lower cost" },
-  { value: "medium", label: "Balanced" },
-  { value: "high", label: "Exam extraction · recommended" },
+  { value: "medium", label: "Balanced · recommended on Vercel" },
+  { value: "high", label: "Exam extraction · slower" },
   { value: "xhigh", label: "Maximum checking · slower" },
 ];
 
