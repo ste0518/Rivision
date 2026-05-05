@@ -30,6 +30,7 @@ export type LlmPipelineSettings = {
   mode: ExtractionPipelineMode;
   cheapModel: string;
   primaryModel: string;
+  reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
   /** Browser-saved user key. Sent only to server API routes for the current extraction request. */
   openaiApiKey?: string;
 };
@@ -37,5 +38,6 @@ export type LlmPipelineSettings = {
 export const defaultLlmPipelineSettings: LlmPipelineSettings = {
   mode: "ai_key_revision_analysis",
   cheapModel: "gpt-5-mini",
-  primaryModel: "gpt-5.2",
+  primaryModel: "gpt-5.5",
+  reasoningEffort: "high",
 };

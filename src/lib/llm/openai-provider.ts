@@ -11,17 +11,20 @@ import type { CandidateRevisionBlock, CuratedDeckResult, ExtractionPipelineMode,
 type OpenAiProviderOptions = {
   model: string;
   apiKey?: string;
+  reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
 };
 
 export class OpenAiResponsesProvider implements LLMProvider {
   private client: OpenAI;
   private model: string;
+  private reasoningEffort?: OpenAiProviderOptions["reasoningEffort"];
 
   constructor(options: OpenAiProviderOptions) {
     const apiKey = options.apiKey?.trim() || process.env.OPENAI_API_KEY?.trim();
     if (!apiKey) throw new Error("Missing OpenAI API key.");
     this.client = new OpenAI({ apiKey });
     this.model = options.model;
+    this.reasoningEffort = options.reasoningEffort;
   }
 
   async extractRevisionItems(input: {
@@ -60,6 +63,8 @@ export class OpenAiResponsesProvider implements LLMProvider {
 
     const response = await this.client.responses.create({
       model: this.model,
+      store: false,
+      ...reasoningRequestOptions(this.model, this.reasoningEffort),
       input: [
         { role: "system", content: extractionSystemPrompt },
         {
@@ -110,6 +115,8 @@ export class OpenAiResponsesProvider implements LLMProvider {
 
     const response = await this.client.responses.create({
       model: this.model,
+      store: false,
+      ...reasoningRequestOptions(this.model, this.reasoningEffort),
       input: [
         { role: "system", content: verificationSystemPrompt },
         {
@@ -138,6 +145,15 @@ export class OpenAiResponsesProvider implements LLMProvider {
       }
     );
   }
+}
+
+function reasoningRequestOptions(model: string, effort: OpenAiProviderOptions["reasoningEffort"]) {
+  if (!effort || !supportsReasoningEffort(model)) return {};
+  return { reasoning: { effort } };
+}
+
+function supportsReasoningEffort(model: string) {
+  return /^gpt-5(\.|-|$)/.test(model) || /^o\d/.test(model);
 }
 
 function renderCandidateDocumentSet(notesDocuments: ParsedDocument[], guidanceDocuments: ParsedDocument[]) {

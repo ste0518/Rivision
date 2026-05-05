@@ -13,17 +13,24 @@ import { exportRevisionItems, importRevisionItems, loadStorageSettings, saveStor
 import { useStudyStore } from "@/hooks/use-study-store";
 
 const primaryModelOptions = [
-  { value: "gpt-5.2", label: "GPT-5.2 · recommended" },
-  { value: "gpt-5.2-pro", label: "GPT-5.2 pro · highest quality" },
-  { value: "gpt-5", label: "GPT-5 · balanced" },
+  { value: "gpt-5.5", label: "GPT-5.5 · highest quality" },
+  { value: "gpt-5.2", label: "GPT-5.2 · strong, cheaper" },
+  { value: "gpt-5", label: "GPT-5 · older fallback" },
   { value: "gpt-5-mini", label: "GPT-5 mini · cheaper" },
-  { value: "gpt-4.1", label: "GPT-4.1 · non-reasoning" },
+  { value: "gpt-4.1", label: "GPT-4.1 · long context fallback" },
 ];
 
 const cheapModelOptions = [
   { value: "gpt-5-mini", label: "GPT-5 mini · recommended" },
   { value: "gpt-5-nano", label: "GPT-5 nano · cheapest" },
   { value: "gpt-4.1-mini", label: "GPT-4.1 mini · long context" },
+];
+
+const reasoningOptions: Array<{ value: NonNullable<LlmPipelineSettings["reasoningEffort"]>; label: string }> = [
+  { value: "low", label: "Fast · lower cost" },
+  { value: "medium", label: "Balanced" },
+  { value: "high", label: "Exam extraction · recommended" },
+  { value: "xhigh", label: "Maximum checking · slower" },
 ];
 
 function modelSelectValue(value: string, options: Array<{ value: string }>) {
@@ -35,6 +42,9 @@ function normalizeModelSettings(settings: LlmPipelineSettings): LlmPipelineSetti
     ...settings,
     primaryModel: modelSelectValue(settings.primaryModel, primaryModelOptions) || defaultLlmPipelineSettings.primaryModel,
     cheapModel: modelSelectValue(settings.cheapModel, cheapModelOptions) || defaultLlmPipelineSettings.cheapModel,
+    reasoningEffort: reasoningOptions.some((option) => option.value === settings.reasoningEffort)
+      ? settings.reasoningEffort
+      : defaultLlmPipelineSettings.reasoningEffort,
   };
 }
 
@@ -113,6 +123,17 @@ export default function SettingsPage() {
                 >
                   {!modelSelectValue(llm.cheapModel, cheapModelOptions) ? <option value="">{llm.cheapModel || "Choose a model"}</option> : null}
                   {cheapModelOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </Select>
+              </label>
+              <label className="space-y-1 text-sm font-medium">
+                Extraction quality
+                <Select
+                  value={llm.reasoningEffort ?? defaultLlmPipelineSettings.reasoningEffort}
+                  onChange={(event) => setLlm((current) => ({ ...current, reasoningEffort: event.target.value as LlmPipelineSettings["reasoningEffort"] }))}
+                >
+                  {reasoningOptions.map((option) => (
                     <option key={option.value} value={option.value}>{option.label}</option>
                   ))}
                 </Select>
