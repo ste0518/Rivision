@@ -30,6 +30,8 @@ export type LlmPipelineSettings = {
   mode: ExtractionPipelineMode;
   cheapModel: string;
   primaryModel: string;
+  /** Browser-saved user key. Sent only to server API routes for the current extraction request. */
+  openaiApiKey?: string;
 };
 
 export const defaultLlmPipelineSettings: LlmPipelineSettings = {

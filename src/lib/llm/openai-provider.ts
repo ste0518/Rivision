@@ -10,6 +10,7 @@ import type { CandidateRevisionBlock, CuratedDeckResult, ExtractionPipelineMode,
 
 type OpenAiProviderOptions = {
   model: string;
+  apiKey?: string;
 };
 
 export class OpenAiResponsesProvider implements LLMProvider {
@@ -17,7 +18,9 @@ export class OpenAiResponsesProvider implements LLMProvider {
   private model: string;
 
   constructor(options: OpenAiProviderOptions) {
-    this.client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const apiKey = options.apiKey?.trim() || process.env.OPENAI_API_KEY?.trim();
+    if (!apiKey) throw new Error("Missing OpenAI API key.");
+    this.client = new OpenAI({ apiKey });
     this.model = options.model;
   }
 

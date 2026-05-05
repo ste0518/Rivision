@@ -98,7 +98,7 @@ export async function extractRevisionItems({
       };
     }
     fallbackWarning = llmResult.error
-      ? `Local heuristic mode is approximate. For AI reasoning over notes + past papers, configure OPENAI_API_KEY. (${llmResult.error})`
+      ? `Local heuristic mode is approximate. For AI reasoning over notes + past papers, add an OpenAI API key in Settings. (${llmResult.error})`
       : undefined;
   }
 
@@ -241,7 +241,11 @@ export function loadLlmPipelineSettings(): LlmPipelineSettings {
 
 export function saveLlmPipelineSettings(settings: LlmPipelineSettings) {
   if (typeof window === "undefined") return;
-  safeSetLocalStorage(llmSettingsStorageKey, settings);
+  safeSetLocalStorage(llmSettingsStorageKey, {
+    ...settings,
+    openaiApiKey: settings.openaiApiKey?.trim() || undefined,
+  });
+  window.dispatchEvent(new CustomEvent("rivision-settings"));
 }
 
 async function deterministicCurate(

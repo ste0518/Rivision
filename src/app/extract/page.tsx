@@ -291,7 +291,7 @@ function ExtractPageInner() {
     const response = await fetch("/api/ai-clean-math", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: item.statement }),
+      body: JSON.stringify({ text: item.statement, openaiApiKey: loadLlmPipelineSettings().openaiApiKey }),
     });
     const payload = (await response.json()) as { markdown?: string; error?: string; issues?: string[]; latexQuality?: RevisionItem["latexQuality"] };
     if (!response.ok || !payload.markdown) {
@@ -1026,4 +1026,3 @@ function renderStorageError(error: unknown) {
   const message = error instanceof Error ? error.message : "Could not write candidates to IndexedDB.";
   return `Storage warning: ${message}\nThe extraction result is still available in memory. Export JSON before resetting local data.`;
 }
-

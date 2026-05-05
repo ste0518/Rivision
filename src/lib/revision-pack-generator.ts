@@ -6,8 +6,9 @@ import {
   extractExampleAndExerciseItemsForDebug,
 } from "@/lib/local-study-pack-extraction";
 import { cardFromDefinition, cardFromFormula, cardFromMethod, cardFromProof } from "@/lib/pack-to-card";
+import { mathStatusFromValidation, validateLatexSnippet } from "@/lib/latex-validate";
 import { cleanUploadedStudySourceText } from "@/lib/source-text-cleanup";
-import type { GeneratedDefinitionItem, GeneratedPracticeQuestion, GeneratedRevisionPack } from "@/lib/student-revision-schema";
+import type { GeneratedDefinitionItem, GeneratedFormulaItem, GeneratedMethodTemplate, GeneratedPracticeQuestion, GeneratedProofItem, GeneratedRevisionPack } from "@/lib/student-revision-schema";
 import type { RevisionItem } from "@/lib/types";
 import type { StudyFile, StudyFileRole } from "@/lib/types";
 import { createId } from "@/lib/utils";
@@ -56,6 +57,112 @@ export function countTypedPackItems(pack: GeneratedRevisionPack): number {
     pack.proofs.length +
     pack.methods.length
   );
+}
+
+function ensureMathDelimiters(value: string) {
+  const trimmed = value.trim();
+  if (!trimmed) return trimmed;
+  if (/\\\(|\\\[|\$/.test(trimmed)) return trimmed;
+  return `\\[ ${trimmed} \\]`;
+}
+
+function apiSourceExcerpt(item: RevisionItem) {
+  return item.sourceExcerpt ?? item.originalRawText ?? item.statement;
+}
+
+export function buildStudentRevisionPackFromApiItems(basePack: GeneratedRevisionPack, items: RevisionItem[]): GeneratedRevisionPack {
+  if (!items.length) return basePack;
+  const definitions: GeneratedDefinitionItem[] = [];
+  const formulas: GeneratedFormulaItem[] = [];
+  const proofs: GeneratedProofItem[] = [];
+  const methods: GeneratedMethodTemplate[] = [];
+
+  for (const item of items) {
+    const sourceExcerpt = apiSourceExcerpt(item);
+    const sourcePage = item.pageNumber;
+    const sourceSection = item.section ?? item.sourceLocation;
+    if (item.type === "definition" || item.cardPurpose === "definition_recall") {
+      definitions.push({
+        id: item.id,
+        term: item.conceptName || item.cardFront || item.title,
+        definition: item.statementLatex || item.statement,
+        source: item.sourceFile,
+        sourceFile: item.sourceFile,
+        sourcePage,
+        sourceSection,
+        sourceLabel: item.theoremNumber ? `Definition ${item.theoremNumber}` : item.sourceLocation,
+        sourceExcerpt,
+        importance: item.importance === "must_know" ? "must_know" : "high",
+        definitionKind: item.theoremNumber ? "formal" : "conceptual",
+        mathStatus: mathStatusFromValidation(validateLatexSnippet(item.statementLatex || item.statement)),
+      });
+      continue;
+    }
+
+    if (item.type === "formula" || item.cardPurpose === "formula_recall" || item.revisionPackCategory === "formulasToKnow") {
+      const latex = ensureMathDelimiters(item.statementLatex || item.answerLatex || item.statement);
+      formulas.push({
+        id: item.id,
+        name: item.conceptName || item.cardFront || item.title,
+        latex,
+        formulaPlain: item.statement,
+        rawFormula: item.originalRawText ?? item.statement,
+        cleanedLatex: latex.replace(/^\\\[\s*|\s*\\\]$/g, ""),
+        whenToUse: item.guidanceReason || item.whyThisCardMatters || "Formula selected by API extraction.",
+        source: item.sourceFile,
+        sourceFile: item.sourceFile,
+        sourcePage,
+        sourceSection,
+        sourceLabel: item.sourceLocation,
+        sourceExcerpt,
+        mathStatus: mathStatusFromValidation(validateLatexSnippet(latex)),
+      });
+      continue;
+    }
+
+    if (item.type === "algorithm" || item.revisionPackCategory === "methodsAndTemplates") {
+      methods.push({
+        id: item.id,
+        problemType: item.conceptName || item.cardFront || item.title,
+        steps: (item.answer || item.statement).split(/\n+/).map((line) => line.replace(/^\s*\d+[.)]\s*/, "").trim()).filter(Boolean).slice(0, 10),
+        triggerWords: item.tags.length ? item.tags : [item.conceptName || item.cardFront || item.title],
+        relatedPracticeType: item.guidanceReason || "API-extracted method template",
+      });
+      continue;
+    }
+
+    if (item.type === "proof" || item.type === "theorem" || item.type === "proposition" || item.type === "lemma" || item.type === "corollary" || item.cardPurpose === "proof_recall") {
+      const proofText = item.proofLatex || item.proof || item.answerLatex || item.answer;
+      proofs.push({
+        id: item.id,
+        name: item.displayTitle || item.title,
+        proofName: item.displayTitle || item.title,
+        statement: item.statementLatex || item.statement,
+        proofSteps: proofText.split(/\n+/).map((line) => line.replace(/^\s*\d+[.)]\s*/, "").trim()).filter((line) => line.length > 8).slice(0, 12),
+        proofSkeleton: proofText,
+        commonMistake: item.extractionWarning || item.uncertaintyNote || "Check the source excerpt and stated assumptions before relying on this proof.",
+        importance: item.importance === "must_know" ? "must_know" : "needs_review",
+        source: item.sourceFile,
+        sourceFile: item.sourceFile,
+        sourcePage,
+        sourceSection,
+        sourceLabel: item.sourceLocation ?? item.theoremNumber,
+        sourceExcerpt,
+      });
+    }
+  }
+
+  return {
+    ...basePack,
+    definitions: definitions.length ? definitions : basePack.definitions,
+    formulas: formulas.length ? formulas : basePack.formulas,
+    proofs: proofs.length ? proofs : basePack.proofs,
+    methods: methods.length ? methods : basePack.methods,
+    examOverview: {
+      ...basePack.examOverview,
+      summary: `${basePack.examOverview.summary} API extraction is enabled; definitions, formulas, proofs, and methods prefer API-curated items when available.`,
+    },
+  };
 }
 
 export function generateStudentRevisionPack(input: {

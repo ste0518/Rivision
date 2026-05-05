@@ -13,12 +13,13 @@ import { toRoleParsedDocument } from "@/lib/parsed-document-from-file";
 import { parseStudyFile } from "@/lib/parsers";
 import {
   buildRevisionItemsFromStudentPack,
+  buildStudentRevisionPackFromApiItems,
   countTypedPackItems,
   fileToPackSource,
   generateQuickPracticeQuestions,
   generateStudentRevisionPack,
 } from "@/lib/revision-pack-generator";
-import { extractRevisionItems } from "@/lib/extraction";
+import { extractRevisionItems, loadLlmPipelineSettings } from "@/lib/extraction";
 import { clearDebugData, loadStorageSettings, persistRevisionCandidates, saveStorageSettings } from "@/lib/storage";
 import { createId } from "@/lib/utils";
 import { useStudyStore } from "@/hooks/use-study-store";
@@ -234,13 +235,19 @@ export default function UploadPage() {
       setPackGeneratePhase("Build · structuring your exam pack");
 
       const packSources = uploadedFilesForExtract.map(fileToPackSource);
-      const studentPack = generateStudentRevisionPack({
+      const localStudentPack = generateStudentRevisionPack({
         files: packSources,
         settings: {
           revisionStyle: storageSettings.revisionStyle,
           aiStrictness: storageSettings.aiStrictness,
         },
       });
+      const llmSettings = loadLlmPipelineSettings();
+      const apiExtractionActive =
+        (llmSettings.mode === "ai_key_revision_analysis" || llmSettings.mode === "openai_api" || llmSettings.mode === "cheap_scan_then_verify") &&
+        !result.error &&
+        result.items.length > 0;
+      const studentPack = apiExtractionActive ? buildStudentRevisionPackFromApiItems(localStudentPack, result.items) : localStudentPack;
       const typedCount = countTypedPackItems(studentPack);
       const recallFromPack = typedCount > 0 ? buildRevisionItemsFromStudentPack(studentPack) : [];
       const recallWarning =

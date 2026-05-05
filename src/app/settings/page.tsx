@@ -21,6 +21,7 @@ export default function SettingsPage() {
   const [relevance, setRelevance] = useState<RelevanceSettings>(() => loadRelevanceSettings() ?? defaultRelevanceSettings);
   const [storageSettings, setStorageSettings] = useState<StorageSettings>(() => loadStorageSettings());
   const [openaiConfigured, setOpenaiConfigured] = useState<boolean | null>(null);
+  const [apiKeySaved, setApiKeySaved] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -156,6 +157,66 @@ export default function SettingsPage() {
             <Button variant="outline" onClick={() => saveStorageSettings(storageSettings)}>Save interface options</Button>
           </CardContent>
         </Card>
+
+        <Card className="border-emerald-100 bg-emerald-50/30 lg:col-span-2">
+          <CardHeader>
+            <CardTitle>OpenAI extraction</CardTitle>
+            <CardDescription>Paste your API key here to use AI extraction from the upload flow. The key stays in this browser and is sent only to Rivision API routes when you run extraction.</CardDescription>
+          </CardHeader>
+          <CardContent className="space-y-3">
+            <label className="space-y-1 text-sm font-medium">
+              API key
+              <Input
+                type="password"
+                autoComplete="off"
+                value={llm.openaiApiKey ?? ""}
+                onChange={(event) => {
+                  setApiKeySaved(false);
+                  setLlm((current) => ({ ...current, openaiApiKey: event.target.value }));
+                }}
+                placeholder="sk-..."
+              />
+            </label>
+            <div className="grid gap-3 md:grid-cols-2">
+              <label className="space-y-1 text-sm font-medium">
+                Primary model
+                <Input value={llm.primaryModel} onChange={(event) => setLlm((current) => ({ ...current, primaryModel: event.target.value }))} />
+              </label>
+              <label className="space-y-1 text-sm font-medium">
+                Cheaper scan model
+                <Input value={llm.cheapModel} onChange={(event) => setLlm((current) => ({ ...current, cheapModel: event.target.value }))} />
+              </label>
+            </div>
+            <div className="flex flex-wrap items-center gap-2">
+              <Button
+                onClick={() => {
+                  const next = { ...llm, mode: "openai_api" as const, openaiApiKey: llm.openaiApiKey?.trim() || undefined };
+                  setLlm(next);
+                  saveLlmPipelineSettings(next);
+                  setApiKeySaved(true);
+                }}
+              >
+                Save key and use API extraction
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  const next = { ...llm, mode: "local_rules_only" as const, openaiApiKey: undefined };
+                  setLlm(next);
+                  saveLlmPipelineSettings(next);
+                  setApiKeySaved(true);
+                }}
+              >
+                Clear key
+              </Button>
+            </div>
+            <p className="text-xs text-slate-600">
+              Status: {llm.openaiApiKey?.trim() ? "browser key saved for extraction" : openaiConfigured ? "server OPENAI_API_KEY available" : "no key yet"}
+              {apiKeySaved ? " · saved" : ""}
+            </p>
+          </CardContent>
+        </Card>
       </div>
 
       {storageSettings.developerMode ? (
@@ -191,7 +252,11 @@ export default function SettingsPage() {
               <Button onClick={() => saveLlmPipelineSettings(llm)}>Save pipeline settings</Button>
               <p className="text-xs text-slate-500">
                 API status:{" "}
-                {openaiConfigured === null ? "Checking…" : openaiConfigured ? "OPENAI_API_KEY detected on server." : "No OpenAI key on server — local heuristics only."}
+                {llm.openaiApiKey?.trim() ?
+                  "Browser API key will be used for extraction."
+                : openaiConfigured === null ? "Checking…"
+                : openaiConfigured ? "OPENAI_API_KEY detected on server."
+                : "No OpenAI key yet — local heuristics only."}
               </p>
             </CardContent>
           </Card>

@@ -10,15 +10,16 @@ Return only the corrected Markdown.`;
 
 export async function POST(request: Request) {
   try {
-    if (!process.env.OPENAI_API_KEY) {
+    const body = (await request.json()) as { text?: string; openaiApiKey?: string };
+    const openaiApiKey = body.openaiApiKey?.trim() || process.env.OPENAI_API_KEY?.trim();
+    if (!openaiApiKey) {
       return NextResponse.json({ error: "AI math cleanup requires API key." }, { status: 400 });
     }
 
-    const body = (await request.json()) as { text?: string };
     const text = typeof body.text === "string" ? body.text : "";
     if (!text.trim()) return NextResponse.json({ error: "No text supplied." }, { status: 400 });
 
-    const client = new OpenAI({ apiKey: process.env.OPENAI_API_KEY });
+    const client = new OpenAI({ apiKey: openaiApiKey });
     const response = await client.responses.create({
       model: process.env.OPENAI_MATH_CLEANUP_MODEL || "gpt-4.1-mini",
       input: [

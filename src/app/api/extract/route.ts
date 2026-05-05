@@ -13,9 +13,10 @@ export async function POST(request: Request) {
       settings?: Partial<LlmPipelineSettings>;
     };
 
-    if (!process.env.OPENAI_API_KEY) {
+    const openaiApiKey = body.settings?.openaiApiKey?.trim() || process.env.OPENAI_API_KEY?.trim();
+    if (!openaiApiKey) {
       return NextResponse.json(
-        { error: "Missing OPENAI_API_KEY. Switch to local_rules_only or manual_json_import mode in Settings, or configure OPENAI_API_KEY for OpenAI mode." },
+        { error: "Missing OpenAI API key. Add a key in Settings, or configure OPENAI_API_KEY on Vercel." },
         { status: 400 },
       );
     }
@@ -26,7 +27,7 @@ export async function POST(request: Request) {
       pastPaperDocuments: Array.isArray(body.pastPaperDocuments) ? body.pastPaperDocuments : [],
       problemSheetDocuments: Array.isArray(body.problemSheetDocuments) ? body.problemSheetDocuments : [],
       solutionDocuments: Array.isArray(body.solutionDocuments) ? body.solutionDocuments : [],
-      settings: body.settings,
+      settings: { ...body.settings, openaiApiKey },
     });
 
     return NextResponse.json(result);

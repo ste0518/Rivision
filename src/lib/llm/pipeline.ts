@@ -24,10 +24,10 @@ export async function runLlmExtractionPipeline(input: {
   verification: ExtractionVerificationReport;
 }> {
   const settings = { ...defaultLlmPipelineSettings, ...input.settings };
-  const primary = new OpenAiResponsesProvider({ model: settings.primaryModel });
+  const primary = new OpenAiResponsesProvider({ model: settings.primaryModel, apiKey: settings.openaiApiKey });
 
   if (settings.mode === "cheap_scan_then_verify") {
-    const cheap = new OpenAiResponsesProvider({ model: settings.cheapModel });
+    const cheap = new OpenAiResponsesProvider({ model: settings.cheapModel, apiKey: settings.openaiApiKey });
     await cheap.curateRevisionDeck({
       notesDocuments: input.notesDocuments,
       guidanceDocuments: input.guidanceDocuments,
