@@ -14,10 +14,36 @@ import { defaultRelevanceSettings, loadRelevanceSettings, saveRelevanceSettings,
 import { exportRevisionItems, importRevisionItems, loadStorageSettings, saveStorageSettings, type StorageSettings } from "@/lib/storage";
 import { useStudyStore } from "@/hooks/use-study-store";
 
+const primaryModelOptions = [
+  { value: "gpt-5.2", label: "GPT-5.2 · recommended" },
+  { value: "gpt-5.2-pro", label: "GPT-5.2 pro · highest quality" },
+  { value: "gpt-5", label: "GPT-5 · balanced" },
+  { value: "gpt-5-mini", label: "GPT-5 mini · cheaper" },
+  { value: "gpt-4.1", label: "GPT-4.1 · non-reasoning" },
+];
+
+const cheapModelOptions = [
+  { value: "gpt-5-mini", label: "GPT-5 mini · recommended" },
+  { value: "gpt-5-nano", label: "GPT-5 nano · cheapest" },
+  { value: "gpt-4.1-mini", label: "GPT-4.1 mini · long context" },
+];
+
+function modelSelectValue(value: string, options: Array<{ value: string }>) {
+  return options.some((option) => option.value === value) ? value : "";
+}
+
+function normalizeModelSettings(settings: LlmPipelineSettings): LlmPipelineSettings {
+  return {
+    ...settings,
+    primaryModel: modelSelectValue(settings.primaryModel, primaryModelOptions) || defaultLlmPipelineSettings.primaryModel,
+    cheapModel: modelSelectValue(settings.cheapModel, cheapModelOptions) || defaultLlmPipelineSettings.cheapModel,
+  };
+}
+
 export default function SettingsPage() {
   const store = useStudyStore();
   const [json, setJson] = useState("");
-  const [llm, setLlm] = useState<LlmPipelineSettings>(() => loadLlmPipelineSettings() ?? defaultLlmPipelineSettings);
+  const [llm, setLlm] = useState<LlmPipelineSettings>(() => normalizeModelSettings(loadLlmPipelineSettings() ?? defaultLlmPipelineSettings));
   const [relevance, setRelevance] = useState<RelevanceSettings>(() => loadRelevanceSettings() ?? defaultRelevanceSettings);
   const [storageSettings, setStorageSettings] = useState<StorageSettings>(() => loadStorageSettings());
   const [openaiConfigured, setOpenaiConfigured] = useState<boolean | null>(null);
@@ -180,11 +206,27 @@ export default function SettingsPage() {
             <div className="grid gap-3 md:grid-cols-2">
               <label className="space-y-1 text-sm font-medium">
                 Primary model
-                <Input value={llm.primaryModel} onChange={(event) => setLlm((current) => ({ ...current, primaryModel: event.target.value }))} />
+                <Select
+                  value={modelSelectValue(llm.primaryModel, primaryModelOptions)}
+                  onChange={(event) => setLlm((current) => ({ ...current, primaryModel: event.target.value }))}
+                >
+                  {!modelSelectValue(llm.primaryModel, primaryModelOptions) ? <option value="">{llm.primaryModel || "Choose a model"}</option> : null}
+                  {primaryModelOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </Select>
               </label>
               <label className="space-y-1 text-sm font-medium">
                 Cheaper scan model
-                <Input value={llm.cheapModel} onChange={(event) => setLlm((current) => ({ ...current, cheapModel: event.target.value }))} />
+                <Select
+                  value={modelSelectValue(llm.cheapModel, cheapModelOptions)}
+                  onChange={(event) => setLlm((current) => ({ ...current, cheapModel: event.target.value }))}
+                >
+                  {!modelSelectValue(llm.cheapModel, cheapModelOptions) ? <option value="">{llm.cheapModel || "Choose a model"}</option> : null}
+                  {cheapModelOptions.map((option) => (
+                    <option key={option.value} value={option.value}>{option.label}</option>
+                  ))}
+                </Select>
               </label>
             </div>
             <div className="flex flex-wrap items-center gap-2">
@@ -241,11 +283,27 @@ export default function SettingsPage() {
                 <>
                   <label className="space-y-1 text-sm font-medium">
                     Primary model
-                    <Input value={llm.primaryModel} onChange={(event) => setLlm((current) => ({ ...current, primaryModel: event.target.value }))} />
+                    <Select
+                      value={modelSelectValue(llm.primaryModel, primaryModelOptions)}
+                      onChange={(event) => setLlm((current) => ({ ...current, primaryModel: event.target.value }))}
+                    >
+                      {!modelSelectValue(llm.primaryModel, primaryModelOptions) ? <option value="">{llm.primaryModel || "Choose a model"}</option> : null}
+                      {primaryModelOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </Select>
                   </label>
                   <label className="space-y-1 text-sm font-medium">
                     Cheaper scan model
-                    <Input value={llm.cheapModel} onChange={(event) => setLlm((current) => ({ ...current, cheapModel: event.target.value }))} />
+                    <Select
+                      value={modelSelectValue(llm.cheapModel, cheapModelOptions)}
+                      onChange={(event) => setLlm((current) => ({ ...current, cheapModel: event.target.value }))}
+                    >
+                      {!modelSelectValue(llm.cheapModel, cheapModelOptions) ? <option value="">{llm.cheapModel || "Choose a model"}</option> : null}
+                      {cheapModelOptions.map((option) => (
+                        <option key={option.value} value={option.value}>{option.label}</option>
+                      ))}
+                    </Select>
                   </label>
                 </>
               ) : null}
