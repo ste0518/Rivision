@@ -31,6 +31,7 @@ export type LlmPipelineSettings = {
   cheapModel: string;
   primaryModel: string;
   reasoningEffort?: "none" | "low" | "medium" | "high" | "xhigh";
+  verifyExtraction?: boolean;
   /** Browser-saved user key. Sent only to server API routes for the current extraction request. */
   openaiApiKey?: string;
 };
@@ -40,4 +41,5 @@ export const defaultLlmPipelineSettings: LlmPipelineSettings = {
   cheapModel: "gpt-5-mini",
   primaryModel: "gpt-5-mini",
   reasoningEffort: "high",
+  verifyExtraction: false,
 };

@@ -47,16 +47,24 @@ export async function runLlmExtractionPipeline(input: {
     pipelineMode: settings.mode,
   });
 
-  const verification = await primary.verifyExtractionCompleteness({
-    notesDocuments: input.notesDocuments,
-    guidanceDocuments: [
-      ...input.guidanceDocuments,
-      ...(input.pastPaperDocuments ?? []),
-      ...(input.problemSheetDocuments ?? []),
-      ...(input.solutionDocuments ?? []),
-    ],
-    extractedItems: [...curated.keptItems, ...curated.needsReviewItems],
-  });
+  const verification = settings.verifyExtraction
+    ? await primary.verifyExtractionCompleteness({
+        notesDocuments: input.notesDocuments,
+        guidanceDocuments: [
+          ...input.guidanceDocuments,
+          ...(input.pastPaperDocuments ?? []),
+          ...(input.problemSheetDocuments ?? []),
+          ...(input.solutionDocuments ?? []),
+        ],
+        extractedItems: [...curated.keptItems, ...curated.needsReviewItems],
+      })
+    : {
+        missingCandidates: [],
+        suspiciousItems: [],
+        guidanceAmbiguities: [],
+        overallCompleteness: "medium" as const,
+        notes: "Verification skipped to keep Vercel API extraction within request timeout. Use the generated pack source excerpts for spot checks.",
+      };
 
   return {
     items: curated.keptItems,

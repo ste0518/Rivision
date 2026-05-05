@@ -140,7 +140,18 @@ export default function SettingsPage() {
                   ))}
                 </Select>
               </label>
+              <label className="flex items-center gap-2 self-end rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm font-medium">
+                <input
+                  type="checkbox"
+                  checked={Boolean(llm.verifyExtraction)}
+                  onChange={(event) => setLlm((current) => ({ ...current, verifyExtraction: event.target.checked }))}
+                />
+                Extra verification pass
+              </label>
             </div>
+            <p className="text-xs text-slate-600">
+              Leave extra verification off on Vercel for large PDFs; it adds a second model call and can cause timeouts.
+            </p>
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 onClick={() => {

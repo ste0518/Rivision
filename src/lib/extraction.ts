@@ -97,9 +97,7 @@ export async function extractRevisionItems({
         error: llmResult.error,
       };
     }
-    fallbackWarning = llmResult.error
-      ? `Local heuristic mode is approximate. For AI reasoning over notes + past papers, add an OpenAI API key in Settings. (${llmResult.error})`
-      : undefined;
+    fallbackWarning = llmResult.error ? userFacingExtractionError(llmResult.error) : undefined;
   }
 
   const curated = await deterministicCurate(notesDocuments, guidanceDocuments, pastPaperDocuments, problemSheetDocuments, solutionDocuments, notesText, safeMode);
@@ -422,8 +420,16 @@ async function parseJsonResponse(response: Response): Promise<unknown> {
   try {
     return await response.json();
   } catch {
+    if (response.status === 504) return { error: userFacingExtractionError("Extraction API failed with status 504.") };
     return { error: response.ok ? "Extraction API returned non-JSON data." : `Extraction API failed with status ${response.status}.` };
   }
+}
+
+function userFacingExtractionError(error: string) {
+  if (error.includes("504")) {
+    return "OpenAI extraction timed out on Vercel. Try GPT-5 mini with Fast or Balanced quality, split very large PDFs into smaller lecture files, or enable a longer Vercel Function duration.";
+  }
+  return `OpenAI extraction failed: ${error}`;
 }
 
 function normalizeVerificationReport(report: unknown): ExtractionVerificationReport | undefined {
