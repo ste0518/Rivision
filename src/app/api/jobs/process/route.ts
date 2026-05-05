@@ -12,7 +12,7 @@ export async function POST(request: Request) {
   const body = await request
     .json()
     .then((value) => value as { jobId?: string; maxJobs?: number })
-    .catch(() => ({}));
-  const result = await processExtractionJobs({ jobId: body.jobId, maxJobs: body.maxJobs });
+    .catch(() => null);
+  const result = await processExtractionJobs({ jobId: body?.jobId, maxJobs: body?.maxJobs });
   return NextResponse.json(result);
 }
