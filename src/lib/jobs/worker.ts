@@ -6,8 +6,8 @@ import { lightweightCandidateSummary, parsedDocumentFromChunk } from "@/lib/extr
 import { mergeChunkPipelineResults } from "@/lib/extraction/merge-pack";
 import { buildDebugJson } from "@/lib/extraction/debug-json";
 import { JOB_PATHS, readBlobAsFile, readJsonBlob, writeJsonBlob } from "@/lib/jobs/blob-store";
-import { failJob, patchJobStatus, readJobManifest, readJobStatus, writeJobManifest } from "@/lib/jobs/status-store";
-import type { ChunkRecord, ExtractionJobFile, ExtractionJobManifest, ExtractionJobStatus, ExtractionMode, StructuredJobError } from "@/lib/jobs/types";
+import { failJob, findQueuedJobIds, patchJobStatus, readJobManifest, readJobStatus, releaseJobLease, tryAcquireJobLease, writeJobManifest } from "@/lib/jobs/status-store";
+import type { ChunkRecord, ExamPackJobResult, ExtractionJobFile, ExtractionJobManifest, ExtractionJobStatus, ExtractionJobStepOptions, ExtractionJobStepResult, ExtractionMode, ProcessJobsResult, StructuredJobError } from "@/lib/jobs/types";
 import type { ParsedDocument } from "@/lib/types";
 
 export const SMALL_DEV_FILE_LIMIT = 18 * 1024 * 1024;
@@ -16,7 +16,11 @@ type PipelineResult = Awaited<ReturnType<typeof runLlmExtractionPipeline>>;
 
 export async function runExtractionJob(jobId: string) {
   const existingStatus = await readJobStatus(jobId);
-  if (existingStatus?.status === "cancelled") return existingStatus;
+  if (!existingStatus) return null;
+  if (existingStatus.status !== "queued" && existingStatus.status !== "failed") return existingStatus;
+  const owner = `full-${crypto.randomUUID()}`;
+  const lease = await tryAcquireJobLease(jobId, owner);
+  if (!lease.acquired && existingStatus.status !== "failed") return existingStatus;
 
   const manifest = await readJobManifest(jobId);
   if (!manifest) {
@@ -117,6 +121,157 @@ export async function runExtractionJob(jobId: string) {
     const structured = structuredError(error);
     await failJob(jobId, structured, structured.stage);
     return readJobStatus(jobId);
+  } finally {
+    await releaseJobLease(jobId, owner);
+  }
+}
+
+export async function processExtractionJobs(input: { jobId?: string; maxJobs?: number }): Promise<ProcessJobsResult> {
+  const maxJobs = Math.max(1, Math.min(5, Number(input.maxJobs ?? 1) || 1));
+  const jobIds = input.jobId ? [input.jobId] : await findQueuedJobIds(maxJobs);
+  const jobs: ProcessJobsResult["jobs"] = [];
+
+  for (const jobId of jobIds.slice(0, maxJobs)) {
+    const step = await runExtractionJobStep(jobId, {
+      maxChunks: Number(process.env.JOB_STEP_MAX_CHUNKS ?? 1) || 1,
+      maxRuntimeMs: Number(process.env.JOB_STEP_MAX_RUNTIME_MS ?? 45000) || 45000,
+      mode: input.jobId ? "manual" : "cron",
+    });
+    const after = await readJobStatus(jobId);
+    jobs.push({
+      jobId,
+      status: after?.status ?? "skipped",
+      message: step.message,
+    });
+  }
+
+  return {
+    ok: true,
+    processed: jobs.filter((job) => job.status === "completed").length,
+    skipped: jobs.filter((job) => job.status === "skipped" || job.message.startsWith("Skipped")).length,
+    failed: jobs.filter((job) => job.status === "failed").length,
+    jobs,
+  };
+}
+
+export async function runExtractionJobStep(jobId: string, options: ExtractionJobStepOptions = {}): Promise<ExtractionJobStepResult> {
+  const startedAt = Date.now();
+  const maxChunks = Math.max(1, Number(options.maxChunks ?? process.env.JOB_STEP_MAX_CHUNKS ?? 1) || 1);
+  const maxRuntimeMs = Math.max(5000, Number(options.maxRuntimeMs ?? process.env.JOB_STEP_MAX_RUNTIME_MS ?? 45000) || 45000);
+  const owner = `${options.mode ?? "manual"}-${crypto.randomUUID()}`;
+  const lease = await tryAcquireJobLease(jobId, owner, Number(process.env.JOB_LOCK_TTL_MS ?? 120000) || 120000);
+  if (!lease.acquired) {
+    return { ok: true, jobId, didWork: false, completed: false, processedChunks: 0, message: `Skipped: ${lease.reason}.` };
+  }
+
+  try {
+    const status = await readJobStatus(jobId);
+    if (!status) return { ok: true, jobId, didWork: false, completed: false, processedChunks: 0, message: "Skipped: job status not found." };
+    if (status.status === "completed") return { ok: true, jobId, didWork: false, completed: true, processedChunks: 0, message: "Skipped completed job." };
+    if (status.status === "cancelled") return { ok: true, jobId, didWork: false, completed: false, processedChunks: 0, message: "Skipped cancelled job." };
+
+    const manifest = await readJobManifest(jobId);
+    if (!manifest) throw new Error(`Missing job manifest for ${jobId}.`);
+
+    const stage = status.currentStage === "processing" ? status.status : status.currentStage;
+    if (status.status === "queued" || stage === "queued") {
+      await patchJobStatus(jobId, { status: "extracting_text", currentStage: "extracting_text", progress: 5, manifestPath: JOB_PATHS.manifest(jobId) });
+      return { ok: true, jobId, didWork: true, completed: false, nextStage: "extracting_text", processedChunks: 0, message: "Moved job to text extraction." };
+    }
+
+    if (stage === "extracting_text" || status.status === "extracting_text") {
+      const files = manifest.files?.length ? manifest.files : [manifest.file];
+      const parsedDocuments = await parseSourceFiles(jobId, files);
+      await writeJsonBlob(JOB_PATHS.parsedDocuments(jobId), parsedDocuments);
+      await patchJobStatus(jobId, { status: "chunking", currentStage: "chunking", progress: 22 });
+      return { ok: true, jobId, didWork: true, completed: false, nextStage: "chunking", processedChunks: 0, message: "Parsed source text and checkpointed parsed documents." };
+    }
+
+    if (stage === "chunking" || status.status === "chunking") {
+      const parsedDocuments = await readParsedDocuments(jobId);
+      const chunks = parsedDocuments.flatMap((doc) => splitPagesIntoChunks(pageRecordsFromDocument(doc), manifest.mode));
+      const nextManifest = withChunks(manifest, chunks);
+      await Promise.all(chunks.map((chunk) => writeJsonBlob(JOB_PATHS.pageChunk(jobId, chunk.pageStart, chunk.pageEnd), chunk)));
+      nextManifest.chunks = nextManifest.chunks.map((chunk) => ({ ...chunk, textPath: chunk.textPath ?? JOB_PATHS.pageChunk(jobId, chunk.pageStart, chunk.pageEnd) }));
+      await writeJobManifest(nextManifest);
+      await patchJobStatus(jobId, { status: "extracting_candidates", currentStage: "extracting_candidates", progress: 25, totalChunks: chunks.length });
+      return { ok: true, jobId, didWork: true, completed: false, nextStage: "extracting_candidates", processedChunks: 0, message: `Created ${chunks.length} chunks.` };
+    }
+
+    if (stage === "extracting_candidates" || stage === "calling_openai" || status.status === "extracting_candidates" || status.status === "calling_openai") {
+      const latestManifest = await readJobManifest(jobId);
+      if (!latestManifest) throw new Error(`Missing job manifest for ${jobId}.`);
+      let processedChunks = 0;
+      for (let index = 0; index < latestManifest.chunks.length; index += 1) {
+        if (processedChunks >= maxChunks || Date.now() - startedAt > maxRuntimeMs) break;
+        const currentChunk = latestManifest.chunks[index]!;
+        if (currentChunk.status === "completed" && currentChunk.candidatesPath) continue;
+        await ensureNotCancelled(jobId);
+        const chunk = await readChunkRecord(jobId, currentChunk);
+        const baseProgress = 25 + Math.round((index / Math.max(1, latestManifest.chunks.length)) * 58);
+        await patchJobStatus(jobId, {
+          status: "extracting_candidates",
+          currentStage: "calling_openai",
+          currentChunk: chunk.chunkId,
+          totalChunks: latestManifest.chunks.length,
+          progress: baseProgress,
+        });
+        latestManifest.chunks[index] = { ...currentChunk, status: "processing" };
+        await writeJobManifest(latestManifest);
+        const pipelineResult = await runChunkExtraction(chunk, latestManifest.mode);
+        const candidatesPath = JOB_PATHS.candidates(jobId, chunk.chunkId);
+        await writeJsonBlob(candidatesPath, { ...pipelineResult, lightweightCandidates: lightweightCandidateSummary(chunk) });
+        latestManifest.chunks[index] = {
+          ...currentChunk,
+          status: "completed",
+          textPath: currentChunk.textPath ?? JOB_PATHS.pageChunk(jobId, chunk.pageStart, chunk.pageEnd),
+          candidatesPath,
+          error: undefined,
+        };
+        await writeJobManifest(latestManifest);
+        processedChunks += 1;
+        await patchJobStatus(jobId, {
+          status: "extracting_candidates",
+          currentStage: "extracting_candidates",
+          currentChunk: chunk.chunkId,
+          totalChunks: latestManifest.chunks.length,
+          progress: Math.min(84, baseProgress + 4),
+        });
+      }
+
+      const refreshedManifest = await readJobManifest(jobId);
+      const allDone = Boolean(refreshedManifest?.chunks.length) && refreshedManifest!.chunks.every((chunk) => chunk.status === "completed" && chunk.candidatesPath);
+      if (allDone) {
+        await patchJobStatus(jobId, { status: "merging_chunks", currentStage: "merging_chunks", progress: 86, currentChunk: undefined });
+        return { ok: true, jobId, didWork: true, completed: false, nextStage: "merging_chunks", processedChunks, message: "All chunks completed; moved to merge stage." };
+      }
+      return { ok: true, jobId, didWork: processedChunks > 0, completed: false, nextStage: "extracting_candidates", processedChunks, message: processedChunks ? `Processed ${processedChunks} chunk(s).` : "No chunk processed within this step budget." };
+    }
+
+    if (stage === "merging_chunks" || status.status === "merging_chunks") {
+      const result = await mergeCompletedChunks(jobId, manifest.mode);
+      const resultBlob = await writeJsonBlob(JOB_PATHS.examPack(jobId), result);
+      await writeJsonBlob(JOB_PATHS.merged(jobId), { jobId, resultPath: resultBlob.pathname, resultUrl: resultBlob.url, mergedAt: new Date().toISOString() });
+      await patchJobStatus(jobId, { status: "building_pack", currentStage: "building_pack", progress: 92, resultPath: resultBlob.pathname, resultUrl: resultBlob.url });
+      return { ok: true, jobId, didWork: true, completed: false, nextStage: "building_pack", processedChunks: 0, message: "Merged chunks and wrote exam-pack JSON." };
+    }
+
+    if (stage === "building_pack" || status.status === "building_pack") {
+      const latestManifest = await readJobManifest(jobId);
+      const chunks = latestManifest ? await readAllChunks(jobId, latestManifest) : [];
+      const result = status.resultPath ? await readJsonBlob<ExamPackJobResult>(status.resultPath) : null;
+      const debugBlob = await writeJsonBlob(JOB_PATHS.debug(jobId), buildDebugJson({ manifest: latestManifest ?? manifest, chunks, result: result ?? undefined }));
+      await patchJobStatus(jobId, { status: "completed", currentStage: "completed", progress: 100, currentChunk: undefined, debugPath: debugBlob.pathname, debugUrl: debugBlob.url });
+      return { ok: true, jobId, didWork: true, completed: true, nextStage: "completed", processedChunks: 0, message: "Completed job and wrote debug JSON." };
+    }
+
+    return { ok: true, jobId, didWork: false, completed: false, nextStage: status.currentStage, processedChunks: 0, message: `No step available for ${status.currentStage}.` };
+  } catch (error) {
+    const structured = structuredError(error);
+    await failJob(jobId, structured, structured.stage);
+    return { ok: true, jobId, didWork: true, completed: false, nextStage: "failed", processedChunks: 0, message: structured.message };
+  } finally {
+    await releaseJobLease(jobId, owner);
   }
 }
 
@@ -142,6 +297,65 @@ async function parseSourceFiles(jobId: string, files: ExtractionJobFile[]) {
     completed += 1;
   }
   return parsed;
+}
+
+async function readParsedDocuments(jobId: string) {
+  const parsed = await readJsonBlob<ParsedDocument[]>(JOB_PATHS.parsedDocuments(jobId));
+  if (!parsed?.length) throw new Error(`Missing parsed document checkpoint for ${jobId}.`);
+  return parsed;
+}
+
+async function readChunkRecord(jobId: string, chunk: ExtractionJobManifest["chunks"][number]) {
+  const textPath = chunk.textPath ?? JOB_PATHS.pageChunk(jobId, chunk.pageStart, chunk.pageEnd);
+  const record = await readJsonBlob<ChunkRecord>(textPath);
+  if (!record) throw new Error(`Missing chunk text checkpoint for ${chunk.chunkId}.`);
+  return record;
+}
+
+async function readAllChunks(jobId: string, manifest: ExtractionJobManifest) {
+  const chunks: ChunkRecord[] = [];
+  for (const chunk of manifest.chunks) {
+    const record = await readChunkRecord(jobId, chunk).catch(() => null);
+    if (record) chunks.push(record);
+  }
+  return chunks;
+}
+
+async function mergeCompletedChunks(jobId: string, mode: ExtractionMode) {
+  const manifest = await readJobManifest(jobId);
+  if (!manifest) throw new Error(`Missing job manifest for ${jobId}.`);
+  const parsedDocuments = await readParsedDocuments(jobId);
+  const chunkResults: PipelineResult[] = [];
+  for (const chunk of manifest.chunks) {
+    if (chunk.status !== "completed" || !chunk.candidatesPath) {
+      throw Object.assign(new Error(`Cannot merge before ${chunk.chunkId} is complete.`), {
+        errorCode: "MERGE_FAILED",
+        stage: "merging_chunks",
+        chunkId: chunk.chunkId,
+      });
+    }
+    const result = await readJsonBlob<PipelineResult>(chunk.candidatesPath);
+    if (!result) {
+      throw Object.assign(new Error(`Missing candidate checkpoint for ${chunk.chunkId}.`), {
+        errorCode: "MERGE_FAILED",
+        stage: "merging_chunks",
+        chunkId: chunk.chunkId,
+      });
+    }
+    chunkResults.push(result);
+  }
+  return mergeChunkPipelineResults({
+    jobId,
+    mode,
+    sourceFiles: parsedDocuments.map((doc, index) => ({
+      id: `${jobId}-${index}`,
+      name: doc.sourceFile,
+      role: doc.role ?? "other",
+      parsedText: doc.fullText,
+      pages: doc.pages?.map((page) => ({ pageNumber: page.pageNumber, text: page.text })),
+    })),
+    chunkResults,
+  });
 }
 
 function withChunks(manifest: ExtractionJobManifest, chunks: ChunkRecord[]): ExtractionJobManifest {

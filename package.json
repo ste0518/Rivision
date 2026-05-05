@@ -12,7 +12,7 @@
     "test:chapter3": "tsx scripts/chapter-3-extraction.test.ts",
     "test:chapters12": "tsx scripts/chapters-1-2-extraction.test.ts",
     "test:structure": "tsx scripts/structure-sprint1.test.ts",
-    "test:jobs": "tsx scripts/job-architecture.test.ts"
+    "test:jobs": "tsx scripts/job-architecture.test.ts && tsx scripts/job-processing.test.ts"
   },
   "dependencies": {
     "@tailwindcss/postcss": "latest",

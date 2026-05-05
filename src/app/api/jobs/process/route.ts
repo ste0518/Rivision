@@ -1,21 +1,15 @@
 import { NextResponse } from "next/server";
-import { runExtractionJob } from "@/lib/jobs/worker";
+import { requireProcessAuthorization } from "@/lib/jobs/env";
+import { processExtractionJobs } from "@/lib/jobs/worker";
 
 export const runtime = "nodejs";
 export const maxDuration = 800;
 
 export async function POST(request: Request) {
-  const expectedToken = process.env.JOB_WORKER_TOKEN?.trim();
-  if (expectedToken) {
-    const authorization = request.headers.get("authorization") ?? "";
-    if (authorization !== `Bearer ${expectedToken}`) {
-      return NextResponse.json({ ok: false, error: "Unauthorized job worker request." }, { status: 401 });
-    }
-  }
+  const authError = requireProcessAuthorization(request);
+  if (authError) return NextResponse.json({ ok: false, error: authError }, { status: 401 });
 
-  const body = (await request.json()) as { jobId?: string };
-  if (!body.jobId) return NextResponse.json({ ok: false, error: "Missing jobId." }, { status: 400 });
-  const status = await runExtractionJob(body.jobId);
-  return NextResponse.json(status ?? { ok: false, error: "Job did not return a status." });
+  const body = (await request.json()) as { jobId?: string; maxJobs?: number };
+  const result = await processExtractionJobs({ jobId: body.jobId, maxJobs: body.maxJobs });
+  return NextResponse.json(result);
 }
-

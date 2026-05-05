@@ -37,14 +37,33 @@ Optional tuning:
 - `VERCEL_QUEUE_WEBHOOK_URL`
 - `VERCEL_WORKFLOW_WEBHOOK_URL`
 - `JOB_WORKER_TOKEN`
+- `CRON_SECRET` (set this to the same value as `JOB_WORKER_TOKEN` for Vercel Cron)
 - `ALLOW_SYNC_JOB_RUN_ONCE`
 - `ALLOW_LARGE_RUN_ONCE`
+- `JOB_STEP_MAX_CHUNKS` (default `1`)
+- `JOB_STEP_MAX_RUNTIME_MS` (default `45000`)
+- `JOB_LOCK_TTL_MS` (default `120000`)
 
 Do not add `NEXT_PUBLIC_OPENAI_API_KEY`. OpenAI calls must stay server-side.
 
 ## Background Processing
 
-Production should use Vercel Queues or Vercel Workflows to call either `POST /api/jobs/process` with `{ "jobId": "..." }`, or the worker function directly:
+Production now includes a Vercel Cron fallback in `vercel.json`:
+
+```json
+{
+  "crons": [
+    {
+      "path": "/api/jobs/cron",
+      "schedule": "* * * * *"
+    }
+  ]
+}
+```
+
+The cron endpoint scans Blob for queued or in-progress jobs and advances one bounded step at a time. By default, each invocation processes at most one OpenAI chunk and stops before the runtime budget is exhausted. This means a job may take up to one minute to start after upload and large PDFs advance over several cron invocations, but one cron call should not try to process a whole large PDF.
+
+You can later replace or supplement cron with Vercel Queues or Vercel Workflows by calling `POST /api/jobs/process` with `{ "jobId": "..." }`, or the worker function directly:
 
 ```ts
 import { runExtractionJob } from "@/lib/jobs/worker";
@@ -61,7 +80,9 @@ For local development only, `/api/jobs/[jobId]/run-once` can process small files
 1. Create a Vercel Blob store.
 2. Set `BLOB_READ_WRITE_TOKEN` and `OPENAI_API_KEY` in Vercel.
 3. Deploy the Next.js app to Vercel.
-4. Configure Vercel Queue or Workflow to receive the job id and call `POST /api/jobs/process` or `runExtractionJob(jobId)`.
+4. Set `CRON_SECRET` to the same value as `JOB_WORKER_TOKEN` so Vercel Cron can authenticate `/api/jobs/cron`.
+5. Deploy to production. Vercel will install the cron job from `vercel.json`.
+6. Optional: configure Vercel Queue or Workflow to receive the job id and call `POST /api/jobs/process` or `runExtractionJob(jobId)`.
 5. Upload files from `/upload`, choose Fast, Standard, or Deep, then generate the exam pack.
 
 ## Commands

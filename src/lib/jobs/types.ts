@@ -78,6 +78,8 @@ export type ExtractionJobStatusRecord = {
   debugPath?: string;
   debugUrl?: string;
   manifestPath?: string;
+  leaseOwner?: string;
+  leaseExpiresAt?: string;
   error?: StructuredJobError;
   createdAt: string;
   updatedAt: string;
@@ -119,4 +121,34 @@ export type ExamPackJobResult = {
     curationReport: CuratedDeckResult["curationReport"];
     verification?: import("@/lib/types").ExtractionVerificationReport;
   };
+};
+
+export type ProcessJobSummary = {
+  jobId: string;
+  status: ExtractionJobStatus | "skipped";
+  message: string;
+};
+
+export type ProcessJobsResult = {
+  ok: true;
+  processed: number;
+  skipped: number;
+  failed: number;
+  jobs: ProcessJobSummary[];
+};
+
+export type ExtractionJobStepOptions = {
+  maxChunks?: number;
+  maxRuntimeMs?: number;
+  mode?: "cron" | "manual" | "queue";
+};
+
+export type ExtractionJobStepResult = {
+  ok: true;
+  jobId: string;
+  didWork: boolean;
+  completed: boolean;
+  nextStage?: ExtractionJobStatus;
+  processedChunks: number;
+  message: string;
 };

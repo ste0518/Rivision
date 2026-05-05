@@ -1,4 +1,4 @@
-import { get, put } from "@vercel/blob";
+import { del, get, list, put } from "@vercel/blob";
 
 export const JOB_PATHS = {
   upload(jobId: string, filename = "source.pdf") {
@@ -16,6 +16,9 @@ export const JOB_PATHS = {
   pageChunk(jobId: string, pageStart: number, pageEnd: number) {
     return `chunks/${jobId}/pages/${pageStart}-${pageEnd}.json`;
   },
+  parsedDocuments(jobId: string) {
+    return `chunks/${jobId}/parsed-documents.json`;
+  },
   candidates(jobId: string, chunkId: string) {
     return `chunks/${jobId}/candidates/${safePathSegment(chunkId)}.json`;
   },
@@ -24,6 +27,12 @@ export const JOB_PATHS = {
   },
   examPack(jobId: string) {
     return `results/${jobId}/exam-pack.json`;
+  },
+  merged(jobId: string) {
+    return `results/${jobId}/merged-extraction.json`;
+  },
+  lock(jobId: string) {
+    return `jobs/${jobId}/lock.json`;
   },
 };
 
@@ -43,6 +52,19 @@ export async function writeJsonBlob<T>(pathname: string, value: T) {
     contentType: "application/json",
     cacheControlMaxAge: 60,
   });
+}
+
+export async function tryWriteJsonBlob<T>(pathname: string, value: T) {
+  try {
+    return await put(pathname, JSON.stringify(value, null, 2), {
+      access: "public",
+      allowOverwrite: false,
+      contentType: "application/json",
+      cacheControlMaxAge: 60,
+    });
+  } catch {
+    return null;
+  }
 }
 
 export async function readJsonBlob<T>(urlOrPathname: string): Promise<T | null> {
@@ -68,3 +90,11 @@ export async function readBlobAsFile(input: { url: string; filename: string; con
   return new File([arrayBuffer], input.filename, { type: input.contentType || response.headers.get("content-type") || "application/pdf" });
 }
 
+export async function listBlobPathnames(prefix: string, limit = 100) {
+  const result = await list({ prefix, limit });
+  return result.blobs.map((blob) => blob.pathname);
+}
+
+export async function deleteBlobPath(pathname: string) {
+  await del(pathname).catch(() => undefined);
+}
