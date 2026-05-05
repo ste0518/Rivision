@@ -67,11 +67,22 @@ export default function UploadPage() {
   }, []);
 
   useEffect(() => {
-    const syncApiKey = () => setApiKeyReady(Boolean(loadLlmPipelineSettings().openaiApiKey?.trim()));
-    syncApiKey();
+    let cancelled = false;
+    const syncApiKey = async () => {
+      const hasBrowserKey = Boolean(loadLlmPipelineSettings().openaiApiKey?.trim());
+      try {
+        const response = await fetch("/api/settings-status");
+        const body = (await response.json()) as { openaiConfigured?: boolean };
+        if (!cancelled) setApiKeyReady(hasBrowserKey || Boolean(body.openaiConfigured));
+      } catch {
+        if (!cancelled) setApiKeyReady(hasBrowserKey);
+      }
+    };
+    void syncApiKey();
     window.addEventListener("rivision-settings", syncApiKey);
     window.addEventListener("storage", syncApiKey);
     return () => {
+      cancelled = true;
       window.removeEventListener("rivision-settings", syncApiKey);
       window.removeEventListener("storage", syncApiKey);
     };
@@ -149,8 +160,9 @@ export default function UploadPage() {
 
     try {
       const llmSettingsForRun = loadLlmPipelineSettings();
-      if (!llmSettingsForRun.openaiApiKey?.trim()) {
-        setMessage("Add your OpenAI API key in Settings before generating an exam pack.");
+      const serverStatus = await fetch("/api/settings-status").then((res) => res.json() as Promise<{ openaiConfigured?: boolean }>).catch(() => ({ openaiConfigured: false }));
+      if (!llmSettingsForRun.openaiApiKey?.trim() && !serverStatus.openaiConfigured) {
+        setMessage("Add your OpenAI API key in Settings, or configure OPENAI_API_KEY in Vercel, before generating an exam pack.");
         router.push("/settings");
         return;
       }
@@ -320,7 +332,7 @@ export default function UploadPage() {
       {!apiKeyReady ? (
         <Card className="border-amber-200 bg-amber-50/80">
           <CardContent className="flex flex-col gap-3 py-4 text-sm text-amber-950 sm:flex-row sm:items-center sm:justify-between">
-            <p>Add your OpenAI API key before generating. Uploading files still works, but extraction starts only after the key is saved.</p>
+            <p>Add a temporary OpenAI API key, or configure OPENAI_API_KEY in Vercel, before generating. Uploading files still works, but extraction starts only after API access is ready.</p>
             <Link className="inline-flex h-10 shrink-0 items-center justify-center rounded-md bg-amber-900 px-4 font-medium text-white hover:bg-amber-950" href="/settings">
               Add API key
             </Link>
@@ -458,7 +470,7 @@ export default function UploadPage() {
               {generating ? "Generating…" : "Generate exam pack"}
             </Button>
             {!apiKeyReady ? (
-              <p className="text-sm text-amber-900">API extraction is required. Add your key in Settings, then come back to generate.</p>
+              <p className="text-sm text-amber-900">API extraction is required. Add a temporary key in Settings, or configure OPENAI_API_KEY in Vercel.</p>
             ) : null}
             {generating ? (
               <PackGenerateProgressBar phase={packGeneratePhase} progress={packGenerateProgress} />

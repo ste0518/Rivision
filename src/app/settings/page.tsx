@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -43,7 +43,23 @@ export default function SettingsPage() {
   const [json, setJson] = useState("");
   const [llm, setLlm] = useState<LlmPipelineSettings>(() => normalizeModelSettings(loadLlmPipelineSettings() ?? defaultLlmPipelineSettings));
   const [storageSettings, setStorageSettings] = useState<StorageSettings>(() => loadStorageSettings());
+  const [serverKeyReady, setServerKeyReady] = useState(false);
   const [apiKeySaved, setApiKeySaved] = useState(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    fetch("/api/settings-status")
+      .then((res) => res.json() as Promise<{ openaiConfigured?: boolean }>)
+      .then((body) => {
+        if (!cancelled) setServerKeyReady(Boolean(body.openaiConfigured));
+      })
+      .catch(() => {
+        if (!cancelled) setServerKeyReady(false);
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, []);
 
   return (
     <div className="space-y-8">
@@ -53,11 +69,13 @@ export default function SettingsPage() {
         <Card className="border-emerald-100 bg-emerald-50/30 lg:col-span-2">
           <CardHeader>
             <CardTitle>OpenAI extraction</CardTitle>
-            <CardDescription>Paste your API key once, choose a model, then generate exam packs with API extraction from the Upload page.</CardDescription>
+            <CardDescription>
+              For a personal Vercel deployment, the safest setup is adding OPENAI_API_KEY in Vercel environment variables. Browser keys are temporary for this session only.
+            </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
             <label className="space-y-1 text-sm font-medium">
-              API key
+              Temporary browser API key
               <Input
                 type="password"
                 autoComplete="off"
@@ -69,6 +87,11 @@ export default function SettingsPage() {
                 placeholder="sk-..."
               />
             </label>
+            {serverKeyReady ? (
+              <p className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-950">
+                Vercel API key is configured. You can leave the browser key empty.
+              </p>
+            ) : null}
             <div className="grid gap-3 md:grid-cols-2">
               <label className="space-y-1 text-sm font-medium">
                 Primary model
@@ -105,7 +128,7 @@ export default function SettingsPage() {
                   setApiKeySaved(true);
                 }}
               >
-                Save key and use API extraction
+                Use this key for this session
               </Button>
               <Button
                 type="button"
@@ -121,7 +144,7 @@ export default function SettingsPage() {
               </Button>
             </div>
             <p className="text-xs text-slate-600">
-              Status: {llm.openaiApiKey?.trim() ? "browser key ready for extraction" : "no key yet"}
+              Status: {serverKeyReady ? "Vercel key ready" : llm.openaiApiKey?.trim() ? "temporary browser key ready" : "no key yet"}
               {apiKeySaved ? " · saved" : ""}
             </p>
           </CardContent>
