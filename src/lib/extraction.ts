@@ -225,13 +225,6 @@ async function extractViaApi(input: {
 }
 
 const llmSettingsStorageKey = "rivision.llm.settings.v1";
-const llmSessionApiKeyStorageKey = "rivision.llm.openaiApiKey.session.v1";
-
-function browserSessionApiKey() {
-  if (typeof window === "undefined") return undefined;
-  return window.sessionStorage.getItem(llmSessionApiKeyStorageKey)?.trim() || undefined;
-}
-
 function settingsWithoutSecret(settings: Partial<LlmPipelineSettings>): Partial<LlmPipelineSettings> {
   const safeSettings = { ...settings };
   delete safeSettings.openaiApiKey;
@@ -244,10 +237,8 @@ export function loadLlmPipelineSettings(): LlmPipelineSettings {
   if (!raw) return defaultLlmPipelineSettings;
   try {
     const parsed = JSON.parse(raw) as Partial<LlmPipelineSettings>;
-    const migratedKey = parsed.openaiApiKey?.trim();
-    if (migratedKey && !browserSessionApiKey()) window.sessionStorage.setItem(llmSessionApiKeyStorageKey, migratedKey);
     if (parsed.openaiApiKey) safeSetLocalStorage(llmSettingsStorageKey, settingsWithoutSecret(parsed));
-    return { ...defaultLlmPipelineSettings, ...settingsWithoutSecret(parsed), openaiApiKey: browserSessionApiKey() };
+    return { ...defaultLlmPipelineSettings, ...settingsWithoutSecret(parsed), openaiApiKey: undefined };
   } catch {
     return defaultLlmPipelineSettings;
   }
@@ -255,9 +246,6 @@ export function loadLlmPipelineSettings(): LlmPipelineSettings {
 
 export function saveLlmPipelineSettings(settings: LlmPipelineSettings) {
   if (typeof window === "undefined") return;
-  const apiKey = settings.openaiApiKey?.trim();
-  if (apiKey) window.sessionStorage.setItem(llmSessionApiKeyStorageKey, apiKey);
-  else window.sessionStorage.removeItem(llmSessionApiKeyStorageKey);
   safeSetLocalStorage(llmSettingsStorageKey, settingsWithoutSecret(settings));
   window.dispatchEvent(new CustomEvent("rivision-settings"));
 }
@@ -627,13 +615,6 @@ async function extractViaApi(input: {
 }
 
 const llmSettingsStorageKey = "rivision.llm.settings.v1";
-const llmSessionApiKeyStorageKey = "rivision.llm.openaiApiKey.session.v1";
-
-function browserSessionApiKey() {
-  if (typeof window === "undefined") return undefined;
-  return window.sessionStorage.getItem(llmSessionApiKeyStorageKey)?.trim() || undefined;
-}
-
 function settingsWithoutSecret(settings: Partial<LlmPipelineSettings>): Partial<LlmPipelineSettings> {
   const safeSettings = { ...settings };
   delete safeSettings.openaiApiKey;
@@ -646,10 +627,8 @@ export function loadLlmPipelineSettings(): LlmPipelineSettings {
   if (!raw) return defaultLlmPipelineSettings;
   try {
     const parsed = JSON.parse(raw) as Partial<LlmPipelineSettings>;
-    const migratedKey = parsed.openaiApiKey?.trim();
-    if (migratedKey && !browserSessionApiKey()) window.sessionStorage.setItem(llmSessionApiKeyStorageKey, migratedKey);
     if (parsed.openaiApiKey) safeSetLocalStorage(llmSettingsStorageKey, settingsWithoutSecret(parsed));
-    return { ...defaultLlmPipelineSettings, ...settingsWithoutSecret(parsed), openaiApiKey: browserSessionApiKey() };
+    return { ...defaultLlmPipelineSettings, ...settingsWithoutSecret(parsed), openaiApiKey: undefined };
   } catch {
     return defaultLlmPipelineSettings;
   }
@@ -657,9 +636,6 @@ export function loadLlmPipelineSettings(): LlmPipelineSettings {
 
 export function saveLlmPipelineSettings(settings: LlmPipelineSettings) {
   if (typeof window === "undefined") return;
-  const apiKey = settings.openaiApiKey?.trim();
-  if (apiKey) window.sessionStorage.setItem(llmSessionApiKeyStorageKey, apiKey);
-  else window.sessionStorage.removeItem(llmSessionApiKeyStorageKey);
   safeSetLocalStorage(llmSettingsStorageKey, settingsWithoutSecret(settings));
   window.dispatchEvent(new CustomEvent("rivision-settings"));
 }

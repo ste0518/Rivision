@@ -4,11 +4,11 @@ import { defaultLlmPipelineSettings } from "@/lib/llm/provider";
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as { openaiApiKey?: string; model?: string };
-    const apiKey = body.openaiApiKey?.trim() || process.env.OPENAI_API_KEY?.trim();
+    const body = (await request.json()) as { model?: string };
+    const apiKey = process.env.OPENAI_API_KEY?.trim();
     const model = body.model?.trim() || defaultLlmPipelineSettings.primaryModel;
     if (!apiKey) {
-      return NextResponse.json({ ok: false, error: "No API key found. Add a temporary key here, or configure OPENAI_API_KEY in Vercel." }, { status: 400 });
+      return NextResponse.json({ ok: false, error: "No server API key found. Configure OPENAI_API_KEY in Vercel." }, { status: 400 });
     }
 
     const client = new OpenAI({ apiKey });

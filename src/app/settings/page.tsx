@@ -3,7 +3,6 @@
 import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
 import { PageHeader } from "@/components/page-header";
@@ -82,28 +81,19 @@ export default function SettingsPage() {
           <CardHeader>
             <CardTitle>OpenAI extraction</CardTitle>
             <CardDescription>
-              For a personal Vercel deployment, the safest setup is adding OPENAI_API_KEY in Vercel environment variables. Browser keys are temporary for this session only.
+              Add OPENAI_API_KEY in Vercel environment variables. Rivision does not store or send OpenAI keys from the browser.
             </CardDescription>
           </CardHeader>
           <CardContent className="space-y-3">
-            <label className="space-y-1 text-sm font-medium">
-              Temporary browser API key
-              <Input
-                type="password"
-                autoComplete="off"
-                value={llm.openaiApiKey ?? ""}
-                onChange={(event) => {
-                  setApiKeySaved(false);
-                  setLlm((current) => ({ ...current, openaiApiKey: event.target.value }));
-                }}
-                placeholder="sk-..."
-              />
-            </label>
             {serverKeyReady ? (
               <p className="rounded-lg border border-green-200 bg-green-50 px-3 py-2 text-sm text-green-950">
-                Vercel API key is configured. You can leave the browser key empty.
+                Vercel API key is configured. Extraction jobs can call OpenAI from the server.
               </p>
-            ) : null}
+            ) : (
+              <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">
+                OPENAI_API_KEY is not configured in this deployment yet. Add it in Vercel Project Settings, then redeploy or refresh environment variables.
+              </p>
+            )}
             <div className="grid gap-3 md:grid-cols-2">
               <label className="space-y-1 text-sm font-medium">
                 Primary model
@@ -155,26 +145,14 @@ export default function SettingsPage() {
             <div className="flex flex-wrap items-center gap-2">
               <Button
                 onClick={() => {
-                  const next = { ...llm, mode: "openai_api" as const, openaiApiKey: llm.openaiApiKey?.trim() || undefined };
+                  const next = { ...llm, mode: "openai_api" as const, openaiApiKey: undefined };
                   setLlm(next);
                   saveLlmPipelineSettings(next);
                   saveStorageSettings({ ...storageSettings, developerMode: false, persistDebugData: false, interfaceMode: "simple" });
                   setApiKeySaved(true);
                 }}
               >
-                Use this key for this session
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  const next = { ...llm, mode: "openai_api" as const, openaiApiKey: undefined };
-                  setLlm(next);
-                  saveLlmPipelineSettings(next);
-                  setApiKeySaved(true);
-                }}
-              >
-                Clear key
+                Save extraction settings
               </Button>
               <Button
                 type="button"
@@ -186,7 +164,7 @@ export default function SettingsPage() {
               </Button>
             </div>
             <p className="text-xs text-slate-600">
-              Status: {serverKeyReady ? "Vercel key ready" : llm.openaiApiKey?.trim() ? "temporary browser key ready" : "no key yet"}
+              Status: {serverKeyReady ? "Vercel key ready" : "server key missing"}
               {apiKeySaved ? " · saved" : ""}
             </p>
             {apiTestStatus ? <p className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">{apiTestStatus}</p> : null}
@@ -251,7 +229,7 @@ export default function SettingsPage() {
       const response = await fetch("/api/openai-health", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ openaiApiKey: llm.openaiApiKey, model: llm.primaryModel }),
+        body: JSON.stringify({ model: llm.primaryModel }),
       });
       const payload = (await response.json()) as { ok?: boolean; model?: string; error?: string };
       if (!response.ok || !payload.ok) {

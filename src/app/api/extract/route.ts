@@ -16,10 +16,10 @@ export async function POST(request: Request) {
       settings?: Partial<LlmPipelineSettings>;
     };
 
-    const openaiApiKey = body.settings?.openaiApiKey?.trim() || process.env.OPENAI_API_KEY?.trim();
+    const openaiApiKey = process.env.OPENAI_API_KEY?.trim();
     if (!openaiApiKey) {
       return NextResponse.json(
-        { error: "Missing OpenAI API key. Add a key in Settings, or configure OPENAI_API_KEY on Vercel." },
+        { error: "Missing server OpenAI API key. Configure OPENAI_API_KEY on Vercel." },
         { status: 400 },
       );
     }

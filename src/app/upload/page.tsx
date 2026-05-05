@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
+import { upload } from "@vercel/blob/client";
 import { AlertTriangle, CheckCircle2, ClipboardList, FileText, Loader2, Trash2, UploadCloud } from "lucide-react";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
@@ -10,20 +11,11 @@ import { Dialog, DialogContent } from "@/components/ui/dialog";
 import { Select } from "@/components/ui/select";
 import { PageHeader } from "@/components/page-header";
 import { inferStudyFileRole, studyFileRoleLabel } from "@/lib/course-files";
-import { toRoleParsedDocument } from "@/lib/parsed-document-from-file";
 import { parseStudyFile } from "@/lib/parsers";
-import {
-  buildRevisionItemsFromStudentPack,
-  buildStudentRevisionPackFromApiItems,
-  countTypedPackItems,
-  fileToPackSource,
-  generateQuickPracticeQuestions,
-  generateStudentRevisionPack,
-} from "@/lib/revision-pack-generator";
-import { extractRevisionItems, loadLlmPipelineSettings } from "@/lib/extraction";
 import { clearDebugData, loadStorageSettings, saveStorageSettings } from "@/lib/storage";
 import { createId } from "@/lib/utils";
 import { useStudyStore } from "@/hooks/use-study-store";
+import type { ExamPackJobResult, ExtractionJobStatusRecord, ExtractionMode } from "@/lib/jobs/types";
 import { studyFileRoles, type GuidanceFile, type StudyFile, type StudyFileRole } from "@/lib/types";
 
 function fileKindLabel(mime: string) {
@@ -44,6 +36,8 @@ export default function UploadPage() {
   const [generating, setGenerating] = useState(false);
   const [packGenerateProgress, setPackGenerateProgress] = useState(0);
   const [packGeneratePhase, setPackGeneratePhase] = useState("");
+  const [extractionMode, setExtractionMode] = useState<ExtractionMode>("standard");
+  const [activeJob, setActiveJob] = useState<ExtractionJobStatusRecord | null>(null);
   const packProgressNudgeRef = useRef<number | null>(null);
   const [message, setMessage] = useState("");
   const [apiKeyReady, setApiKeyReady] = useState(false);
@@ -69,13 +63,12 @@ export default function UploadPage() {
   useEffect(() => {
     let cancelled = false;
     const syncApiKey = async () => {
-      const hasBrowserKey = Boolean(loadLlmPipelineSettings().openaiApiKey?.trim());
       try {
         const response = await fetch("/api/settings-status");
         const body = (await response.json()) as { openaiConfigured?: boolean };
-        if (!cancelled) setApiKeyReady(hasBrowserKey || Boolean(body.openaiConfigured));
+        if (!cancelled) setApiKeyReady(Boolean(body.openaiConfigured));
       } catch {
-        if (!cancelled) setApiKeyReady(hasBrowserKey);
+        if (!cancelled) setApiKeyReady(false);
       }
     };
     void syncApiKey();
@@ -156,155 +149,99 @@ export default function UploadPage() {
     if (!canGenerate) return;
     setGenerating(true);
     setMessage("");
+    setActiveJob(null);
     stopPackProgressNudge();
 
     try {
-      const llmSettingsForRun = loadLlmPipelineSettings();
       const serverStatus = await fetch("/api/settings-status").then((res) => res.json() as Promise<{ openaiConfigured?: boolean }>).catch(() => ({ openaiConfigured: false }));
-      if (!llmSettingsForRun.openaiApiKey?.trim() && !serverStatus.openaiConfigured) {
-        setMessage("Add your OpenAI API key in Settings, or configure OPENAI_API_KEY in Vercel, before generating an exam pack.");
+      if (!serverStatus.openaiConfigured) {
+        setMessage("Configure OPENAI_API_KEY in Vercel before generating an exam pack. API keys are no longer sent from this browser.");
         router.push("/settings");
         return;
       }
 
       setPackGenerateProgress(2);
-      setPackGeneratePhase("Prepare · clearing previous pack output");
+      setPackGeneratePhase("Prepare · creating secure Blob upload");
       store.resetDerivedPackState();
       store.ensureActivePackId();
-
-      let workingNotes = store.notesFiles.map((f) => ({ ...f }));
-      let workingGuidance = store.guidanceFiles.map((f) => ({ ...f }));
-      const pdfTargets = [...workingNotes, ...workingGuidance].filter(isPdfStudyFile);
-      const pdfCount = pdfTargets.length;
-
-      if (pdfCount === 0) {
-        setPackGenerateProgress(34);
-        setPackGeneratePhase("OCR · skipped (no PDF uploads)");
-      } else {
-        for (let fi = 0; fi < pdfCount; fi += 1) {
-          const sf = pdfTargets[fi]!;
-          const inputFile = studyFileToInputFile(sf);
-          if (!inputFile) {
-            setPackGenerateProgress(Math.round(4 + (30 / pdfCount) * (fi + 1)));
-            setPackGeneratePhase(`OCR · ${sf.name} · skipped (missing file data)`);
-            continue;
-          }
-          const spanPerFile = 30 / pdfCount;
-          const base = 4 + spanPerFile * fi;
-          setPackGenerateProgress(Math.round(base));
-          setPackGeneratePhase(`OCR · ${sf.name} · starting…`);
-
-          const parsed = await parseStudyFile(inputFile, {
-            runOcr: true,
-            onPdfOcrProgress: (done, total) => {
-              const p = base + spanPerFile * (done / Math.max(1, total));
-              setPackGenerateProgress(Math.min(34, Math.round(p)));
-              setPackGeneratePhase(`OCR · ${sf.name} · page ${done} / ${total}`);
-            },
-          });
-
-          const collection: "notes" | "guidance" = workingNotes.some((x) => x.id === sf.id) ? "notes" : "guidance";
-          store.patchUploadedFileParse({
-            id: sf.id,
-            collection,
-            content: parsed.fullText,
-            parsedDocument: { ...parsed, role: sf.role },
-          });
-          if (collection === "notes") {
-            workingNotes = workingNotes.map((f) =>
-              f.id === sf.id ? { ...f, content: parsed.fullText, parsedDocument: { ...parsed, role: f.role } } : f,
-            );
-          } else {
-            workingGuidance = workingGuidance.map((f) =>
-              f.id === sf.id ? { ...f, content: parsed.fullText, parsedDocument: { ...parsed, role: f.role } } : f,
-            );
-          }
-
-          setPackGenerateProgress(Math.round(4 + spanPerFile * (fi + 1)));
-          setPackGeneratePhase(`OCR · ${sf.name} · complete`);
-        }
-        setPackGenerateProgress(35);
-        setPackGeneratePhase("OCR · all PDFs finished");
-      }
-
-      const uploadedFilesForExtract = [...workingNotes, ...workingGuidance];
-      const allParsedDocuments = uploadedFilesForExtract.map(toRoleParsedDocument);
-      const notesDocuments = allParsedDocuments.filter((d) => d.role === "lecture_notes" || d.role === "formula_sheet" || d.role === "other");
-      const guidanceDocuments = allParsedDocuments.filter((d) => d.role === "exam_guidance");
-      const pastPaperDocuments = allParsedDocuments.filter((d) => d.role === "past_paper");
-      const problemSheetDocuments = allParsedDocuments.filter((d) => d.role === "problem_sheet");
-      const solutionDocuments = allParsedDocuments.filter((d) => d.role === "solution_sheet" || d.role === "mark_scheme");
-      const sourceFile = uploadedFilesForExtract.map((f) => f.name).join(", ") || "Course files";
-
-      setPackGenerateProgress(38);
-      setPackGeneratePhase("Extract · OpenAI API");
-      packProgressNudgeRef.current = window.setInterval(() => {
-        setPackGenerateProgress((p) => (p < 62 ? Math.min(62, p + 1.2) : p));
-      }, 420);
-
-      const result = await extractRevisionItems({
-        notesDocuments,
-        guidanceDocuments,
-        pastPaperDocuments,
-        problemSheetDocuments,
-        solutionDocuments,
-        sourceFile,
-      });
-
-      stopPackProgressNudge();
-      setPackGenerateProgress(72);
-      setPackGeneratePhase("Save · workspace");
-      if (result.error) throw new Error(result.error);
-      if (result.items.length === 0) throw new Error("API extraction returned no review-ready items. Check the uploaded files are readable and try again.");
-
-      const storageSettings = loadStorageSettings();
       await clearDebugData().catch(() => undefined);
 
-      setPackGenerateProgress(78);
-      setPackGeneratePhase("Build · structuring your exam pack");
+      const jobId = createId("job");
+      const filesForUpload = allFiles.map((studyFile) => ({ studyFile, inputFile: studyFileToInputFile(studyFile) }));
+      if (filesForUpload.some((entry) => !entry.inputFile)) {
+        throw new Error("One or more uploaded files are missing their original file data. Re-upload the file and try again.");
+      }
 
-      const packSources = uploadedFilesForExtract.map(fileToPackSource);
-      const localStudentPack = generateStudentRevisionPack({
-        files: packSources,
-        settings: {
-          revisionStyle: storageSettings.revisionStyle,
-          aiStrictness: storageSettings.aiStrictness,
-        },
+      const blobFiles = [];
+      for (let index = 0; index < filesForUpload.length; index += 1) {
+        const entry = filesForUpload[index]!;
+        const file = entry.inputFile!;
+        const pathname = `uploads/${jobId}/${String(index + 1).padStart(2, "0")}-${safeUploadName(file.name)}`;
+        setPackGeneratePhase(`Upload · ${file.name}`);
+        const blob = await upload(pathname, file, {
+          access: "public",
+          handleUploadUrl: "/api/blob/upload",
+          clientPayload: JSON.stringify({ jobId }),
+          multipart: file.size > 8 * 1024 * 1024,
+          contentType: file.type || entry.studyFile.mimeType || "application/octet-stream",
+          onUploadProgress: (progress) => {
+            const uploadBase = 4 + (index / Math.max(1, filesForUpload.length)) * 22;
+            const uploadSpan = 22 / Math.max(1, filesForUpload.length);
+            setPackGenerateProgress(Math.round(uploadBase + uploadSpan * (progress.percentage / 100)));
+          },
+        });
+        blobFiles.push({
+          url: blob.url,
+          pathname: blob.pathname,
+          filename: file.name,
+          size: file.size,
+          contentType: file.type || entry.studyFile.mimeType,
+          role: entry.studyFile.role,
+        });
+      }
+
+      setPackGenerateProgress(28);
+      setPackGeneratePhase("Queue · starting background extraction");
+      const createJobResponse = await fetch("/api/jobs", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ jobId, files: blobFiles, mode: extractionMode }),
       });
-      const studentPack = buildStudentRevisionPackFromApiItems(localStudentPack, result.items);
-      const typedCount = countTypedPackItems(studentPack);
-      const recallFromPack = typedCount > 0 ? buildRevisionItemsFromStudentPack(studentPack) : [];
-      const recallWarning =
-        typedCount === 0 && result.items.length > 0
-          ? "Some review cards were generated by fallback extraction."
-          : undefined;
-      const studentPackWithNote = {
-        ...studentPack,
-        examOverview: { ...studentPack.examOverview, ...(recallWarning ? { reviewCardsWarning: recallWarning } : {}) },
-      };
+      const createJobPayload = (await createJobResponse.json()) as { ok?: boolean; jobId?: string; runOnceUrl?: string; error?: string };
+      if (!createJobResponse.ok || !createJobPayload.ok || !createJobPayload.jobId) {
+        throw new Error(createJobPayload.error ?? "Could not create extraction job.");
+      }
+      if (createJobPayload.runOnceUrl) {
+        void fetch(createJobPayload.runOnceUrl, { method: "POST" }).catch(() => undefined);
+      }
 
-      setPackGenerateProgress(86);
-      setPackGeneratePhase("Practice · generating starter questions");
+      const completedStatus = await pollJobUntilDone(createJobPayload.jobId);
+      if (completedStatus.status === "cancelled") throw new Error("Job cancelled.");
+      if (completedStatus.status === "failed") {
+        throw new Error(completedStatus.error?.message ?? "Extraction failed. One chunk failed; retry can resume from the last checkpoint.");
+      }
+      if (!completedStatus.resultUrl) throw new Error("Extraction completed but did not publish a result URL.");
 
-      const starterPractice = generateQuickPracticeQuestions(studentPackWithNote, 18);
-      const revisionItemsForStore = recallFromPack.length > 0 ? recallFromPack : result.items;
+      setPackGenerateProgress(94);
+      setPackGeneratePhase("Load · exam pack JSON");
+      const result = (await fetch(completedStatus.resultUrl, { cache: "no-store" }).then((res) => res.json())) as ExamPackJobResult;
+      if (result.extraction.items.length === 0) throw new Error("API extraction returned no review-ready items. Check the uploaded files are readable and try Fast or Standard mode.");
 
-      store.setRevisionItems(revisionItemsForStore, result.rejectedItems, {
-        embeddedItems: result.embeddedItems,
-        courseMap: result.courseMap,
-        courseStructureMap: result.courseStructureMap,
-        courseKnowledgeMap: result.courseKnowledgeMap,
-        assessmentMap: result.assessmentMap,
-        examPriorityMap: result.examPriorityMap,
-        revisionPack: result.revisionPack,
-        curationReport: result.curationReport,
-        studentRevisionPack: studentPackWithNote,
+      store.setRevisionItems(result.extraction.items, result.extraction.rejectedItems, {
+        embeddedItems: result.extraction.embeddedItems,
+        courseStructureMap: result.extraction.courseStructureMap,
+        courseKnowledgeMap: result.extraction.courseKnowledgeMap,
+        assessmentMap: result.extraction.assessmentMap,
+        examPriorityMap: result.extraction.examPriorityMap,
+        revisionPack: result.extraction.revisionPack,
+        curationReport: result.extraction.curationReport,
+        studentRevisionPack: result.pack,
       });
-      store.setPracticeQuestions(starterPractice);
+      store.setPracticeQuestions(result.practiceQuestions);
 
       setPackGenerateProgress(96);
       setPackGeneratePhase("Open · navigating to exam pack");
-      setMessage("Exam pack generated with API extraction. Opening pack…");
+      setMessage("Exam pack generated with async API extraction. Opening pack…");
       setPackGenerateProgress(100);
       router.push("/pack");
     } catch (e) {
@@ -315,6 +252,27 @@ export default function UploadPage() {
       setPackGenerateProgress(0);
       setPackGeneratePhase("");
     }
+  }
+
+  async function pollJobUntilDone(jobId: string): Promise<ExtractionJobStatusRecord> {
+    const terminal = new Set(["completed", "failed", "cancelled"]);
+    const startedAt = Date.now();
+    while (true) {
+      const response = await fetch(`/api/jobs/${jobId}`, { cache: "no-store" });
+      const status = (await response.json()) as ExtractionJobStatusRecord & { error?: unknown };
+      if (!response.ok || !status.ok) throw new Error("Could not read extraction job status.");
+      setActiveJob(status);
+      setPackGenerateProgress(Math.max(30, Math.min(99, status.progress)));
+      setPackGeneratePhase(`${stageLabel(status.currentStage)} · ${status.currentChunk ? `${status.currentChunk} · ` : ""}${status.totalChunks ? `${chunksDone(status)} / ${status.totalChunks} chunks · ` : ""}${elapsedLabel(startedAt)}`);
+      if (terminal.has(status.status)) return status;
+      await wait(2000);
+    }
+  }
+
+  async function cancelActiveJob() {
+    if (!activeJob || activeJob.status === "completed" || activeJob.status === "failed" || activeJob.status === "cancelled") return;
+    await fetch(`/api/jobs/${activeJob.jobId}/cancel`, { method: "POST" }).catch(() => undefined);
+    setMessage("Cancellation requested. Already completed chunks remain saved.");
   }
 
   const primaryNotesName =
@@ -466,6 +424,19 @@ export default function UploadPage() {
           <UnifiedFileList files={store.guidanceFiles} title="Assessment files" onDelete={store.removeGuidanceFile} onRoleChange={store.updateFileRole} hasPack={Boolean(store.studentRevisionPack)} />
 
           <div className="flex flex-col gap-3 border-t pt-6">
+            <div className="grid gap-3 rounded-xl border border-slate-200 bg-slate-50 p-4 sm:grid-cols-[minmax(0,1fr)_220px] sm:items-end">
+              <div>
+                <p className="text-sm font-medium text-slate-950">Extraction mode</p>
+                <p className="mt-1 text-sm text-slate-600">
+                  Large files are uploaded to Vercel Blob first, then processed as a background job in chunks.
+                </p>
+              </div>
+              <Select value={extractionMode} onChange={(event) => setExtractionMode(event.target.value as ExtractionMode)} disabled={generating}>
+                <option value="fast">Fast · quick pack</option>
+                <option value="standard">Standard · recommended</option>
+                <option value="deep">Deep · slower, higher cost</option>
+              </Select>
+            </div>
             <Button size="lg" disabled={loading || generating || !canGenerate || !apiKeyReady} onClick={() => void runGeneratePack()}>
               {generating ? "Generating…" : "Generate exam pack"}
             </Button>
@@ -473,7 +444,17 @@ export default function UploadPage() {
               <p className="text-sm text-amber-900">API extraction is required. Add a temporary key in Settings, or configure OPENAI_API_KEY in Vercel.</p>
             ) : null}
             {generating ? (
-              <PackGenerateProgressBar phase={packGeneratePhase} progress={packGenerateProgress} />
+              <div className="space-y-3">
+                <PackGenerateProgressBar phase={packGeneratePhase} progress={packGenerateProgress} />
+                <div className="flex flex-wrap items-center justify-between gap-2 rounded-lg border border-blue-100 bg-blue-50 px-3 py-2 text-sm text-blue-950">
+                  <span>
+                    {activeJob?.jobId ? `Job ${activeJob.jobId}` : "Uploading to Blob"} · You can leave this page open while extraction runs.
+                  </span>
+                  <Button type="button" variant="outline" size="sm" onClick={() => void cancelActiveJob()} disabled={!activeJob || activeJob.status === "completed"}>
+                    Cancel job
+                  </Button>
+                </div>
+              </div>
             ) : null}
             {!canGenerate && allFiles.length === 0 ? (
               <p className="text-sm text-amber-900">Upload at least one file to start — lecture notes and/or assessment materials.</p>
@@ -522,15 +503,52 @@ function PackGenerateProgressBar({ phase, progress }: { phase: string; progress:
   );
 }
 
-function isPdfStudyFile(file: Pick<StudyFile, "name" | "mimeType">): boolean {
-  const ext = file.name.split(".").pop()?.toLowerCase();
-  return ext === "pdf" || (file.mimeType?.toLowerCase().includes("pdf") ?? false);
-}
-
 function studyFileToInputFile(file: StudyFile): File | null {
   if (!file.blob) return null;
   if (file.blob instanceof File) return file.blob;
   return new File([file.blob], file.name, { type: file.mimeType || "application/pdf" });
+}
+
+function safeUploadName(name: string) {
+  return name
+    .trim()
+    .replace(/[/\\?%*:|"<>]/g, "-")
+    .replace(/\s+/g, "-")
+    .replace(/-+/g, "-")
+    .slice(0, 160) || "source.pdf";
+}
+
+function wait(ms: number) {
+  return new Promise((resolve) => window.setTimeout(resolve, ms));
+}
+
+function stageLabel(stage: string) {
+  const labels: Record<string, string> = {
+    queued: "Queued",
+    processing: "Processing",
+    extracting_text: "Extracting text",
+    chunking: "Chunking",
+    extracting_candidates: "Finding candidates",
+    calling_openai: "Calling OpenAI",
+    merging_chunks: "Merging chunks",
+    building_pack: "Building pack",
+    completed: "Completed",
+    failed: "Failed",
+    cancelled: "Cancelled",
+  };
+  return labels[stage] ?? stage;
+}
+
+function chunksDone(status: ExtractionJobStatusRecord) {
+  if (!status.totalChunks) return 0;
+  const progressInsideChunks = Math.max(0, Math.min(58, status.progress - 25));
+  return Math.min(status.totalChunks, Math.max(0, Math.floor((progressInsideChunks / 58) * status.totalChunks)));
+}
+
+function elapsedLabel(startedAt: number) {
+  const seconds = Math.max(0, Math.round((Date.now() - startedAt) / 1000));
+  if (seconds < 60) return `${seconds}s`;
+  return `${Math.floor(seconds / 60)}m ${seconds % 60}s`;
 }
 
 function SourceReadinessPanel({ files, canGenerate }: { files: StudyFile[]; canGenerate: boolean }) {

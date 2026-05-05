@@ -10,10 +10,10 @@ Return only the corrected Markdown.`;
 
 export async function POST(request: Request) {
   try {
-    const body = (await request.json()) as { text?: string; openaiApiKey?: string };
-    const openaiApiKey = body.openaiApiKey?.trim() || process.env.OPENAI_API_KEY?.trim();
+    const body = (await request.json()) as { text?: string };
+    const openaiApiKey = process.env.OPENAI_API_KEY?.trim();
     if (!openaiApiKey) {
-      return NextResponse.json({ error: "AI math cleanup requires API key." }, { status: 400 });
+      return NextResponse.json({ error: "AI math cleanup requires OPENAI_API_KEY on the server." }, { status: 400 });
     }
 
     const text = typeof body.text === "string" ? body.text : "";
