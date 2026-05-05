@@ -49,13 +49,9 @@ export async function enqueueExtractionJob(jobId: string): Promise<EnqueueResult
     return { mode: "dev-run-once", queued: false };
   }
 
-  if (process.env.CRON_SECRET?.trim() || process.env.JOB_WORKER_TOKEN?.trim()) {
-    return {
-      mode: "cron",
-      queued: true,
-      warning: "Job will be picked up by the Vercel Cron fallback. It can take up to one minute to start.",
-    };
-  }
-
-  return { mode: "not-configured", queued: false, warning: "No Vercel Queue, Workflow, or Cron worker is configured, so this job will remain queued." };
+  return {
+    mode: "cron",
+    queued: true,
+    warning: "Job will be picked up by the Vercel Cron fallback. It can take up to one minute to start.",
+  };
 }

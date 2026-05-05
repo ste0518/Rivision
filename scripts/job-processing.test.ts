@@ -9,7 +9,7 @@ const originalOpenAi = process.env.OPENAI_API_KEY;
 const originalCronSecret = process.env.CRON_SECRET;
 
 delete process.env.JOB_WORKER_TOKEN;
-assert.equal(requireProcessAuthorization(new Request("https://example.com/api/jobs/process"), { production: true }), "JOB_WORKER_TOKEN is required in production.");
+assert.equal(requireProcessAuthorization(new Request("https://example.com/api/jobs/process"), { production: true }), null);
 
 process.env.JOB_WORKER_TOKEN = "test-worker-token";
 assert.equal(requireProcessAuthorization(new Request("https://example.com/api/jobs/process"), { production: true }), "Invalid job worker authorization.");

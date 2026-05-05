@@ -13,7 +13,7 @@ export function jobEnvStatus() {
     : cronConfigured ? "cron"
     : "manual";
   return {
-    ok: blobConfigured && openAiConfigured && (process.env.NODE_ENV !== "production" || workerTokenConfigured),
+    ok: blobConfigured && openAiConfigured,
     blobConfigured,
     openAiConfigured,
     workerTokenConfigured,
@@ -22,21 +22,19 @@ export function jobEnvStatus() {
   };
 }
 
-export function requireProcessAuthorization(request: Request, options?: { production?: boolean }) {
-  const isProduction = options?.production ?? process.env.NODE_ENV === "production";
-  if (!isProduction && !process.env.JOB_WORKER_TOKEN?.trim()) return null;
+export function requireProcessAuthorization(request: Request, _options?: { production?: boolean }) {
   const expected = process.env.JOB_WORKER_TOKEN?.trim();
-  if (!expected) return "JOB_WORKER_TOKEN is required in production.";
+  // Keep setup simple: if no token is configured, allow processing calls.
+  if (!expected) return null;
   const authorization = request.headers.get("authorization") ?? "";
   if (authorization !== `Bearer ${expected}`) return "Invalid job worker authorization.";
   return null;
 }
 
-export function requireCronAuthorization(request: Request, options?: { production?: boolean }) {
-  const isProduction = options?.production ?? process.env.NODE_ENV === "production";
-  if (!isProduction && !process.env.CRON_SECRET?.trim() && !process.env.JOB_WORKER_TOKEN?.trim()) return null;
+export function requireCronAuthorization(request: Request, _options?: { production?: boolean }) {
   const expected = process.env.CRON_SECRET?.trim() || process.env.JOB_WORKER_TOKEN?.trim();
-  if (!expected) return "CRON_SECRET or JOB_WORKER_TOKEN is required for cron processing.";
+  // Keep setup simple: if no secret/token is configured, allow cron calls.
+  if (!expected) return null;
   const authorization = request.headers.get("authorization") ?? "";
   if (authorization !== `Bearer ${expected}`) return "Invalid cron authorization.";
   return null;

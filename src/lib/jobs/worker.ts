@@ -133,7 +133,7 @@ export async function processExtractionJobs(input: { jobId?: string; maxJobs?: n
 
   for (const jobId of jobIds.slice(0, maxJobs)) {
     const step = await runExtractionJobStep(jobId, {
-      maxChunks: Number(process.env.JOB_STEP_MAX_CHUNKS ?? 1) || 1,
+      maxChunks: process.env.JOB_STEP_MAX_CHUNKS ? Number(process.env.JOB_STEP_MAX_CHUNKS) || 1 : undefined,
       maxRuntimeMs: Number(process.env.JOB_STEP_MAX_RUNTIME_MS ?? 45000) || 45000,
       mode: input.jobId ? "manual" : "cron",
     });
@@ -156,7 +156,7 @@ export async function processExtractionJobs(input: { jobId?: string; maxJobs?: n
 
 export async function runExtractionJobStep(jobId: string, options: ExtractionJobStepOptions = {}): Promise<ExtractionJobStepResult> {
   const startedAt = Date.now();
-  const maxChunks = Math.max(1, Number(options.maxChunks ?? process.env.JOB_STEP_MAX_CHUNKS ?? 1) || 1);
+  const maxChunks = Math.max(1, Number(options.maxChunks ?? process.env.JOB_STEP_MAX_CHUNKS ?? defaultMaxChunksForMode(options.mode)) || 1);
   const maxRuntimeMs = Math.max(5000, Number(options.maxRuntimeMs ?? process.env.JOB_STEP_MAX_RUNTIME_MS ?? 45000) || 45000);
   const owner = `${options.mode ?? "manual"}-${crypto.randomUUID()}`;
   const lease = await tryAcquireJobLease(jobId, owner, Number(process.env.JOB_LOCK_TTL_MS ?? 120000) || 120000);
@@ -191,7 +191,9 @@ export async function runExtractionJobStep(jobId: string, options: ExtractionJob
       const parsedDocuments = await readParsedDocuments(jobId);
       const chunks = parsedDocuments.flatMap((doc) => splitPagesIntoChunks(pageRecordsFromDocument(doc), manifest.mode));
       const nextManifest = withChunks(manifest, chunks);
-      await Promise.all(chunks.map((chunk) => writeJsonBlob(JOB_PATHS.pageChunk(jobId, chunk.pageStart, chunk.pageEnd), chunk)));
+      await eachWithConcurrency(chunks, 8, async (chunk) => {
+        await writeJsonBlob(JOB_PATHS.pageChunk(jobId, chunk.pageStart, chunk.pageEnd), chunk);
+      });
       nextManifest.chunks = nextManifest.chunks.map((chunk) => ({ ...chunk, textPath: chunk.textPath ?? JOB_PATHS.pageChunk(jobId, chunk.pageStart, chunk.pageEnd) }));
       await writeJobManifest(nextManifest);
       await patchJobStatus(jobId, { status: "extracting_candidates", currentStage: "extracting_candidates", progress: 25, totalChunks: chunks.length });
@@ -204,6 +206,7 @@ export async function runExtractionJobStep(jobId: string, options: ExtractionJob
       let processedChunks = 0;
       for (let index = 0; index < latestManifest.chunks.length; index += 1) {
         if (processedChunks >= maxChunks || Date.now() - startedAt > maxRuntimeMs) break;
+        if (Date.now() - startedAt > maxRuntimeMs - minChunkBudgetMs()) break;
         const currentChunk = latestManifest.chunks[index]!;
         if (currentChunk.status === "completed" && currentChunk.candidatesPath) continue;
         await ensureNotCancelled(jobId);
@@ -325,8 +328,7 @@ async function mergeCompletedChunks(jobId: string, mode: ExtractionMode) {
   const manifest = await readJobManifest(jobId);
   if (!manifest) throw new Error(`Missing job manifest for ${jobId}.`);
   const parsedDocuments = await readParsedDocuments(jobId);
-  const chunkResults: PipelineResult[] = [];
-  for (const chunk of manifest.chunks) {
+  const chunkResults = await mapWithConcurrency(manifest.chunks, 6, async (chunk) => {
     if (chunk.status !== "completed" || !chunk.candidatesPath) {
       throw Object.assign(new Error(`Cannot merge before ${chunk.chunkId} is complete.`), {
         errorCode: "MERGE_FAILED",
@@ -342,8 +344,8 @@ async function mergeCompletedChunks(jobId: string, mode: ExtractionMode) {
         chunkId: chunk.chunkId,
       });
     }
-    chunkResults.push(result);
-  }
+    return result;
+  });
   return mergeChunkPipelineResults({
     jobId,
     mode,
@@ -356,6 +358,39 @@ async function mergeCompletedChunks(jobId: string, mode: ExtractionMode) {
     })),
     chunkResults,
   });
+}
+
+function defaultMaxChunksForMode(mode?: ExtractionJobStepOptions["mode"]) {
+  if (mode === "manual") return 2;
+  if (mode === "queue") return 2;
+  return 2;
+}
+
+function minChunkBudgetMs() {
+  return Math.max(3000, Number(process.env.JOB_STEP_MIN_CHUNK_BUDGET_MS ?? 12000) || 12000);
+}
+
+async function eachWithConcurrency<T>(items: T[], concurrency: number, task: (item: T, index: number) => Promise<void>) {
+  await mapWithConcurrency(items, concurrency, async (item, index) => {
+    await task(item, index);
+    return undefined;
+  });
+}
+
+async function mapWithConcurrency<T, R>(items: T[], concurrency: number, task: (item: T, index: number) => Promise<R>) {
+  const size = Math.max(1, Math.min(concurrency, items.length || 1));
+  const results = new Array<R>(items.length);
+  let cursor = 0;
+  await Promise.all(
+    Array.from({ length: size }, async () => {
+      while (cursor < items.length) {
+        const index = cursor;
+        cursor += 1;
+        results[index] = await task(items[index]!, index);
+      }
+    }),
+  );
+  return results;
 }
 
 function withChunks(manifest: ExtractionJobManifest, chunks: ChunkRecord[]): ExtractionJobManifest {

@@ -61,7 +61,6 @@ export async function tryAcquireJobLease(jobId: string, owner: string, ttlMs = N
   }
 
   const next = await patchJobStatus(jobId, {
-    status: status.status === "queued" || status.status === "failed" ? "processing" : status.status,
     leaseOwner: owner,
     leaseExpiresAt: new Date(now + ttlMs).toISOString(),
   });
