@@ -37,7 +37,7 @@ Optional tuning:
 - `VERCEL_QUEUE_WEBHOOK_URL`
 - `VERCEL_WORKFLOW_WEBHOOK_URL`
 - `JOB_WORKER_TOKEN`
-- `CRON_SECRET` (set this to the same value as `JOB_WORKER_TOKEN` for Vercel Cron)
+- `CRON_SECRET` (optional; if set, cron requests must include `Authorization: Bearer <CRON_SECRET>`)
 - `ALLOW_SYNC_JOB_RUN_ONCE`
 - `ALLOW_LARGE_RUN_ONCE`
 - `JOB_STEP_MAX_CHUNKS` (default `1`)
@@ -55,13 +55,15 @@ Production now includes a Vercel Cron fallback in `vercel.json`:
   "crons": [
     {
       "path": "/api/jobs/cron",
-      "schedule": "* * * * *"
+      "schedule": "0 3 * * *"
     }
   ]
 }
 ```
 
-The cron endpoint scans Blob for queued or in-progress jobs and advances one bounded step at a time. By default, each invocation processes at most one OpenAI chunk and stops before the runtime budget is exhausted. This means a job may take up to one minute to start after upload and large PDFs advance over several cron invocations, but one cron call should not try to process a whole large PDF.
+The cron endpoint scans Blob for queued or in-progress jobs and advances one bounded step at a time. By default, each invocation processes at most one OpenAI chunk and stops before the runtime budget is exhausted.
+
+For Vercel Hobby, cron jobs are limited to daily schedules. If you need near-real-time background processing (for example, every minute), use Vercel Pro or call `POST /api/jobs/process` from your own scheduler/worker.
 
 You can later replace or supplement cron with Vercel Queues or Vercel Workflows by calling `POST /api/jobs/process` with `{ "jobId": "..." }`, or the worker function directly:
 
@@ -80,10 +82,10 @@ For local development only, `/api/jobs/[jobId]/run-once` can process small files
 1. Create a Vercel Blob store.
 2. Set `BLOB_READ_WRITE_TOKEN` and `OPENAI_API_KEY` in Vercel.
 3. Deploy the Next.js app to Vercel.
-4. Set `CRON_SECRET` to the same value as `JOB_WORKER_TOKEN` so Vercel Cron can authenticate `/api/jobs/cron`.
+4. (Optional) Set `CRON_SECRET` if you want to require authorization for `/api/jobs/cron`.
 5. Deploy to production. Vercel will install the cron job from `vercel.json`.
 6. Optional: configure Vercel Queue or Workflow to receive the job id and call `POST /api/jobs/process` or `runExtractionJob(jobId)`.
-5. Upload files from `/upload`, choose Fast, Standard, or Deep, then generate the exam pack.
+7. Upload files from `/upload`, choose Fast, Standard, or Deep, then generate the exam pack.
 
 ## Commands
 
