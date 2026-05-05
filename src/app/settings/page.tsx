@@ -13,10 +13,10 @@ import { exportRevisionItems, importRevisionItems, loadStorageSettings, saveStor
 import { useStudyStore } from "@/hooks/use-study-store";
 
 const primaryModelOptions = [
-  { value: "gpt-5.5", label: "GPT-5.5 · highest quality" },
-  { value: "gpt-5.2", label: "GPT-5.2 · strong, cheaper" },
-  { value: "gpt-5", label: "GPT-5 · older fallback" },
-  { value: "gpt-5-mini", label: "GPT-5 mini · cheaper" },
+  { value: "gpt-5-mini", label: "GPT-5 mini · safest for new keys" },
+  { value: "gpt-5.5", label: "GPT-5.5 · highest quality if available" },
+  { value: "gpt-5.2", label: "GPT-5.2 · strong if available" },
+  { value: "gpt-5", label: "GPT-5 · fallback" },
   { value: "gpt-4.1", label: "GPT-4.1 · long context fallback" },
 ];
 
@@ -55,6 +55,8 @@ export default function SettingsPage() {
   const [storageSettings, setStorageSettings] = useState<StorageSettings>(() => loadStorageSettings());
   const [serverKeyReady, setServerKeyReady] = useState(false);
   const [apiKeySaved, setApiKeySaved] = useState(false);
+  const [apiTestStatus, setApiTestStatus] = useState("");
+  const [apiTesting, setApiTesting] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -163,11 +165,20 @@ export default function SettingsPage() {
               >
                 Clear key
               </Button>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={apiTesting}
+                onClick={() => void testOpenAiConnection()}
+              >
+                {apiTesting ? "Testing…" : "Test API"}
+              </Button>
             </div>
             <p className="text-xs text-slate-600">
               Status: {serverKeyReady ? "Vercel key ready" : llm.openaiApiKey?.trim() ? "temporary browser key ready" : "no key yet"}
               {apiKeySaved ? " · saved" : ""}
             </p>
+            {apiTestStatus ? <p className="rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm text-slate-700">{apiTestStatus}</p> : null}
           </CardContent>
         </Card>
 
@@ -221,4 +232,26 @@ export default function SettingsPage() {
       </div>
     </div>
   );
+
+  async function testOpenAiConnection() {
+    setApiTesting(true);
+    setApiTestStatus("");
+    try {
+      const response = await fetch("/api/openai-health", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ openaiApiKey: llm.openaiApiKey, model: llm.primaryModel }),
+      });
+      const payload = (await response.json()) as { ok?: boolean; model?: string; error?: string };
+      if (!response.ok || !payload.ok) {
+        setApiTestStatus(payload.error || "API test failed.");
+        return;
+      }
+      setApiTestStatus(`API key works with ${payload.model ?? llm.primaryModel}.`);
+    } catch {
+      setApiTestStatus("Could not reach the API test route. Try again after redeploying.");
+    } finally {
+      setApiTesting(false);
+    }
+  }
 }

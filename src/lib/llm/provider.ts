@@ -38,6 +38,6 @@ export type LlmPipelineSettings = {
 export const defaultLlmPipelineSettings: LlmPipelineSettings = {
   mode: "ai_key_revision_analysis",
   cheapModel: "gpt-5-mini",
-  primaryModel: "gpt-5.5",
+  primaryModel: "gpt-5-mini",
   reasoningEffort: "high",
 };

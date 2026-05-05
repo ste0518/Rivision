@@ -32,7 +32,25 @@ export async function POST(request: Request) {
 
     return NextResponse.json(result);
   } catch (error) {
-    const message = error instanceof Error ? error.message : "Unknown extraction failure";
-    return NextResponse.json({ error: message }, { status: 500 });
+    const message = friendlyOpenAiError(error);
+    return NextResponse.json({ error: message }, { status: openAiStatus(error) });
   }
+}
+
+function openAiStatus(error: unknown) {
+  const status = typeof error === "object" && error && "status" in error ? Number((error as { status?: number }).status) : 500;
+  return Number.isFinite(status) && status >= 400 ? status : 500;
+}
+
+function friendlyOpenAiError(error: unknown) {
+  const status = openAiStatus(error);
+  const code = typeof error === "object" && error && "code" in error ? String((error as { code?: string }).code ?? "") : "";
+  const message = error instanceof Error ? error.message : "Unknown extraction failure";
+  const lower = `${code} ${message}`.toLowerCase();
+
+  if (status === 401 || lower.includes("invalid api key")) return "The OpenAI API key was rejected. Check that it starts with sk- and was copied completely.";
+  if (status === 403) return "This OpenAI key does not have permission for the selected model/project. Try GPT-5 mini in Settings, or check project permissions.";
+  if (status === 404 || lower.includes("model") || lower.includes("does not exist")) return "The selected model is not available to this API key. In Settings, switch Primary model to GPT-5 mini and test again.";
+  if (status === 429 || lower.includes("quota") || lower.includes("billing")) return "OpenAI rejected the request because of quota, billing, or rate limits. Check billing/usage on the OpenAI platform.";
+  return message;
 }

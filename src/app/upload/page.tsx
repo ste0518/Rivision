@@ -481,7 +481,9 @@ export default function UploadPage() {
             {!canGenerate && allFiles.length > 0 ? (
               <p className="text-sm text-amber-800">Set at least one file to lecture notes, formula sheet, or an assessment role so extraction has source material.</p>
             ) : null}
-            {message ? <p className="text-sm text-slate-600">{message}</p> : null}
+            {message ? (
+              <p className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-sm text-amber-950">{message}</p>
+            ) : null}
           </div>
         </CardContent>
       </Card>
