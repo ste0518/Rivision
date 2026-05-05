@@ -290,9 +290,9 @@ export default function UploadPage() {
       {!apiKeyReady ? (
         <Card className="border-amber-200 bg-amber-50/80">
           <CardContent className="flex flex-col gap-3 py-4 text-sm text-amber-950 sm:flex-row sm:items-center sm:justify-between">
-            <p>Add a temporary OpenAI API key, or configure OPENAI_API_KEY in Vercel, before generating. Uploading files still works, but extraction starts only after API access is ready.</p>
+            <p>Configure OPENAI_API_KEY in Vercel before generating. Uploading files still works, but background extraction starts only after server API access is ready.</p>
             <Link className="inline-flex h-10 shrink-0 items-center justify-center rounded-md bg-amber-900 px-4 font-medium text-white hover:bg-amber-950" href="/settings">
-              Add API key
+              Open settings
             </Link>
           </CardContent>
         </Card>
@@ -441,7 +441,7 @@ export default function UploadPage() {
               {generating ? "Generating…" : "Generate exam pack"}
             </Button>
             {!apiKeyReady ? (
-              <p className="text-sm text-amber-900">API extraction is required. Add a temporary key in Settings, or configure OPENAI_API_KEY in Vercel.</p>
+              <p className="text-sm text-amber-900">API extraction is required. Configure OPENAI_API_KEY in Vercel, then redeploy or refresh environment variables.</p>
             ) : null}
             {generating ? (
               <div className="space-y-3">

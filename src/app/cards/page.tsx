@@ -14,7 +14,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { CardForm } from "@/components/card-form";
 import { PageHeader } from "@/components/page-header";
 import { MathMarkdown } from "@/components/MathMarkdown";
-import { loadLlmPipelineSettings } from "@/lib/extraction";
 import { hasGenericConceptName, hasLowLatexQuality } from "@/lib/card-render";
 import { normalizeMathNotation } from "@/lib/revision-item-utils";
 import { exportRevisionItems, importRevisionItems, isDeveloperUiEnabled } from "@/lib/storage";
@@ -82,14 +81,13 @@ export default function CardsPage() {
 
   useEffect(() => {
     let cancelled = false;
-    const hasBrowserKey = Boolean(loadLlmPipelineSettings().openaiApiKey?.trim());
     fetch("/api/settings-status")
       .then((res) => res.json() as Promise<{ openaiConfigured?: boolean }>)
       .then((json) => {
-        if (!cancelled) setApiOk(hasBrowserKey || Boolean(json.openaiConfigured));
+        if (!cancelled) setApiOk(Boolean(json.openaiConfigured));
       })
       .catch(() => {
-        if (!cancelled) setApiOk(hasBrowserKey);
+        if (!cancelled) setApiOk(false);
       });
     return () => {
       cancelled = true;
@@ -185,7 +183,7 @@ export default function CardsPage() {
     const response = await fetch("/api/ai-clean-math", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: item.statement, openaiApiKey: loadLlmPipelineSettings().openaiApiKey }),
+      body: JSON.stringify({ text: item.statement }),
     });
     const payload = (await response.json()) as { markdown?: string; error?: string; issues?: string[]; latexQuality?: RevisionItem["latexQuality"] };
     if (!response.ok || !payload.markdown) {

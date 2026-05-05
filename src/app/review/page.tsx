@@ -8,7 +8,6 @@ import { Card, CardContent, CardDescription, CardHeader } from "@/components/ui/
 import { Select } from "@/components/ui/select";
 import { MathText } from "@/components/math-text";
 import { PageHeader } from "@/components/page-header";
-import { loadLlmPipelineSettings } from "@/lib/extraction";
 import { isDue } from "@/lib/srs";
 import { hasLowLatexQuality } from "@/lib/card-render";
 import { normalizeMathNotation } from "@/lib/revision-item-utils";
@@ -29,14 +28,13 @@ export default function ReviewPage() {
 
   useEffect(() => {
     let cancelled = false;
-    const hasBrowserKey = Boolean(loadLlmPipelineSettings().openaiApiKey?.trim());
     fetch("/api/settings-status")
       .then((res) => res.json() as Promise<{ openaiConfigured?: boolean }>)
       .then((json) => {
-        if (!cancelled) setApiOk(hasBrowserKey || Boolean(json.openaiConfigured));
+        if (!cancelled) setApiOk(Boolean(json.openaiConfigured));
       })
       .catch(() => {
-        if (!cancelled) setApiOk(hasBrowserKey);
+        if (!cancelled) setApiOk(false);
       });
     return () => {
       cancelled = true;
@@ -99,7 +97,7 @@ export default function ReviewPage() {
     const response = await fetch("/api/ai-clean-math", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: `${card.statement}\n\n${card.answer}\n\n${card.proof ?? ""}`.trim(), openaiApiKey: loadLlmPipelineSettings().openaiApiKey }),
+      body: JSON.stringify({ text: `${card.statement}\n\n${card.answer}\n\n${card.proof ?? ""}`.trim() }),
     });
     const payload = (await response.json()) as { markdown?: string; error?: string; issues?: string[]; latexQuality?: RevisionItem["latexQuality"] };
     if (!response.ok || !payload.markdown) {

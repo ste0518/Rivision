@@ -5,7 +5,6 @@ import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Select } from "@/components/ui/select";
 import { Textarea } from "@/components/ui/textarea";
-import { loadLlmPipelineSettings } from "@/lib/extraction";
 import { cardPurposes, importances, revisionItemTypes, type RevisionItem } from "@/lib/types";
 import { normalizeMathNotation } from "@/lib/revision-item-utils";
 import { createId } from "@/lib/utils";
@@ -32,7 +31,7 @@ export function CardForm({
     const response = await fetch("/api/ai-clean-math", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ text: draft.statement, openaiApiKey: loadLlmPipelineSettings().openaiApiKey }),
+      body: JSON.stringify({ text: draft.statement }),
     });
     const payload = (await response.json()) as { markdown?: string; error?: string; issues?: string[]; latexQuality?: RevisionItem["latexQuality"] };
     if (!response.ok || !payload.markdown) {
