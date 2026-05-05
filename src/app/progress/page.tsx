@@ -29,7 +29,7 @@ export default function ProgressPage() {
   if (!store.studentRevisionPack) {
     return (
       <div className="space-y-8">
-        <PageHeader title="Progress" description="High-level view of how your revision is going — all computed locally." />
+        <PageHeader title="Progress" description="High-level view of how your revision is going across review and practice." />
         <Card className="border-dashed">
           <CardContent className="py-12 text-center text-slate-600">
             <p>No exam pack yet. Upload files and generate an exam pack first.</p>
@@ -52,7 +52,7 @@ export default function ProgressPage() {
 
   return (
     <div className="space-y-8">
-      <PageHeader title="Progress" description="High-level view of how your revision is going — all computed locally." />
+      <PageHeader title="Progress" description="High-level view of how your revision is going across review and practice." />
 
       <div className="grid gap-4 md:grid-cols-2">
         <Card>

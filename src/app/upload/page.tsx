@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, ClipboardList, FileText, Loader2, Trash2, UploadCloud } from "lucide-react";
 import { Button } from "@/components/ui/button";
@@ -20,7 +21,7 @@ import {
   generateStudentRevisionPack,
 } from "@/lib/revision-pack-generator";
 import { extractRevisionItems, loadLlmPipelineSettings } from "@/lib/extraction";
-import { clearDebugData, loadStorageSettings, persistRevisionCandidates, saveStorageSettings } from "@/lib/storage";
+import { clearDebugData, loadStorageSettings, saveStorageSettings } from "@/lib/storage";
 import { createId } from "@/lib/utils";
 import { useStudyStore } from "@/hooks/use-study-store";
 import { studyFileRoles, type GuidanceFile, type StudyFile, type StudyFileRole } from "@/lib/types";
@@ -45,6 +46,7 @@ export default function UploadPage() {
   const [packGeneratePhase, setPackGeneratePhase] = useState("");
   const packProgressNudgeRef = useRef<number | null>(null);
   const [message, setMessage] = useState("");
+  const [apiKeyReady, setApiKeyReady] = useState(false);
   const [replacePack, setReplacePack] = useState(() =>
     typeof window !== "undefined" ? loadStorageSettings().uploadReplacePack : true,
   );
@@ -62,6 +64,17 @@ export default function UploadPage() {
 
   useEffect(() => {
     return () => stopPackProgressNudge();
+  }, []);
+
+  useEffect(() => {
+    const syncApiKey = () => setApiKeyReady(Boolean(loadLlmPipelineSettings().openaiApiKey?.trim()));
+    syncApiKey();
+    window.addEventListener("rivision-settings", syncApiKey);
+    window.addEventListener("storage", syncApiKey);
+    return () => {
+      window.removeEventListener("rivision-settings", syncApiKey);
+      window.removeEventListener("storage", syncApiKey);
+    };
   }, []);
 
   const canGenerate = useMemo(() => {
@@ -135,6 +148,13 @@ export default function UploadPage() {
     stopPackProgressNudge();
 
     try {
+      const llmSettingsForRun = loadLlmPipelineSettings();
+      if (!llmSettingsForRun.openaiApiKey?.trim()) {
+        setMessage("Add your OpenAI API key in Settings before generating an exam pack.");
+        router.push("/settings");
+        return;
+      }
+
       setPackGenerateProgress(2);
       setPackGeneratePhase("Prepare · clearing previous pack output");
       store.resetDerivedPackState();
@@ -205,7 +225,7 @@ export default function UploadPage() {
       const sourceFile = uploadedFilesForExtract.map((f) => f.name).join(", ") || "Course files";
 
       setPackGenerateProgress(38);
-      setPackGeneratePhase("Extract · AI / local extraction pipeline");
+      setPackGeneratePhase("Extract · OpenAI API");
       packProgressNudgeRef.current = window.setInterval(() => {
         setPackGenerateProgress((p) => (p < 62 ? Math.min(62, p + 1.2) : p));
       }, 420);
@@ -221,15 +241,12 @@ export default function UploadPage() {
 
       stopPackProgressNudge();
       setPackGenerateProgress(72);
-      setPackGeneratePhase("Save · workspace / debug data");
+      setPackGeneratePhase("Save · workspace");
+      if (result.error) throw new Error(result.error);
+      if (result.items.length === 0) throw new Error("API extraction returned no review-ready items. Check the uploaded files are readable and try again.");
 
       const storageSettings = loadStorageSettings();
-      try {
-        if (storageSettings.persistDebugData) await persistRevisionCandidates(allParsedDocuments);
-        else await clearDebugData();
-      } catch {
-        /* non-fatal */
-      }
+      await clearDebugData().catch(() => undefined);
 
       setPackGenerateProgress(78);
       setPackGeneratePhase("Build · structuring your exam pack");
@@ -242,12 +259,7 @@ export default function UploadPage() {
           aiStrictness: storageSettings.aiStrictness,
         },
       });
-      const llmSettings = loadLlmPipelineSettings();
-      const apiExtractionActive =
-        (llmSettings.mode === "ai_key_revision_analysis" || llmSettings.mode === "openai_api" || llmSettings.mode === "cheap_scan_then_verify") &&
-        !result.error &&
-        result.items.length > 0;
-      const studentPack = apiExtractionActive ? buildStudentRevisionPackFromApiItems(localStudentPack, result.items) : localStudentPack;
+      const studentPack = buildStudentRevisionPackFromApiItems(localStudentPack, result.items);
       const typedCount = countTypedPackItems(studentPack);
       const recallFromPack = typedCount > 0 ? buildRevisionItemsFromStudentPack(studentPack) : [];
       const recallWarning =
@@ -280,7 +292,7 @@ export default function UploadPage() {
 
       setPackGenerateProgress(96);
       setPackGeneratePhase("Open · navigating to exam pack");
-      setMessage("Exam pack generated locally. Opening pack…");
+      setMessage("Exam pack generated with API extraction. Opening pack…");
       setPackGenerateProgress(100);
       router.push("/pack");
     } catch (e) {
@@ -302,8 +314,19 @@ export default function UploadPage() {
     <div className="space-y-8">
       <PageHeader
         title="Upload course materials"
-        description="Give Rivision lecture notes, problem sheets, past papers, or mark schemes. It will build one exam pack with priorities, recall cards, worked-method templates, practice questions, and a cram sheet."
+        description="Give Rivision lecture notes, problem sheets, past papers, or mark schemes. API extraction turns them into one exam pack with priorities, recall cards, worked-method templates, practice questions, and a cram sheet."
       />
+
+      {!apiKeyReady ? (
+        <Card className="border-amber-200 bg-amber-50/80">
+          <CardContent className="flex flex-col gap-3 py-4 text-sm text-amber-950 sm:flex-row sm:items-center sm:justify-between">
+            <p>Add your OpenAI API key before generating. Uploading files still works, but extraction starts only after the key is saved.</p>
+            <Link className="inline-flex h-10 shrink-0 items-center justify-center rounded-md bg-amber-900 px-4 font-medium text-white hover:bg-amber-950" href="/settings">
+              Add API key
+            </Link>
+          </CardContent>
+        </Card>
+      ) : null}
 
       <Card>
         <CardHeader className="space-y-4">
@@ -431,9 +454,12 @@ export default function UploadPage() {
           <UnifiedFileList files={store.guidanceFiles} title="Assessment files" onDelete={store.removeGuidanceFile} onRoleChange={store.updateFileRole} hasPack={Boolean(store.studentRevisionPack)} />
 
           <div className="flex flex-col gap-3 border-t pt-6">
-            <Button size="lg" disabled={loading || generating || !canGenerate} onClick={() => void runGeneratePack()}>
+            <Button size="lg" disabled={loading || generating || !canGenerate || !apiKeyReady} onClick={() => void runGeneratePack()}>
               {generating ? "Generating…" : "Generate exam pack"}
             </Button>
+            {!apiKeyReady ? (
+              <p className="text-sm text-amber-900">API extraction is required. Add your key in Settings, then come back to generate.</p>
+            ) : null}
             {generating ? (
               <PackGenerateProgressBar phase={packGeneratePhase} progress={packGenerateProgress} />
             ) : null}

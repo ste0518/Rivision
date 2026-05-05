@@ -1,6 +1,6 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useState } from "react";
 import Link from "next/link";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -10,16 +10,6 @@ import { Textarea } from "@/components/ui/textarea";
 import { Tabs } from "@/components/ui/tabs";
 import { MathMarkdown } from "@/components/MathMarkdown";
 import { PageHeader } from "@/components/page-header";
-import {
-  buildRevisionPackDebugJson,
-  buildRevisionPackSummaryMarkdown,
-  downloadTextFile,
-  revisionPackDebugFilenameBase,
-  totalQualityWarningCount,
-} from "@/lib/revision-pack-debug-export";
-import { validateGenericStudyPack } from "@/lib/generic-study-pack-validation";
-import { cleanUploadedStudySourceText } from "@/lib/source-text-cleanup";
-import { isDeveloperUiEnabled } from "@/lib/storage";
 import { cardFromDefinition, cardFromFormula, cardFromProof, mockExplainNote } from "@/lib/pack-to-card";
 import { createId } from "@/lib/utils";
 import type { GeneratedDefinitionItem, GeneratedFormulaItem, GeneratedProofItem, GeneratedRevisionPack } from "@/lib/student-revision-schema";
@@ -31,22 +21,6 @@ export default function PackPage() {
   const [toast, setToast] = useState("");
   const [editingFormula, setEditingFormula] = useState<GeneratedFormulaItem | null>(null);
   const [editLatex, setEditLatex] = useState("");
-
-  const debugExport = useMemo(() => {
-    if (!pack) return null;
-    return buildRevisionPackDebugJson({
-      notesFiles: store.notesFiles,
-      revisionItems: store.revisionItems,
-      studentRevisionPack: pack,
-      practiceQuestions: store.practiceQuestions,
-    });
-  }, [pack, store.notesFiles, store.revisionItems, store.practiceQuestions]);
-
-  const packQuality = useMemo(() => {
-    if (!pack) return null;
-    const sourceUnion = store.notesFiles.map((f) => f.content || f.parsedDocument?.fullText || "").join("\n\n");
-    return validateGenericStudyPack(pack, pack.documentProfile ?? null, cleanUploadedStudySourceText(sourceUnion));
-  }, [pack, store.notesFiles]);
 
   const activeCards = store.revisionItems.filter((item) => !item.isDeleted).length;
   const generatedFrom =
@@ -69,17 +43,6 @@ export default function PackPage() {
             </div>
           </CardContent>
         </Card>
-        {isDeveloperUiEnabled() ? (
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Developer</CardTitle>
-              <CardDescription>Card-bundle revisionPack snapshot (internal).</CardDescription>
-            </CardHeader>
-            <CardContent className="text-xs text-slate-500">
-              <pre className="max-h-48 overflow-auto rounded-lg bg-slate-950 p-3 text-slate-100">{JSON.stringify(store.revisionPack ?? {}, null, 2).slice(0, 2000)}</pre>
-            </CardContent>
-          </Card>
-        ) : null}
       </div>
     );
   }
@@ -223,118 +186,8 @@ export default function PackPage() {
     <div className="space-y-6">
       <PageHeader
         title="Exam pack"
-        description="A structured exam pack built from your uploads. Everything stays on your device."
+        description="A structured exam pack built from your uploads with API extraction."
       />
-
-      {pack.strictQualityPass === false && !pack.criticalQualityFailure ? (
-        <Card className="border-sky-200 bg-sky-50/90">
-          <CardContent className="py-3 text-sm text-sky-950">
-            This pack was approved under <strong>relaxed layout rules</strong> so notes with unusual formatting still produce
-            study cards. If your PDF has odd headings or page breaks, spot-check a few definitions and formulas against the
-            source.
-          </CardContent>
-        </Card>
-      ) : null}
-
-      {pack.pipelineHealth ? (
-        <Card className="border-slate-200">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Pipeline health</CardTitle>
-            <CardDescription>
-              Local segmentation and grounding stages. Overall:{" "}
-              <span className={pack.pipelineHealth.overallPass ? "font-semibold text-green-800" : "font-semibold text-amber-800"}>
-                {pack.pipelineHealth.overallPass ? "Pass" : "Needs attention"}
-              </span>
-            </CardDescription>
-          </CardHeader>
-          <CardContent>
-            <ul className="grid gap-2 sm:grid-cols-2">
-              {pack.pipelineHealth.stages.map((s) => (
-                <li key={s.id} className="flex items-start justify-between gap-3 rounded-lg border border-slate-200 bg-white px-3 py-2 text-sm">
-                  <span className="text-slate-800">{s.label}</span>
-                  <Badge className={s.pass ? "shrink-0 border-green-700 bg-green-100 text-green-900" : "shrink-0 border-amber-700 bg-amber-100 text-amber-900"}>
-                    {s.pass ? "Pass" : "Fail"}
-                  </Badge>
-                </li>
-              ))}
-            </ul>
-            {pack.pipelineHealth.stages.some((s) => s.detail) ? (
-              <p className="mt-3 text-xs text-slate-500">
-                {pack.pipelineHealth.stages
-                  .filter((s) => s.detail)
-                  .map((s) => `${s.label}: ${s.detail}`)
-                  .join(" · ")}
-              </p>
-            ) : null}
-          </CardContent>
-        </Card>
-      ) : null}
-
-      {debugExport && packQuality ? (
-        <Card className="border-slate-200 bg-slate-50/80">
-          <CardHeader className="pb-2">
-            <CardTitle className="text-base">Pack quality</CardTitle>
-            <CardDescription>
-              Status:{" "}
-              <span className={packQuality.criticalQualityFailure ? "font-semibold text-red-800" : packQuality.ok ? "font-semibold text-green-800" : "font-semibold text-amber-800"}>
-                {packQuality.criticalQualityFailure ? "Critical issues" : packQuality.ok ? "OK" : "Needs attention"}
-              </span>
-            </CardDescription>
-          </CardHeader>
-          <CardContent className="space-y-3 text-sm">
-            {(packQuality.topActionableFailures.length ? packQuality.topActionableFailures : packQuality.recommendations).slice(0, 6).length ? (
-              <div>
-                <p className="text-xs font-medium text-slate-600">Top actionable issues</p>
-                <ul className="mt-1 list-inside list-disc text-slate-700">
-                  {(packQuality.topActionableFailures.length ? packQuality.topActionableFailures : packQuality.recommendations).slice(0, 6).map((line, i) => (
-                    <li key={i}>{line}</li>
-                  ))}
-                </ul>
-              </div>
-            ) : (
-              <p className="text-slate-600">No blocking issues flagged by generic checks.</p>
-            )}
-            <div className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  const base = revisionPackDebugFilenameBase(debugExport.metadata.sourceFilename);
-                  downloadTextFile(JSON.stringify(debugExport, null, 2), "application/json", `revision-pack-debug-${base}.json`);
-                }}
-              >
-                Download Debug JSON
-              </Button>
-              <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm font-medium hover:bg-slate-50" href="/upload">
-                Regenerate with safer extraction
-              </Link>
-            </div>
-          </CardContent>
-        </Card>
-      ) : null}
-
-      {packQuality?.criticalQualityFailure ? (
-        <div className="rounded-lg border-2 border-red-300 bg-red-50 px-4 py-4 text-sm text-red-950 shadow-sm">
-          <p className="text-base font-semibold">Generated with critical quality failures. This pack is not exam-ready.</p>
-          <p className="mt-2 text-red-900">
-            Review the issues below before relying on this material. Everything here is derived only from your files — no cloud generation.
-          </p>
-          <ul className="mt-3 list-inside list-decimal space-y-1.5 text-red-900">
-            {(packQuality.topActionableFailures.length ? packQuality.topActionableFailures : packQuality.recommendations).slice(0, 12).map((line, i) => (
-              <li key={i}>{line}</li>
-            ))}
-          </ul>
-          <div className="mt-4 flex flex-wrap gap-2">
-            <Link
-              className="inline-flex h-10 items-center justify-center rounded-md border border-red-400 bg-white px-4 text-sm font-medium text-red-950 hover:bg-red-100"
-              href="/upload"
-            >
-              Regenerate with safer extraction
-            </Link>
-            <p className="self-center text-xs text-red-800">Open Upload, replace notes if needed, and generate again for a clean pass without stale topic cues.</p>
-          </div>
-        </div>
-      ) : null}
 
       {toast ? <p className="rounded-lg border border-blue-200 bg-blue-50 px-4 py-2 text-sm text-blue-950">{toast}</p> : null}
 
@@ -366,35 +219,6 @@ export default function PackPage() {
             <Link className="inline-flex h-10 items-center justify-center rounded-md border border-slate-300 bg-white px-4 text-sm" href="/quiz">
               Practice
             </Link>
-            {debugExport ? (
-              <>
-                <Button
-                  type="button"
-                  variant="outline"
-                  className="border-amber-300 bg-amber-50 text-amber-950 hover:bg-amber-100"
-                  onClick={async () => {
-                    try {
-                      await navigator.clipboard.writeText(JSON.stringify(debugExport, null, 2));
-                      showToast("Debug JSON copied.");
-                    } catch {
-                      showToast("Could not copy to clipboard.");
-                    }
-                  }}
-                >
-                  Copy Debug JSON
-                </Button>
-                <Button
-                  type="button"
-                  variant="outline"
-                  onClick={() => {
-                    const base = revisionPackDebugFilenameBase(debugExport.metadata.sourceFilename);
-                    downloadTextFile(JSON.stringify(debugExport, null, 2), "application/json", `revision-pack-debug-${base}.json`);
-                  }}
-                >
-                  Download Debug JSON
-                </Button>
-              </>
-            ) : null}
           </div>
         </CardHeader>
         <CardContent className="grid gap-3 md:grid-cols-3">
@@ -425,107 +249,6 @@ export default function PackPage() {
       </Card>
 
       <Tabs tabs={tabs} defaultValue="overview" />
-
-      {debugExport ? (
-        <>
-          {debugExport.qualityChecks.criticalQualityFailure ? (
-            <Card className="border-amber-200 bg-amber-50">
-              <CardContent className="pt-4 text-sm text-amber-950">
-                {debugExport.qualityChecks.acceptanceWarningMessage ??
-                  "Exam pack generated, but quality checks failed. Review Debug JSON."}
-              </CardContent>
-            </Card>
-          ) : null}
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Export</CardTitle>
-              <CardDescription>
-                Download or copy the full generated pack for an external reviewer (JSON includes extraction, exam pack, and quality checks). Everything stays local — no upload.
-              </CardDescription>
-            </CardHeader>
-            <CardContent className="flex flex-wrap gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                onClick={async () => {
-                  try {
-                    await navigator.clipboard.writeText(JSON.stringify(debugExport, null, 2));
-                    showToast("Debug JSON copied.");
-                  } catch {
-                    showToast("Could not copy to clipboard.");
-                  }
-                }}
-              >
-                Copy Debug JSON
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  const base = revisionPackDebugFilenameBase(debugExport.metadata.sourceFilename);
-                  downloadTextFile(JSON.stringify(debugExport, null, 2), "application/json", `revision-pack-debug-${base}.json`);
-                }}
-              >
-                Download Debug JSON
-              </Button>
-              <Button
-                type="button"
-                variant="outline"
-                onClick={() => {
-                  const base = revisionPackDebugFilenameBase(debugExport.metadata.sourceFilename);
-                  const md = buildRevisionPackSummaryMarkdown(debugExport);
-                  downloadTextFile(md, "text/markdown;charset=utf-8", `revision-pack-summary-${base}.md`);
-                }}
-              >
-                Download Markdown Summary
-              </Button>
-            </CardContent>
-          </Card>
-
-          <Card>
-            <CardHeader>
-              <CardTitle className="text-base">Debug counts</CardTitle>
-              <CardDescription>Snapshot of this pack (updates when you regenerate).</CardDescription>
-            </CardHeader>
-            <CardContent>
-              <dl className="grid grid-cols-2 gap-2 text-sm sm:grid-cols-4">
-                <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
-                  <dt className="text-xs text-slate-500">Definitions</dt>
-                  <dd className="font-medium text-slate-900">{debugExport.studyPack.definitions.length}</dd>
-                </div>
-                <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
-                  <dt className="text-xs text-slate-500">Formulas</dt>
-                  <dd className="font-medium text-slate-900">{debugExport.studyPack.formulas.length}</dd>
-                </div>
-                <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
-                  <dt className="text-xs text-slate-500">Proofs</dt>
-                  <dd className="font-medium text-slate-900">{debugExport.studyPack.proofs.length}</dd>
-                </div>
-                <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
-                  <dt className="text-xs text-slate-500">Examples</dt>
-                  <dd className="font-medium text-slate-900">{debugExport.studyPack.examples.length}</dd>
-                </div>
-                <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
-                  <dt className="text-xs text-slate-500">Exercises</dt>
-                  <dd className="font-medium text-slate-900">{debugExport.studyPack.exercises.length}</dd>
-                </div>
-                <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
-                  <dt className="text-xs text-slate-500">Flashcards</dt>
-                  <dd className="font-medium text-slate-900">{debugExport.studyPack.flashcards.length}</dd>
-                </div>
-                <div className="rounded-md border border-slate-100 bg-slate-50 px-3 py-2">
-                  <dt className="text-xs text-slate-500">Quiz questions</dt>
-                  <dd className="font-medium text-slate-900">{debugExport.studyPack.quizQuestions.length}</dd>
-                </div>
-                <div className="rounded-md border border-amber-100 bg-amber-50 px-3 py-2">
-                  <dt className="text-xs text-amber-800">Quality warnings</dt>
-                  <dd className="font-medium text-amber-950">{totalQualityWarningCount(debugExport.qualityChecks)}</dd>
-                </div>
-              </dl>
-            </CardContent>
-          </Card>
-        </>
-      ) : null}
 
       {editingFormula ? (
         <Dialog open onOpenChange={(o) => { if (!o) setEditingFormula(null); }}>

@@ -95,7 +95,7 @@ export default function QuizPage() {
 
   return (
     <div className="space-y-8">
-      <PageHeader title="Practice" description="Quick drills and exam-style prompts — generated locally. Use Review for spaced repetition scheduling." />
+      <PageHeader title="Practice" description="Quick drills and exam-style prompts from your exam pack. Use Review for spaced repetition scheduling." />
 
       <Card>
         <CardHeader>
